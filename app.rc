@@ -1,0 +1,29 @@
+// Windows 可执行文件的资源脚本。
+//
+// 1 = 程序图标（资源管理器、任务栏、Alt-Tab 都取这一条）。
+// 图标本身是多尺寸 ico（16/24/32/48/64/128/256），Windows 按需挑最合适的一档，
+// 所以任务栏小图标不会糊成一片。
+1 ICON "assets/icon.ico"
+
+1 VERSIONINFO
+FILEVERSION 0,1,0,0
+PRODUCTVERSION 0,1,0,0
+FILEOS 0x40004
+FILETYPE 0x1
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "FileDescription", "Tun2Proxy GUI"
+      VALUE "ProductName", "Tun2Proxy GUI"
+      VALUE "FileVersion", "0.1.0"
+      VALUE "ProductVersion", "0.1.0"
+      VALUE "OriginalFilename", "tun2proxy-gui.exe"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END

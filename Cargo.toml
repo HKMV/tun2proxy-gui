@@ -1,0 +1,76 @@
+[package]
+name = "tun2proxy-gui"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.90"
+description = "Cross-platform desktop GUI for tun2proxy"
+authors = ["HKMV"]
+license = "MIT"
+repository = "https://github.com/HKMV/tun2proxy-gui"
+
+[dependencies]
+# ZSUI：Rust 原生桌面 UI（Win32 / AppKit / GTK），不依赖 WebView。
+# 锁到具体 revision：流式日志需要的重绘句柄（invalidation_handle）
+# 只存在于 0.3 线。
+zsui = { git = "https://github.com/qiu7824/zsui", rev = "05432449765c52e757e93272fac709c16b99bcdd", default-features = false, features = [
+    "window",
+    "button",
+    "label",
+    "textbox",
+    "checkbox",
+    "radio",
+    "scroll",
+    "progress",
+    "shell",
+    "tooltip",
+    "icon",
+    "badge",
+    "combo",
+    "image-preview",
+    "canvas",
+    "dialog",
+] }
+
+log = { version = "0.4", features = ["std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "io-util", "sync"] }
+tokio-util = "0.7"
+# 只用到 IpCidr / IpCidrSet，关掉默认特性避免拖进整个 tproxy 运行时。
+tproxy-config = { version = "7.0.9", default-features = false }
+
+[build-dependencies]
+# 只干一件事：把 app.rc（图标 + 版本信息）编进 exe 的资源段。
+# 非 Windows 平台上它什么也不做（build.rs 里已经用 cfg 圈住了）。
+embed-resource = "3"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Linux 上 `--unshare` 可以免 root 运行，所以保留默认特性。
+tun2proxy = "0.8.6"
+libc = "0.2"
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+# Windows / macOS 只用到 Args 与 general_run_async，不需要 unshare。
+tun2proxy = { version = "0.8.6", default-features = false, features = ["udpgw"] }
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Console",
+    "Win32_System_LibraryLoader",
+    "Win32_Globalization",
+    "Win32_System_Threading",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+# 发布版：去掉符号表，用 thin LTO 平衡编译时间与运行性能。
+[profile.release]
+strip = "symbols"
+lto = "thin"
+codegen-units = 16

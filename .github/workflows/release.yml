@@ -1,0 +1,227 @@
+name: Release
+
+# 打 tag（v*）即自动编译三平台产物并发布到 GitHub Release。
+# 也可以在 Actions 页面手动 Run workflow，填一个已存在的 tag 重跑发布。
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "已存在的 tag（例如 v0.1.0）"
+        required: true
+        type: string
+
+# 发布 Release 需要写权限；其余权限一律不给。
+permissions:
+  contents: write
+
+# 同一个 tag 同时只跑一个发布，避免两个 job 抢着建 Release。
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  BIN: tun2proxy-gui
+  # push 事件取 tag 名，手动触发取输入；后续所有步骤都用这一个变量。
+  TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Windows：zsui 走 Win32，无需额外系统依赖。
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          # Linux：用 22.04 编译，glibc 2.35 起步，兼容面最广。
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 手动触发时 ref 是分支，这里强制检出被发布的那个 tag。
+          ref: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+
+      # zsui 的 linux-direct 后端用 cairo/pango 绘制、winit 开窗口，
+      # 所以除 pkg-config 外还要 X11 / Wayland / xkbcommon 的开发头。
+      - name: Install Linux build deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libcairo2-dev libpango1.0-dev libglib2.0-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev \
+            libwayland-dev libx11-dev libx11-xcb-dev libxcb1-dev \
+            libxcursor-dev libxrandr-dev libxi-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # app.rc 里写死了 0,1,0,0 与 "0.1.0"，不跟着 tag 走的话 exe 属性页会一直
+      # 显示旧版本。这里在 build 之前就地改掉（只改 CI 工作区，不提交），
+      # 让 build.rs 把正确版本编进资源段。
+      - name: Sync version into app.rc
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          v="${TAG#v}"; v="${v%%-*}"
+          IFS=. read -r a b c <<< "$(echo "$v" | cut -d. -f1-3)"
+          quad="${a:-0},${b:-0},${c:-0},0"
+          sed -i -E \
+            -e "s/^FILEVERSION .*/FILEVERSION ${quad}/" \
+            -e "s/^PRODUCTVERSION .*/PRODUCTVERSION ${quad}/" \
+            -e "s/(VALUE \"FileVersion\", )\"[^\"]*\"/\1\"${v}\"/" \
+            -e "s/(VALUE \"ProductVersion\", )\"[^\"]*\"/\1\"${v}\"/" \
+            app.rc
+          grep -E '^(FILEVERSION|PRODUCTVERSION)|VALUE "(File|Product)Version"' app.rc
+
+      # Cargo.toml 里 rust-version = "1.90"，stable 已满足。
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $name = "$env:BIN-$env:TAG-${{ matrix.target }}"
+          $dir = "dist/$name"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/$env:BIN.exe" $dir
+          Copy-Item README.md, README.en.md, LICENSE $dir
+          Compress-Archive -Path "$dir/*" -DestinationPath "dist/$name.zip" -Force
+
+      - name: Package (Linux / macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="${BIN}-${TAG}-${{ matrix.target }}"
+          dir="dist/$name"
+          mkdir -p "$dir"
+          bin="target/${{ matrix.target }}/release/${BIN}"
+
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            # 打成 .app：Finder 里双击才会当应用启动（裸二进制会开一个终端窗口），
+            # 菜单栏名字、Dock 图标也都靠 Info.plist。
+            app="$dir/Tun2Proxy GUI.app"
+            mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+            cp "$bin" "$app/Contents/MacOS/${BIN}"
+            chmod +x "$app/Contents/MacOS/${BIN}"
+
+            # 用 assets/icon.png（512×512）生成 .icns；失败也不影响产物可用。
+            iconset="dist/AppIcon.iconset"
+            mkdir -p "$iconset"
+            for s in 16 32 128 256 512; do
+              sips -z $s $s assets/icon.png --out "$iconset/icon_${s}x${s}.png" >/dev/null
+              d=$((s * 2))
+              sips -z $d $d assets/icon.png --out "$iconset/icon_${s}x${s}@2x.png" >/dev/null
+            done
+            iconutil -c icns "$iconset" -o "$app/Contents/Resources/AppIcon.icns" || true
+
+            ver="${TAG#v}"
+            cat > "$app/Contents/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key><string>Tun2Proxy GUI</string>
+            <key>CFBundleDisplayName</key><string>Tun2Proxy GUI</string>
+            <key>CFBundleIdentifier</key><string>com.paperdragon.tun2proxy-gui</string>
+            <key>CFBundleExecutable</key><string>${BIN}</string>
+            <key>CFBundleIconFile</key><string>AppIcon</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>${ver}</string>
+            <key>CFBundleVersion</key><string>${ver}</string>
+            <key>LSMinimumSystemVersion</key><string>11.0</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict>
+          </plist>
+          PLIST
+
+            # 临时签名（ad-hoc）。没有开发者证书时这已经够让系统正常加载二进制。
+            codesign --force --deep --sign - "$app" >/dev/null 2>&1 || true
+          else
+            cp "$bin" "$dir/${BIN}"
+            chmod +x "$dir/${BIN}"
+          fi
+
+          cp README.md README.en.md LICENSE "$dir/"
+          tar -czf "dist/$name.tar.gz" -C dist "$name"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BIN }}-${{ env.TAG }}-${{ matrix.target }}
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      # tag 与 Cargo.toml 版本不一致时直接失败：避免发出一个版本号对不上的包。
+      - name: Verify tag matches Cargo.toml
+        run: |
+          set -euo pipefail
+          ver=$(sed -n 's/^version *= *"\([^"]*\)".*/\1/p' Cargo.toml | head -1)
+          tag="${TAG#v}"
+          echo "Cargo.toml = $ver / tag = $TAG"
+          if [ "$ver" != "$tag" ]; then
+            echo "::error::tag $TAG 与 Cargo.toml 的 version = \"$ver\" 不一致"
+            exit 1
+          fi
+
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum ./* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      # 用 gh CLI（runner 自带）而不是第三方 action：不用 pin 第三方版本。
+      # 已存在同名 Release 时只补传/覆盖文件，不重建，方便重跑。
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            prerelease=""
+            case "$TAG" in *-*) prerelease="--prerelease" ;; esac
+            gh release create "$TAG" dist/* \
+              --verify-tag \
+              --title "Tun2Proxy GUI $TAG" \
+              --generate-notes \
+              $prerelease
+          fi

@@ -1,0 +1,9 @@
+# 统一换行：仓库里一律 LF，Windows 检出也是 LF。
+# 不这么做的话 core.autocrlf=true 的机器上会把整文件标成改动，
+# CI 里的 sed/脚本也容易踩到 CRLF。
+* text=auto eol=lf
+
+# 二进制资源，别让 Git 去猜。
+*.png  binary
+*.ico  binary
+*.rgba binary
