@@ -181,7 +181,7 @@ Releases (see `.github/workflows/release.yml`):
 
 ```bash
 # Bump `version` in Cargo.toml, commit it, then tag — CI enforces that they match
-git tag v0.1.0 && git push origin v0.1.0
+git tag v0.1.1 && git push origin v0.1.1
 ```
 
 Artifacts: `tun2proxy-gui-<tag>-<target>.zip` (Windows) and `.tar.gz` (Linux /

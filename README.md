@@ -150,7 +150,7 @@ cargo build --release
 
 ```bash
 # 先把 Cargo.toml 的 version 改好并提交，tag 必须与它一致（CI 会校验）
-git tag v0.1.0 && git push origin v0.1.0
+git tag v0.1.1 && git push origin v0.1.1
 ```
 
 产物：`tun2proxy-gui-<tag>-<target>.zip`（Windows）、`.tar.gz`（Linux /

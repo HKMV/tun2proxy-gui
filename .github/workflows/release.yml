@@ -73,9 +73,9 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      # app.rc 里写死了 0,1,0,0 与 "0.1.0"，不跟着 tag 走的话 exe 属性页会一直
-      # 显示旧版本。这里在 build 之前就地改掉（只改 CI 工作区，不提交），
-      # 让 build.rs 把正确版本编进资源段。
+      # app.rc 里写死了四段式版本号（FILEVERSION/PRODUCTVERSION）与字符串版本，
+      # 不跟着 tag 走的话 exe 属性页会一直显示旧版本。这里在 build 之前就地改掉
+      # （只改 CI 工作区，不提交），让 build.rs 把正确版本编进资源段。
       - name: Sync version into app.rc
         if: runner.os == 'Windows'
         shell: bash
