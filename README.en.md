@@ -10,6 +10,11 @@ The layout and interaction model were inspired by
 [Paper-Dragon/tun2proxy-gui](https://github.com/Paper-Dragon/tun2proxy-gui), then
 rebuilt around "multiple proxy profiles + one-click start/stop".
 
+![Dashboard](assets/screenshots/dashboard-en.png)
+
+*English UI (Dashboard): service state and start/stop always in the sidebar;
+current profile, runtime options and live log on the right.*
+
 ## Features
 
 - **Multiple proxy profiles**: keep as many as you like (home / office / a

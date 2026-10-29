@@ -8,6 +8,10 @@ tun2proxy 的跨平台桌面图形前端，用 Rust 编写，界面基于
 界面层级与交互参考了 [Paper-Dragon/tun2proxy-gui](https://github.com/Paper-Dragon/tun2proxy-gui)，
 并按「多套代理配置 + 一键启停」重做了布局。
 
+![仪表盘](assets/screenshots/dashboard-zh.png)
+
+*中文界面（仪表盘）：左侧常驻运行状态与启停按钮，右侧是当前配置、运行参数与实时日志。*
+
 ## 功能
 
 - **多套代理配置**：保存任意多套配置（家里 / 公司 / 临时节点），列表里一键切换，
