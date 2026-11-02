@@ -172,8 +172,8 @@ impl Engine {
         self.shared.clone()
     }
 
-    /// 注入「请求界面重绘」的回调（由 GUI 层提供，通常包装 zsui 的
-    /// `UiInvalidationHandle::request_rebuild`）。
+    /// 注入「请求界面重绘」的回调（由 GUI 层提供，包装成一次
+    /// `cx.notify()`；内核不知道界面框架是什么）。
     pub fn set_rebuild_hook(&self, hook: Arc<dyn Fn() + Send + Sync>) {
         if let Ok(mut shared) = self.shared.lock() {
             shared.rebuild = Some(hook);

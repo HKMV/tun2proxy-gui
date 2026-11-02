@@ -3,8 +3,11 @@
 **English** | [中文](README.md)
 
 A cross-platform desktop front end for [tun2proxy](https://github.com/tun2proxy/tun2proxy),
-written in Rust, with a UI built on [ZSUI](https://github.com/qiu7824/zsui)
-(native Rust desktop UI — no WebView).
+written in Rust. The UI is built on
+[GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) (Zed's GPU-rendered
+UI framework) and gpuikit (a shadcn-style component library for GPUI) — no WebView.
+Colours, radii and control metrics all come from gpuikit's own themes (Gruvbox Dark
+by default).
 
 The layout and interaction model were inspired by
 [Paper-Dragon/tun2proxy-gui](https://github.com/Paper-Dragon/tun2proxy-gui), then
@@ -58,7 +61,7 @@ current profile, runtime options and live log on the right.*
 ```
 src/
 ├─ main.rs         Startup: privileges → DPI → config → engine → window
-├─ core/           UI-independent core (no zsui dependency, testable on its own)
+├─ core/           UI-independent core (no GUI framework dependency, testable on its own)
 │  ├─ mod.rs       Module docs and re-exports
 │  ├─ paths.rs     Where config / downloads / logs live
 │  ├─ config.rs    Read, validate and convert proxy profiles into CLI args
@@ -72,14 +75,15 @@ src/
 │  ├─ icon.rs      Multi-size bitmaps of the app icon (one copy for window and tray)
 │  ├─ i18n.rs      Chinese/English strings and the language setting
 │  └─ platform.rs  Process-level init (Windows DPI awareness)
-└─ ui/             Presentation layer (zsui)
+└─ ui/             Presentation layer (GPUI + gpuikit)
    ├─ state.rs     App state, message enum, numeric input drafts
-   ├─ view.rs      The whole view tree: sidebar + content area
+   ├─ view.rs      Root view: sidebar + content area
+   ├─ theme.rs     Installs the gpuikit theme (swappable) and font-size constants
    ├─ sidebar.rs   Sidebar (title, service state, navigation, start/stop)
    ├─ pages.rs     Content area: thin top bar + the grouped composition of each page
    ├─ cards.rs     Groups and rows for each page
    ├─ widgets.rs   Reusable text styles and widgets (hero card, group, setting row, pill)
-   ├─ chart.rs     Live traffic chart (zsui canvas)
+   ├─ chart.rs     Live traffic chart (gpui canvas)
    └─ update.rs    Message handling (the only place that mutates state)
 assets/
 ├─ icon.ico       App icon (multi-size, embedded into the exe resource section)
@@ -89,15 +93,10 @@ build.rs          Compiles app.rc (icon + version info) into the Windows exe
 
 ### App icon
 
-Two independent paths, each covering a different surface:
-
-- **Explorer / taskbar**: `app.rc` + `build.rs` (`embed-resource`) compile
-  `assets/icon.ico` into the exe's resource section. That is the only source
-  Windows reads the icon from.
-- **Window title bar**: `core::paths::install_icon()` writes the embedded ico
-  into the data directory and hands the absolute path to
-  `native_window(..).icon_path(..)`. On non-Windows platforms only this path
-  exists.
+The exe resource section is the only source: `app.rc` + `build.rs`
+(`embed-resource`) compile `assets/icon.ico` into the exe, and Explorer, the
+taskbar and the window title bar all read it from there. GPUI does no runtime
+icon loading, so the old "write the ico into the data directory" path is gone.
 
 The icon is a multi-size ico (16/24/32/48/64/128/256); the system picks the
 size it needs, so the small taskbar icon never turns to mush. To change the
@@ -126,17 +125,16 @@ icon, replace `assets/icon.ico` and run `cargo build` again.
 └──────────────┴──────────────────────────────────────┘
 ```
 
-Three visual layers: white sidebar, light-grey content area (`Surface`), and
-white cards with a 1dp outline and 12dp radius. White cards float naturally on
-the grey background, and neighbouring groups are separated by spacing and
-outlines rather than divider lines.
+Three visual layers: the sidebar uses `surface`, the content area `bg`, and cards
+`surface` with a 1dp outline and 8dp radius. All three come from gpuikit's
+semantic theme colours, so swapping the theme (see "Theme" below) repaints the
+whole window — there is no hard-coded hex anywhere.
 
-Setting rows follow Windows 11 Task Manager: **the group title sits outside the
-card** (small bold text) and the card holds one setting per row — icon on the
-left, "title + grey description" in the middle, control or value on the right,
-with a hairline inset 14dp on both sides between rows. Grouping related
-settings into one card is far denser than one card per setting, and removes the
-wall of boxes.
+Setting rows: **the group title sits outside the card** (small bold text) and the
+card holds one setting per row — icon on the left, "title + grey description" in
+the middle, control or value on the right, with a hairline inset 12dp on both
+sides between rows. Grouping related settings into one card is far denser than
+one card per setting, and removes the wall of boxes.
 
 The top bar is a single line (page name, one explanatory sentence on the right,
 hairline at the bottom) instead of taking two rows. The dashboard hero card
@@ -169,9 +167,9 @@ Windows).
 Dependencies:
 
 - Windows: nothing extra.
-- Linux: ZSUI uses the `linux-direct` backend (Cairo/Pango drawing, not GTK
-  widgets), so you need `libcairo2-dev libpango1.0-dev libglib2.0-dev
-  pkg-config`.
+- Linux: GPUI renders through Vulkan on Wayland / X11, so you need the matching
+  development libraries and `pkg-config`; see gpui's own Linux notes for package
+  names.
 - macOS: the Xcode command line tools.
 
 ### Releasing
@@ -181,7 +179,7 @@ Releases (see `.github/workflows/release.yml`):
 
 ```bash
 # Bump `version` in Cargo.toml, commit it, then tag — CI enforces that they match
-git tag v0.1.1 && git push origin v0.1.1
+git tag v0.2.0 && git push origin v0.2.0
 ```
 
 Artifacts: `tun2proxy-gui-<tag>-<target>.zip` (Windows) and `.tar.gz` (Linux /
@@ -270,6 +268,60 @@ Settings offers "Follow system / 中文 / English"; the choice applies immediate
 and is persisted (the `language` field). Strings live in code
 (`t("中文", "English")`) — there is no separate translation resource file.
 
+## Theme
+
+Colours, radii and control heights all come from gpuikit's `Themeable` semantic
+colours and `ControlScale`; this app does no colouring of its own. The default is
+Catppuccin Mocha (cool grey background, blue accent), and an environment variable
+switches it:
+
+```powershell
+set TUN2PROXY_GUI_THEME=light    # Catppuccin Latte (light)
+set TUN2PROXY_GUI_THEME=frappe   # Catppuccin Frappe
+set TUN2PROXY_GUI_THEME=gruvbox  # gpuikit's signature Gruvbox Dark
+```
+
+An unknown name falls back to the default instead of failing (a typo in an
+environment variable should not stop the app from starting). The Windows title
+bar's light/dark mode follows the theme too
+(`core::platform::set_dark_titlebar`).
+
+Why not gpuikit's own default: Gruvbox is a warm brown background with a bright
+green accent. That palette suits terminals and editors, but on a settings screen
+full of small CJK text it does two things badly — the warm background makes text
+look dingy, and the green ends up on the sidebar selection, the primary button
+fill and all three chart lines at once. `ui::theme::tune` fixes three things:
+
+1. **Re-layers Catppuccin.** gpuikit maps `surface` to mantle (darker than base),
+   so cards would sink into the background. Here it becomes background base <
+   card surface0 < button surface1.
+2. **Inputs get a darker fill and a brighter outline.** gpuikit makes inputs the
+   same colour as the card and distinguishes them by a 1dp outline alone, which
+   is nearly invisible on a screen full of cards.
+3. **Dark themes' outline is lightened by one step**, so 1dp controls hold up.
+
+The primary button is not accent-filled: accent belongs to selection, focus and
+data, and a solid block of it on a button keeps pulling the eye back. The primary
+button stands up by contrast instead — light fill with dark text on dark themes,
+automatically inverted on light ones, with no per-theme branch.
+
+## Tray
+
+The tray icon changes colour with the service: **grey when stopped, green while
+running**. The tray is 16–32px, so shape cannot express "running or not" and
+colour is the fastest signal (the hover tooltip carries the state too).
+
+Both variants are derived from the single `assets/icon.ico`, with no extra image
+files: the frames are PNG, so at runtime the icon is decoded, the saturated
+pixels have their hue moved to green (desaturated and darkened when idle), and
+re-encoded into an `HICON` (`core::icon::recolor_pixel`). The white motif is
+achromatic and left untouched — otherwise the glyph and the background would
+smear together.
+
+"Starting" counts as running: the user already pressed start, so the icon should
+light up then; waiting for `Running` would feel like a dead click. If tinting
+fails the original icon is used — a wrong colour is minor, a missing icon is not.
+
 ## Development
 
 ```bash
@@ -278,36 +330,35 @@ cargo test         # unit tests for config management
 cargo build        # debug build
 ```
 
-A screenshot helper for debugging lives at `.probe/shot.ps1` (Windows only):
-`-Resize` changes the window size, `-Click` clicks once, `-Wheel` scrolls, and
-`PrintWindow` captures the window to a PNG so you can inspect the layout. Set
-`TUN2PROXY_GUI_NO_ELEVATE=1` to skip elevation.
+Set `TUN2PROXY_GUI_NO_ELEVATE=1` to skip elevation and start with the current
+privileges.
 
-> Don't use screen capture (`CopyFromScreen`): while debugging the window is not
-> necessarily composited onto a visible desktop, so you end up capturing another
-> app. `PrintWindow(hwnd, hdc, 2)` asks the window for its pixels directly and is
-> reliable.
+### Capturing a window while debugging
 
-### Three layout traps (zsui 0.3)
+Use `PrintWindow(hwnd, hdc, PW_RENDERFULLCONTENT)` to ask the window for its
+pixels; do **not** use `CopyFromScreen`. While debugging the window is often
+covered by another app, so a screen capture returns that app's pixels — which
+looks exactly like "the UI never updated" when in fact the wrong window was
+captured.
 
-1. **Wrapping is a style, not a method call**: `ViewNode::text_wrap()` only
-   affects multi-line text inputs and is a no-op on ordinary text. To wrap, set
-   `SemanticTextStyle { wrap: TextWrap::Word, .. }` — see `wrapped()` in
-   `src/ui/widgets.rs`. Otherwise long descriptions stay on one line and get
-   clipped by the window edge once they leave the card.
-2. **A container's width is the natural width of its widest child**: there is no
-   `width: 100%`. To make a card follow the window, give the parent
-   `align(ViewAlign::Stretch)` and the child `flex(1.0)` (see `card()` in
-   `src/ui/widgets.rs`). Conversely, wrapping text inside a `row` gets squeezed
-   into a vertical strip, so inline labels use `caption_nowrap()`.
-3. **When it doesn't fit, it clips — it does not wrap**: widgets and text are
-   never squeezed below platform metrics, and a container narrower than its
-   intrinsic minimum width simply gets cut off on the right (the hard-size
-   contract in `src/view/layout.rs`). The minimum window width
-   `ui::MIN_WINDOW_WIDTH` must therefore exceed the intrinsic minimum width of
-   the widest page — `ui::layout_probe::no_page_overflows_the_minimum_window`
-   watches this, so dropping a wider widget into a card fails the test instead of
-   showing the user a cut-off edge.
+`GetWindowRect` includes the invisible shadow border Windows 11 adds (about
+11px left/right, 10px at the bottom), so inset by that much or desktop pixels
+leak into the image. Clicks can be delivered with `PostMessage` of
+`WM_LBUTTONDOWN` / `WM_LBUTTONUP` to the window handle (client-area coordinates),
+which needs no foreground window.
+
+### Three layout traps
+
+1. **Wrapping text needs `flex_1 + min_w_0`**: without it, inline text is measured
+   at the widest unbreakable word and CJK ends up as a vertical strip of
+   characters. See `setting_row` in `src/ui/widgets.rs`.
+2. **Hand-drawn controls must take `theme.control(size)`**: buttons, icon buttons
+   and badges all size themselves from gpuikit's `ControlScale`; anything drawn
+   by hand should read the same numbers, or the row ends up mismatched. See
+   `primary_button` in `src/ui/widgets.rs`.
+3. **Cards use a single outline**: `bg(surface) + border_1(border) +
+   rounded(0.5rem)`, matching gpuikit's `Card`. Do not wrap a fill in an outer
+   outline box — under a dark theme that leaves a bright rim around every card.
 
 ## License
 

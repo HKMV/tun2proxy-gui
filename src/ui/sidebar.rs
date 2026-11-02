@@ -4,253 +4,355 @@
 //! 都能直接启动或停止，不必先回到仪表盘。信息从上到下按重要性递减排列：
 //! 我是谁 → 我在哪一页 → 我现在什么状态 → 主操作。
 //!
-//! 两种形态，都照 WinUI 3 的 NavigationView 做：
+//! 两种形态：
 //!
-//! - **完整**（[`SIDEBAR_WIDTH`]）：图标 + 文字，选中项由框架画高亮块；
-//! - **收起**（[`RAIL_WIDTH`]）：48dp 图标栏，选中项 = 40×36 圆角底
-//!   + 左侧 3×16 的强调色竖条（NavigationView 的 selection indicator）。
+//! - **完整**（[`SIDEBAR_WIDTH`]）：图标 + 文字，选中项铺一层 `accent_bg()`
+//!   并在左侧画一条 3dp 竖条；
+//! - **收起**（[`RAIL_WIDTH`]）：只有一列 40dp 图标，选中项同样是强调色底。
 //!
-//! 右侧统一压一条 1dp 发丝线：侧边栏白、内容区灰，再加一条线，
-//! 两块区域的边界才不靠「色差刚刚好」这种巧合。
+//! 底色用 `surface()`、内容区用 `bg()`，右侧再压一条 `border()` 的 1dp 竖线：
+//! 侧边栏与内容区是两块并列的面板，层次靠色差，边界靠那条线。
 //!
 //! 收起只省地方，不藏功能：导航项全带 tooltip，状态点带状态文字，
 //! 启停按钮也还在原位。
 
-use crate::core::i18n::t;
-use zsui::{
-    button, column, navigation_item, primary_button, row, spacer, styled_text, ColorRole, Dp,
-    SemanticTextStyle, TextRole, TextWeight, ThemeColorToken, ViewAlign, ViewNode, ZsIcon,
-};
+use gpui::{AnyElement, Context, Div, IntoElement, Svg, div, px, prelude::*};
+use gpuikit::theme::{Theme, Themeable};
+use gpuikit::{DefaultIcons, elements::icon_button::icon_button};
 
-use super::cards::{status_color, status_label};
-use super::state::{App, Msg, Page, Snapshot};
-use super::widgets::{dot, hairline, pill, push, v_hairline, SPACE_S, SPACE_XL};
+use crate::core::i18n::t;
+
+use super::cards::status_label;
+use super::state::{App as UiApp, Msg, Page, Snapshot};
+use super::theme::{TEXT_BODY, TEXT_GROUP, WEIGHT_SEMIBOLD};
+use super::widgets::{SPACE_S, SPACE_XL, dot, hairline, pill, primary_button, v_hairline};
 
 /// 侧边栏宽度（逻辑像素）。
 ///
 /// 宽度由两件事撑出来，取更宽的那个：
 ///
-/// - 品牌行：`Tun2Proxy`（BodyLarge 18 半粗，实测 110dp）+ 间距 12 + 收起按钮 32
-///   = 154dp；
-/// - 版本胶囊：文字改成 `Body`（14）后实测 130dp，加左右各 4dp 间隔与 4dp 内边距
-///   = 146dp（12px 时是 118dp，160 的侧边栏刚好装得下，现在装不下了）。
+/// - 品牌行：`Tun2Proxy`（15dp 半粗）+ 间距 + 收起按钮 28dp；
+/// - 版本胶囊：`tun2proxy v0.8.6` 在 14dp 下约 130dp，加左右留白约 146dp。
 ///
-/// 168 - 左右各 8dp 留白 = 152dp 可用宽，两件都装得下还各余 6dp。
-///
-/// ZSUI 不压缩控件（装不下就裁），这里的宽度必须大于内容的内在
-/// 最小宽度，由 `ui::layout_probe` 的 `sidebar_keeps_its_width` 与
-/// `no_node_exceeds_the_window_width` 守住。
-pub const SIDEBAR_WIDTH: f32 = 168.0;
-/// 收起后的图标栏宽度：40dp 的导航项 + 左右各 4dp 留白。
-///
-/// 40 是 WinUI NavigationView 收起态的项宽，48 是它的栏宽，两者别混。
-pub const RAIL_WIDTH: f32 = 48.0;
+/// 176 - 左右各 8 = 160dp 可用宽，两件都装得下。
+pub const SIDEBAR_WIDTH: f32 = 176.0;
+/// 收起后的图标栏宽度：40dp 的导航项 + 左右各 6dp 留白。
+pub const RAIL_WIDTH: f32 = 52.0;
 /// 侧边栏内部左右留白。
 const SIDEBAR_PADDING: f32 = 8.0;
-/// 图标栏内部留白：48 - 40 = 8，左右各 4。
-const RAIL_PADDING: f32 = 4.0;
-/// 导航项 / 底部按钮的宽度：撑满可用宽度，看起来才像一条侧边栏。
-const ITEM_WIDTH: f32 = SIDEBAR_WIDTH - SIDEBAR_PADDING * 2.0;
-/// 收起态导航项的宽度（WinUI 的 compact 项宽 40，栏宽 48）。
+/// 图标栏内部留白。
+const RAIL_PADDING: f32 = 6.0;
+/// 收起态导航项的宽度（40dp 的方形图标格）。
 const RAIL_ITEM_WIDTH: f32 = 40.0;
+/// 导航项高度。
+const ITEM_HEIGHT: f32 = 38.0;
 
 /// 构建整条侧边栏。
-pub fn sidebar(app: &App, snap: &Snapshot) -> ViewNode<Msg> {
+pub fn sidebar(
+    app: &UiApp,
+    snap: &Snapshot,
+    theme: &Theme,
+    cx: &mut Context<UiApp>,
+) -> AnyElement {
     let pane = if app.sidebar_collapsed {
-        rail(app, snap)
+        rail(app, snap, theme, cx)
     } else {
-        expanded(app, snap)
+        expanded(app, snap, theme, cx)
     };
-    row([pane, v_hairline()])
-        .gap(Dp::new(0.0))
-        .align(ViewAlign::Stretch)
-        .flex(0.0)
+    div()
+        .flex()
+        .flex_none()
+        .items_stretch()
+        .child(pane)
+        .child(v_hairline(theme))
+        .into_any_element()
 }
 
 /// 完整形态：图标 + 文字。
-fn expanded(app: &App, snap: &Snapshot) -> ViewNode<Msg> {
-    let (status_text, color) = status_label(&snap.status);
+fn expanded(app: &UiApp, snap: &Snapshot, theme: &Theme, cx: &mut Context<UiApp>) -> Div {
+    let (status_text, color) = status_label(&snap.status, theme);
 
-    // 品牌区：一行「程序名 + 收起按钮」，版本胶囊在下面一行。
-    //
-    // 程序名用 BodyLarge（18px）+ 半粗，实测 110dp；收起按钮固定 40dp（原生
-    // 图标框宽度，图标才会在框里居中），合计 150 ≤ 152 可用宽（[`ITEM_WIDTH`]），
-    // 松紧刚好。再大就装不下：Subtitle 是 123dp，加上 40dp 按钮就超了，
-    // ZSUI 不压缩控件，会把侧边栏撑宽（`sidebar_keeps_its_width` 会失败）。
-    //
-    // 胶囊单独一行而不是挤在名字右边：版本号是可变长文字（「tun2proxy 未安装」
-    // 比「tun2proxy v0.8.6」长），挤在名字那一行会把宽度变成一个会变的量。
-    let brand = column([
-        row([
-            styled_text(
-                "Tun2Proxy",
-                SemanticTextStyle {
-                    weight: TextWeight::Semibold,
-                    ..SemanticTextStyle::for_role(TextRole::BodyLarge)
-                },
-            ),
-            push(),
-            toggle(app),
-        ])
-        .align(ViewAlign::Center)
-        .width(Dp::new(ITEM_WIDTH)),
-        pill(version_label(snap), ColorRole::Accent).align(ViewAlign::Start),
-    ])
-    .gap(Dp::new(SPACE_S))
-    .align(ViewAlign::Start);
+    let brand = div()
+        .flex()
+        .flex_col()
+        .gap(px(SPACE_S))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(SPACE_S))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_size(px(TEXT_GROUP))
+                        .font_weight(WEIGHT_SEMIBOLD)
+                        .text_color(theme.fg())
+                        .whitespace_nowrap()
+                        .child("Tun2Proxy"),
+                )
+                .child(toggle(app, theme, cx)),
+        )
+        // 版本胶囊单独一行而不是挤在名字右边：版本号是可变长文字
+        // （「tun2proxy 未安装」比「tun2proxy v0.8.6」长），挤在名字那一行
+        // 会把侧边栏的宽度变成一个会变的量。
+        .child(div().flex().child(pill(version_label(snap), color_accent(theme), theme)));
 
-    // 导航项：选中的那页由 ZSUI 画出 NavigationView 的高亮块。
-    let nav = column(Page::ALL.into_iter().map(|page| {
-        navigation_item(page.label(), page.icon(), app.page == page)
-            .width(Dp::new(ITEM_WIDTH))
-            .on_click(Msg::PageSelected(page))
-    }))
-    .gap(Dp::new(2.0))
-    .align(ViewAlign::Stretch);
-    // 状态：一个色点 + 一句话，运行中一眼能看见。
-    //
-    // 不再单独占一行写「服务状态」这个标题：一个「● 未运行」自解释，
-    // 多一行小标题只会把底部的操作区推得更高、看起来更松。
-    let status = row([
-        // 实心圆点，不用 `badge(Dot)`：那个胶囊有底色（Control=白），
-        // 落在同样浅的侧边栏底色上等于只剩一个白点。
-        dot(status_color(&snap.status)),
-        styled_text(
-            status_text,
-            SemanticTextStyle {
-                color,
-                ..SemanticTextStyle::for_role(TextRole::Body)
-            },
-        ),
-    ])
-    .gap(Dp::new(SPACE_S))
-    .align(ViewAlign::Center)
-    .width(Dp::new(ITEM_WIDTH));
+    let nav = div().flex().flex_col().gap(px(2.0)).children(
+        Page::ALL
+            .into_iter()
+            .map(|page| nav_item(app, page, theme, cx)),
+    );
 
     // 主操作：运行中用普通按钮（停止是「收尾」动作），未运行用主按钮强调。
     let action = if snap.status.is_active() {
-        button(t("停止", "Stop")).on_click(Msg::Stop)
+        super::widgets::text_action(
+            "sidebar-stop",
+            t("停止", "Stop"),
+            theme,
+            cx.listener(|this, _, _, cx| this.handle(Msg::Stop, cx)),
+        )
+        .w_full()
     } else {
-        primary_button(t("启动", "Start")).on_click(Msg::Start)
+        primary_button(
+            "sidebar-start",
+            t("启动", "Start"),
+            theme,
+            cx.listener(|this, _, _, cx| this.handle(Msg::Start, cx)),
+        )
+        .w_full()
     };
 
-    column([
-        brand,
-        spacer().height(Dp::new(SPACE_XL)),
-        nav,
-        spacer().flex(1.0),
+    div()
+        .flex()
+        .flex_col()
+        .flex_none()
+        .w(px(SIDEBAR_WIDTH))
+        .h_full()
+        .p(px(SIDEBAR_PADDING))
+        .gap(px(SPACE_S))
+        .bg(theme.surface())
+        .child(brand)
+        .child(div().flex_none().h(px(SPACE_XL)))
+        .child(nav)
+        .child(div().flex_1())
         // 底部操作区：一条发丝线把「导航」和「状态 + 启停」分开，
         // 否则状态那一行悬在空白里，读起来像是没画完。
-        hairline(),
-        status,
-        action.width(Dp::new(ITEM_WIDTH)),
-    ])
-    .width(Dp::new(SIDEBAR_WIDTH))
-    .padding(Dp::new(SIDEBAR_PADDING))
-    .gap(Dp::new(SPACE_S))
-    .align(ViewAlign::Stretch)
-    // 底色用 Surface 而不是白色：zsui 的 Windows 浅色主题把导航项选中底
-    // （`ColorRole::Control`）画成纯白，在白底侧边栏上等于看不见，只剩左侧
-    // 那条 3dp 竖条。底色降成灰，选中项就自然浮出一块白胶囊（WinUI 的做法）。
-    // 侧边栏与内容区靠右侧那道发丝描边分开。
-    .bg(ThemeColorToken::Surface)
+        .child(hairline(theme))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(SPACE_S))
+                .px(px(4.0))
+                .child(dot(color))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_size(px(TEXT_BODY))
+                        .text_color(color)
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .whitespace_nowrap()
+                        .child(status_text),
+                ),
+        )
+        .child(action)
 }
 
 /// 收起形态：只剩一列图标。
-///
-/// 每个导航项照 WinUI 的 compact 版式：40×36 的项，选中时铺一层浅底
-/// （`Control`）并在最左画一条 3×16 的强调色竖条。未选中时竖条不画，
-/// 但仍占着那 3dp——否则选中时图标会横跳 1.5dp。
-fn rail(app: &App, snap: &Snapshot) -> ViewNode<Msg> {
-    let (status_text, _color) = status_label(&snap.status);
+fn rail(app: &UiApp, snap: &Snapshot, theme: &Theme, cx: &mut Context<UiApp>) -> Div {
+    let (status_text, color) = status_label(&snap.status, theme);
 
-    let nav = column(Page::ALL.into_iter().map(|page| rail_item(app, page)))
-        .gap(Dp::new(2.0))
-        .align(ViewAlign::Center);
+    let nav = div().flex().flex_col().items_center().gap(px(2.0)).children(
+        Page::ALL
+            .into_iter()
+            .map(|page| rail_item(app, page, theme, cx)),
+    );
 
-    // 状态只剩一个色点：文字挤不进 48dp，颜色 + tooltip 足够。
-    let status = column([dot(status_color(&snap.status))])
-        .tooltip(status_text)
-        .align(ViewAlign::Center);
-
-    // 启停按钮：和导航项同一套渲染（`navigation_item`）。
-    //
-    // 试过三种写法，只有这一种在图标栏里站得住：
-    // - `primary_button(t("启", "Go"))`：按钮有平台最小宽度（约 120dp），会把 48dp
-    //   的图标栏撑成一条胖栏；
-    // - `icon_button`：能压到 40dp，但它画的是「Control 底 + 1dp 描边」的
-    //   方框，和旁边无边框的导航项摆在一起就是两种控件。
-    // 导航项样式 + 上方一条发丝线：形状与其它项一致，位置（底部、分隔线下）
-    // 与 tooltip 说明它是动作而不是第六个页面。图标集里没有播放三角，
-    // 用纸飞机（Send）表示「把流量发出去」，方块（Stop）表示停。
+    // 启停按钮：和导航项同一套渲染（同样的方框、同样的悬停态）。
+    // 图标集里「启动」用播放三角，「停止」用方块。
     let (action_label, action_icon, action_msg) = if snap.status.is_active() {
-        (t("停止", "Stop"), ZsIcon::Stop, Msg::Stop)
+        (t("停止", "Stop"), DefaultIcons::stop(), Msg::Stop)
     } else {
-        (t("启动", "Start"), ZsIcon::Send, Msg::Start)
+        (t("启动", "Start"), DefaultIcons::play(), Msg::Start)
     };
-    let action = navigation_item("", action_icon, false)
-        .width(Dp::new(RAIL_ITEM_WIDTH))
-        .tooltip(action_label)
-        .on_click(action_msg);
+    let action = div()
+        .id("rail-action")
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .w(px(RAIL_ITEM_WIDTH))
+        .h(px(ITEM_HEIGHT))
+        .rounded(px(6.0))
+        .cursor_pointer()
+        .hover(|style| style.bg(theme.surface_secondary()))
+        .tooltip(gpuikit::elements::tooltip::tooltip(action_label))
+        .on_click(cx.listener(move |this, _, _, cx| this.handle(action_msg.clone(), cx)))
+        .child(
+            div()
+                .w(px(16.0))
+                .h(px(16.0))
+                .text_color(theme.fg_muted())
+                .child(action_icon),
+        );
 
-    column([
-        // 收起态也留一个收起按钮：它管的是侧边栏自己，两种形态下都得够得着。
-        // 图标栏里它和导航项一样宽（40），对齐后是一条直线。
-        row([toggle(app)]).align(ViewAlign::Center),
-        nav,
-        spacer().flex(1.0),
-        status,
-        hairline(),
-        action,
-    ])
-    .width(Dp::new(RAIL_WIDTH))
-    .padding(Dp::new(RAIL_PADDING))
-    .gap(Dp::new(SPACE_S))
-    .align(ViewAlign::Center)
-    .bg(ThemeColorToken::Surface)
+    div()
+        .flex()
+        .flex_col()
+        .items_center()
+        .flex_none()
+        .w(px(RAIL_WIDTH))
+        .h_full()
+        .p(px(RAIL_PADDING))
+        .gap(px(SPACE_S))
+        .bg(theme.surface())
+        .child(toggle(app, theme, cx))
+        .child(nav)
+        .child(div().flex_1())
+        // 状态只剩一个色点：文字挤不进 52dp，颜色 + tooltip 足够。
+        .child(
+            div()
+                .id("rail-status")
+                .flex_none()
+                .tooltip(gpuikit::elements::tooltip::tooltip(status_text))
+                .child(dot(color)),
+        )
+        .child(hairline(theme))
+        .child(action)
 }
 
 /// 侧边栏的收起/展开按钮。
 ///
 /// 长在侧边栏里，而不是内容区顶栏：它管的是侧边栏，就该贴着侧边栏——
 /// 跑到内容区标题旁边，看起来像是在管「当前这一页」。
-///
-/// 展开态它和程序名同一行、靠右（行里用 `push()` 顶开）；收起态它单独占
-/// 顶行居中。两种形态用同一个图标（WinUI 的 hamburger 也这样）：图标代表
-/// 「侧边栏」，不是「收起」或「展开」中的某一个方向，所以不需要换图标。
-pub fn toggle(app: &App) -> ViewNode<Msg> {
+fn toggle(app: &UiApp, _theme: &Theme, cx: &mut Context<UiApp>) -> impl IntoElement {
     let label = if app.sidebar_collapsed {
         t("展开侧边栏", "Expand sidebar")
     } else {
         t("收起侧边栏", "Collapse sidebar")
     };
-    // 用 navigation_item 而不是 icon_button：icon_button 会画出「Control 底 + 1dp
-    // 描边」的方框，和旁边无边框的导航项摆在一起像两种控件。导航项样式与它们同源。
-    //
-    // 宽度固定 40（`RAIL_ITEM_WIDTH`），不要为了塞下更大的程序名去压窄它：
-    // Windows 导航项内部是「40dp 图标框 + 16dp 字形」，字形在 40dp 里居中。
-    // 把控件压到 32dp 并不会把图标框缩小，而是把 40dp 的框裁掉右边 8dp——
-    // 字形就偏到中心右边去了（看起来就是「图标没在按钮里居中」）。
-    // 两种形态都用 40：展开态与下面的导航项、收起态与图标栏都是一条直线。
-    navigation_item("", ZsIcon::Sidebar, false)
-        .width(Dp::new(RAIL_ITEM_WIDTH))
-        .tooltip(label)
-        .on_click(Msg::ToggleSidebar)
+    icon_button("sidebar-toggle", DefaultIcons::panel_left())
+        .tooltip(gpuikit::elements::tooltip::tooltip(label))
+        .on_click(cx.listener(|this, _, _, cx| this.handle(Msg::ToggleSidebar, cx)))
 }
 
-/// 收起态的一个导航项。
+/// 展开态的一个导航项：图标 + 文字，选中时强调色底 + 左侧竖条。
+fn nav_item(
+    app: &UiApp,
+    page: Page,
+    theme: &Theme,
+    cx: &mut Context<UiApp>,
+) -> impl IntoElement {
+    let selected = app.page == page;
+    let fg = if selected {
+        theme.accent()
+    } else {
+        theme.fg()
+    };
+    let accent = theme.accent();
+
+    div()
+        .id(("nav", page.slot()))
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(10.0))
+        .h(px(ITEM_HEIGHT))
+        .w_full()
+        .pl(px(8.0))
+        .pr(px(8.0))
+        .rounded(px(6.0))
+        .cursor_pointer()
+        .when(selected, |style| style.bg(theme.accent_bg()))
+        .when(!selected, |style| {
+            style.hover(|style| style.bg(theme.surface_secondary()))
+        })
+        .on_click(cx.listener(move |this, _, _, cx| this.handle(Msg::PageSelected(page), cx)))
+        // 选中指示条：NavigationView 的那条 3×16 竖条。未选中时不画，
+        // 但仍占着这 3dp——否则选中时图标会横跳 1.5dp。
+        .child(
+            div()
+                .flex_none()
+                .w(px(3.0))
+                .h(px(16.0))
+                .rounded(px(2.0))
+                .bg(if selected { accent } else { theme.surface() }),
+        )
+        .child(
+            div()
+                .flex_none()
+                .w(px(18.0))
+                .h(px(18.0))
+                .text_color(fg)
+                .child(page_icon(page)),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_size(px(TEXT_BODY))
+                .text_color(fg)
+                .overflow_hidden()
+                .text_ellipsis()
+                .whitespace_nowrap()
+                .child(page.label()),
+        )
+}
+
+/// 收起态的一个导航项：只有图标，名字由 tooltip 提供。
+fn rail_item(
+    app: &UiApp,
+    page: Page,
+    theme: &Theme,
+    cx: &mut Context<UiApp>,
+) -> impl IntoElement {
+    let selected = app.page == page;
+    let fg = if selected {
+        theme.accent()
+    } else {
+        theme.fg_muted()
+    };
+
+    div()
+        .id(("rail", page.slot()))
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .w(px(RAIL_ITEM_WIDTH))
+        .h(px(ITEM_HEIGHT))
+        .rounded(px(6.0))
+        .cursor_pointer()
+        .when(selected, |style| style.bg(theme.accent_bg()))
+        .when(!selected, |style| {
+            style.hover(|style| style.bg(theme.surface_secondary()))
+        })
+        .tooltip(gpuikit::elements::tooltip::tooltip(page.label()))
+        .on_click(cx.listener(move |this, _, _, cx| this.handle(Msg::PageSelected(page), cx)))
+        .child(
+            div()
+                .w(px(18.0))
+                .h(px(18.0))
+                .text_color(fg)
+                .child(page_icon(page)),
+        )
+}
+
+/// 导航项的图标。
 ///
-/// 用 `navigation_item` 而不是 `icon_button`：前者就是 NavigationView 的项
-/// （选中铺浅底 + 左侧 3×16 强调色竖条 + 40dp 图标框），和展开态是同一套
-/// 渲染；后者是「带边框的方按钮」，一排方框叠在侧边栏里像工具栏，不像导航。
-///
-/// 标签传空字符串：图标栏只有 40dp，文字画上去会溢出到内容区。名字改由
-/// tooltip 提供。
-fn rail_item(app: &App, page: Page) -> ViewNode<Msg> {
-    navigation_item("", page.icon(), app.page == page)
-        .width(Dp::new(RAIL_ITEM_WIDTH))
-        .tooltip(page.label())
-        .on_click(Msg::PageSelected(page))
+/// 图标要能一眼看出「这页管什么」：
+/// 仪表盘 = 总览（dashboard），代理配置 = 参数（齿轮），
+/// 网络与绕过 = 分流地址（图钉），程序与日志 = 时间线输出（逆时针时钟）。
+pub fn page_icon(page: Page) -> Svg {
+    match page {
+        Page::Dashboard => DefaultIcons::dashboard(),
+        Page::Profiles => DefaultIcons::gear(),
+        Page::Network => DefaultIcons::sewing_pin(),
+        Page::Program => DefaultIcons::counter_clockwise_clock(),
+    }
 }
 
 /// 版本胶囊的文字：装好了显示版本号，没装就直说。
@@ -259,4 +361,9 @@ fn version_label(snap: &Snapshot) -> String {
         .clone()
         .map(|v| format!("tun2proxy v{v}"))
         .unwrap_or_else(|| t("tun2proxy 未安装", "tun2proxy not installed").to_string())
+}
+
+/// 版本胶囊的文字颜色。
+fn color_accent(theme: &Theme) -> gpui::Hsla {
+    theme.accent()
 }

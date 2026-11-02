@@ -92,7 +92,7 @@ jobs:
             app.rc
           grep -E '^(FILEVERSION|PRODUCTVERSION)|VALUE "(File|Product)Version"' app.rc
 
-      # Cargo.toml 里 rust-version = "1.90"，stable 已满足。
+      # Cargo.toml 里 rust-version = "1.95"，stable 已满足。
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
 

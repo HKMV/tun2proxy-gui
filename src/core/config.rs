@@ -430,7 +430,22 @@ impl Config {
         };
 
         let mut config = if value.get("profiles").is_some() {
-            serde_json::from_value::<Config>(value).unwrap_or_default()
+            // 反序列化失败时不能静默换成默认值：那样用户看到的是一份
+            // 「配置丢了」的界面，却没有任何错误说明。至少要留下一条日志。
+            match serde_json::from_value::<Config>(value) {
+                Ok(config) => config,
+                Err(err) => {
+                    eprintln!(
+                        "{}",
+                        tr_format!(
+                            "配置文件 {} 的字段无法识别：{err}",
+                            "The config file {} has invalid fields: {err}",
+                            path.display()
+                        )
+                    );
+                    Config::default()
+                }
+            }
         } else {
             // 旧格式：整份文件就是一套配置。
             let profile: Profile = serde_json::from_value(value.clone()).unwrap_or_default();

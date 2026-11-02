@@ -1,26 +1,31 @@
 //! 可复用的视图小部件与设计常量。
 //!
-//! 所有间距、字号、颜色都从这里取，卡片里不再出现散落的魔法数字：
-//! 改一处就能让五个页面一起对齐。样式规则只有三条：
+//! 版式规则只有三条，全部取自 gpuikit 自己的尺度，不另起一套：
 //!
-//! 1. **间距用 4 的倍数**（[`SPACE_XS`] … [`SPACE_XL`]）；
-//! 2. **可换行的文字必须把 wrap 写进样式**（见 [`wrapped`]）；
-//! 3. **行内标签一律不换行**（见 [`caption_nowrap`]），否则会被压成竖条。
+//! 1. **尺寸走 `ControlScale`**：按钮、图标按钮、徽标的高度 / 圆角 / 字号都
+//!    从 `theme.control(size)` 取，和 gpuikit 的 `Button`、`IconButton`、
+//!    `Badge` 逐像素对齐——摆在同一行不会一大一小；
+//! 2. **颜色一律走主题语义色**（`theme.fg()` / `theme.surface()` …），
+//!    卡片里不写十六进制，换肤时整窗一起变；
+//! 3. **可换行的文字要占满剩余宽度**（`flex_1` + `min_w_0`），
+//!    否则行内文字会按「最宽不可断词」测量，中文会被压成一列竖排的字。
+//!
+//! gpuikit 有的组件一律用它的（按钮、图标按钮、勾选框、输入框、下拉框、
+//! 对话框、徽标）。只有三样东西它没有，才自己画，且形状贴着它的 `Card`：
+//! **强调色实心主按钮**、**图标 + 文字的行内动作**、**设置分组卡片**。
 
-use zsui::{
-    button, column, icon_button, row, spacer, styled_text, toolbar_button, ColorRole, Dp,
-    HorizontalAlign, SemanticTextStyle, TextRole, TextWeight, TextWrap, ThemeColorToken, ViewAlign,
-    ViewNode, ZsBaseControlMetrics, ZsIcon,
+use gpui::{
+    AnyElement, App, ClickEvent, Div, ElementId, Hsla, IntoElement, SharedString, Stateful, Svg,
+    Window, div, px, prelude::*, rems,
 };
+use gpuikit::elements::checkbox::{CheckState, checkbox_box};
+use gpuikit::elements::icon_button::icon_button;
+use gpuikit::elements::tooltip::tooltip;
+use gpuikit::theme::{ControlSize, Theme, Themeable};
 
-/// 内容区滚动容器的控件 id。
-///
-/// ZSUI 的滚轮事件是「按 id 投递」的：容器没有 id 就收不到滚动，
-/// 而且滚动位置也靠 id 在重建之间恢复。
-pub const CONTENT_SCROLL_ID: u64 = 0x7475_6e32_0001;
-
-/// 日志区滚动容器的控件 id。
-pub const LOG_SCROLL_ID: u64 = 0x7475_6e32_0002;
+use super::theme::{
+    TEXT_BODY, TEXT_GROUP, TEXT_HERO, TEXT_MONO, TEXT_SMALL, TEXT_TITLE, WEIGHT_SEMIBOLD,
+};
 
 /// 日志区高度（逻辑像素）。
 ///
@@ -34,268 +39,191 @@ pub const SPACE_XS: f32 = 4.0;
 pub const SPACE_S: f32 = 8.0;
 /// 卡片内部的行间距。
 pub const SPACE_M: f32 = 12.0;
-/// 页面留白、卡片之间的间距。
 /// 大区块之间的间距。
 pub const SPACE_XL: f32 = 24.0;
 
 /// 内容区四周留白。
 ///
-/// 比卡片间距（[`SPACE_L`]）大一圈：卡片与窗口边缘之间要有空气，
-/// 卡片才像「浮在底色上」，而不是贴边铺满。
+/// 比卡片间距大一圈：卡片与窗口边缘之间要有空气，卡片才像「浮在底色上」，
+/// 而不是贴边铺满。
 pub const CONTENT_PADDING: f32 = 16.0;
 
-/// 程序图标（64×64 RGBA，从 `assets/brand-64.rgba` 编进来）。
+/// 行内边距。取 gpuikit `Card` 的 `p(0.75rem)`：分组卡片里的一行，
+/// 与一张普通卡片的留白是同一个数。
+pub const ROW_PADDING: f32 = 12.0;
+/// 卡片圆角。gpuikit 的 `Card` 是 `rounded(0.5rem)`。
+pub const CARD_RADIUS: f32 = 8.0;
+/// 分组卡片的圆角：与浮动卡片同值，两类卡片在同一屏里才是同一种圆。
+pub const GROUP_RADIUS: f32 = CARD_RADIUS;
+/// 行前导图标的尺寸。取 `ControlSize::Large` 的 `ink`。
+pub const ROW_ICON: f32 = 16.0;
+/// 行右侧控件的常用宽度（下拉框、输入框）。
 ///
-/// 编成裸 RGBA 而不是 PNG：ZSUI 的 `image()` 只收解码好的帧，
-/// 而 PNG 解码在 ZSUI 里是异步的（`ZsImagePreviewState`），第一帧会是空白。
-/// 64×64×4 = 16KB，比拖一个解码器划算。
-/// 允许换行的文字样式：在可用宽度内按词换行。
-///
-/// 注意：`ViewNode::text_wrap()` 只对**多行输入框**生效，对普通文字无效，
-/// 换行必须写进 [`SemanticTextStyle::wrap`]，否则文字会一直单行、
-/// 超出卡片后被窗口裁掉。
-fn wrapped(mut style: SemanticTextStyle) -> SemanticTextStyle {
-    style.wrap = TextWrap::Word;
-    style
-}
+/// 任务管理器里右侧控件是一列对齐的窄控件，而不是铺满整行：
+/// 铺满会让「标题」和「它的值」隔着一整个屏幕，读起来要来回扫。
+pub const ROW_CONTROL: f32 = 220.0;
+/// 窄控件（数字输入框）的宽度。
+pub const ROW_CONTROL_NARROW: f32 = 120.0;
 
 // —— 文字 ——
-//
-// 字号只有四档，改字号时只改这里，不要在各个卡片里单独写 `TextRole`：
-//
-// | 用途 | 角色 | 字号 |
-// | --- | --- | --- |
-// | 页标题（顶栏） | `Title` | 28 |
-// | 分组标题、品牌名 | `BodyLarge` | 18 |
-// | 正文、行标题、说明、胶囊 | `Body` | 14 |
-// | 日志 | `Monospace` | 13 |
-//
-// 说明文字不再用 `Caption`（12）：12px 的次要文字在 125% 缩放下还能读，
-// 在 100% 缩放下就偏小了，而界面里最常读的恰好是这些「灰说明」。
-// 层级靠颜色（`SecondaryText`）和粗细区分，不再靠 12 与 14 这 2dp 的差距——
-// 2dp 的差距读者根本分辨不出来，只会一起显得小。
 
 /// 页面标题（顶栏用）。
-///
-/// 用 `Title`（28）而不是 `Subtitle`（20）：顶栏要和内容区拉开差距，
-/// 否则跟分组标题（18）只差 2dp，层级糊成一片。
-pub fn page_title<M: 'static>(text: impl Into<String>) -> ViewNode<M> {
-    styled_text(
-        text,
-        SemanticTextStyle {
-            weight: TextWeight::Semibold,
-            ..SemanticTextStyle::for_role(TextRole::Title)
-        },
-    )
+pub fn page_title(text: impl Into<SharedString>, theme: &Theme) -> Div {
+    div()
+        .text_size(px(TEXT_TITLE))
+        .font_weight(WEIGHT_SEMIBOLD)
+        .text_color(theme.fg())
+        .whitespace_nowrap()
+        .child(text.into())
 }
 
-/// 1dp 发丝线：分隔顶栏与内容区、卡片内的分区。
-///
-/// ZSUI 没有描边 API，但 `spacer` 支持 `bg`——一条 1dp 高、铺满宽度的
-/// 浅灰长条就是视觉上的一条线，比给容器加边框便宜得多。
-pub fn hairline<M: 'static>() -> ViewNode<M> {
-    spacer()
-        .height(Dp::new(1.0))
-        .flex(0.0)
-        .bg(ThemeColorToken::Border)
+/// 首屏大标题。
+pub fn hero_title(text: impl Into<SharedString>, theme: &Theme) -> Div {
+    div()
+        .text_size(px(TEXT_HERO))
+        .font_weight(WEIGHT_SEMIBOLD)
+        .text_color(theme.fg())
+        .child(text.into())
 }
 
-/// 竖发丝线：两侧区域之间的 1dp 分隔。
-///
-/// 横向拉伸交给父级 `row` 的 `align(Stretch)`：它会把这条线拉成整列高，
-/// 不需要（也不应该）写死高度。
-pub fn v_hairline<M: 'static>() -> ViewNode<M> {
-    column([])
-        .width(Dp::new(1.0))
-        .flex(0.0)
-        .bg(ThemeColorToken::Border)
-        .align(ViewAlign::Stretch)
+/// 分组标题：卡片外面那行加粗小字。
+pub fn group_label(text: impl Into<SharedString>, theme: &Theme) -> Div {
+    div()
+        .text_size(px(TEXT_GROUP))
+        .font_weight(WEIGHT_SEMIBOLD)
+        .text_color(theme.fg())
+        .child(text.into())
 }
 
-/// 不换行的说明文字：用在「一行里和按钮/开关并排」的场合。
-///
-/// 可换行的文字在行内会被压缩到很窄（行布局按内在宽度分配），
-/// 于是标签被折成竖条，所以行内的标签一律用这个。
-///
-/// 字号是 `Body`（14）而不是 `Caption`（12）：这个函数产出的都是要读的句子
-/// （顶栏右侧的页面说明、实时流量的标签），不是标注。
-pub fn caption_nowrap<M: 'static>(text: impl Into<String>) -> ViewNode<M> {
-    styled_text(text, SemanticTextStyle::for_role(TextRole::Body))
+/// 次要色的说明文字，可以换行。
+pub fn hint(text: impl Into<SharedString>, theme: &Theme) -> Div {
+    div()
+        .text_size(px(TEXT_SMALL))
+        .text_color(theme.fg_muted())
+        .child(text.into())
 }
 
-/// 正文大小的次要色文字，用于状态提示。可以换行。
-pub fn hint<M: 'static>(text: impl Into<String>) -> ViewNode<M> {
-    styled_text(
-        text,
-        wrapped(SemanticTextStyle {
-            color: ColorRole::SecondaryText,
-            ..SemanticTextStyle::body()
-        }),
-    )
+/// 带颜色的说明文字（结论类：检测成功 / 失败）。
+///
+/// 颜色由调用方给（成功 / 危险 / 警告），所以这里的 `theme` 用不上——
+/// 留着参数是为了让所有文字样式的签名一致，调用处不必记住「哪些要主题」。
+pub fn hint_tone(text: impl Into<SharedString>, color: Hsla, _theme: &Theme) -> Div {
+    div()
+        .text_size(px(TEXT_SMALL))
+        .text_color(color)
+        .child(text.into())
 }
 
 /// 错误提示：危险色。
-pub fn error_text<M: 'static>(text: impl Into<String>) -> ViewNode<M> {
-    styled_text(
-        text,
-        wrapped(SemanticTextStyle {
-            color: ColorRole::Danger,
-            ..SemanticTextStyle::body()
-        }),
-    )
+pub fn error_text(text: impl Into<SharedString>, theme: &Theme) -> Div {
+    div()
+        .text_size(px(TEXT_SMALL))
+        .text_color(theme.danger())
+        .child(text.into())
 }
 
 /// 日志行：等宽字体，方便对齐时间戳与级别。
-pub fn log_line<M: 'static>(text: impl Into<String>) -> ViewNode<M> {
-    // 日志行可能很长（带路径），允许换行，避免撑宽整张卡片。
-    styled_text(
-        text,
-        wrapped(SemanticTextStyle {
-            role: TextRole::Monospace,
-            color: ColorRole::SecondaryText,
-            ..SemanticTextStyle::for_role(TextRole::Monospace)
-        }),
-    )
+pub fn log_line(text: impl Into<SharedString>, theme: &Theme) -> Div {
+    div()
+        .text_size(px(TEXT_MONO))
+        .font_family(super::theme::MONO_FAMILY)
+        .text_color(theme.fg_muted())
+        .child(text.into())
+}
+
+/// 不换行的说明文字：用在「一行里和按钮/开关并排」的场合。
+pub fn caption_nowrap(text: impl Into<SharedString>, theme: &Theme) -> Div {
+    div()
+        .text_size(px(TEXT_BODY))
+        .text_color(theme.fg())
+        .whitespace_nowrap()
+        .child(text.into())
+}
+
+/// 行右侧的「值」：次要色、单行、过长就省略。
+pub fn row_value(text: impl Into<SharedString>, theme: &Theme) -> Div {
+    div()
+        .text_size(px(TEXT_BODY))
+        .text_color(theme.fg_muted())
+        .whitespace_nowrap()
+        .overflow_hidden()
+        .text_ellipsis()
+        .child(text.into())
 }
 
 // —— 容器 ——
 
-/// 胶囊标签：浅底 + 小字，用于在标题上方标出状态（未连接 / 运行中）。
+/// 1dp 发丝线：分隔顶栏与内容区、卡片内的分区。
 ///
-/// 两侧用 0 宽度的 `spacer` 撑出水平留白——ZSUI 的 `padding` 是四边等宽的，
-/// 直接给 4dp 会让胶囊左右过于局促，看起来不像胶囊而像一块补丁。
-///
-/// 字用 `Body`（14）：胶囊里的「未运行」「tun2proxy v0.8.6」是要读的状态，
-/// 12px 时在侧边栏那一小块灰底上几乎糊成一团。
-pub fn pill<M: 'static>(text: impl Into<String>, color: ColorRole) -> ViewNode<M> {
-    row([
-        spacer().width(Dp::new(SPACE_XS)),
-        styled_text(
-            text,
-            SemanticTextStyle {
-                color,
-                ..SemanticTextStyle::for_role(TextRole::Body)
-            },
-        ),
-        spacer().width(Dp::new(SPACE_XS)),
-    ])
-    .gap(Dp::new(0.0))
-    .padding(Dp::new(SPACE_XS))
-    .radius(Dp::new(999.0))
-    // 底色用 `Border` 而不是 `Control`：卡片底色是 `SurfaceRaised`（白），
-    // `Control` 也是白调，胶囊贴在卡片上会「看不见」——只有文字浮在半空。
-    // `Border` 是可见的浅灰，在白底与侧边栏上都能看清边界。
-    .bg(ThemeColorToken::Border)
-    .align(ViewAlign::Center)
-    .flex(0.0)
+/// 颜色用 `border_subtle()`，和 gpuikit 的 `Separator` 同一个色。
+pub fn hairline(theme: &Theme) -> Div {
+    div()
+        .h(px(1.0))
+        .w_full()
+        .flex_none()
+        .bg(theme.border_subtle())
 }
 
-/// 首屏主卡片：状态胶囊 + 主操作 + 大标题 + 一句说明。
+/// 竖发丝线：两侧区域之间的 1dp 分隔。
 ///
-/// 仪表盘用这张卡代替普通的页面标题栏——同一块区域既回答「现在什么状态」，
-/// 又给出「下一步做什么」，不必让用户在两处之间来回找。
-/// 标题必须允许换行：窄窗口下 `TitleLarge` 一行放不下，不换行就会被窗口裁掉。
-pub fn hero<M: 'static>(
-    badge: ViewNode<M>,
-    title: impl Into<String>,
-    desc: impl Into<String>,
-    action: Option<ViewNode<M>>,
-    extras: impl IntoIterator<Item = ViewNode<M>>,
-    side: Option<ViewNode<M>>,
-) -> ViewNode<M> {
-    // 主操作放在文字块下面、靠左：它属于「这一块内容」，不属于窗口。
-    // 摆在右上角时，鼠标要先滑到卡片另一端才能启动，视觉上还会把标题和
-    // 说明切断；左侧文字列读完就是按钮，动线是一条直线。
-    //
-    // 文字列必须 `align(Stretch)`：`row` 里的可换行文字按「最宽不可断词」
-    // 测量，列里的子项如果是 `Start` 就各自取这个最小宽度，标题会被切在
-    // 第一个空格处（“Tun2Proxy 未”）。拉成 Stretch 后文字拿到列的完整宽度，
-    // 才能按真正的行宽换行。胶囊不能跟着拉伸，所以用一行包住。
-    let mut lines = vec![
-        row([badge]).align(ViewAlign::Start),
-        styled_text(
-            title,
-            wrapped(SemanticTextStyle {
-                weight: TextWeight::Semibold,
-                ..SemanticTextStyle::for_role(TextRole::TitleLarge)
-            }),
-        ),
-        hint(desc),
-    ];
-    if let Some(action) = action {
-        lines.push(row([action]).align(ViewAlign::Start));
-    }
-
-    let text = column(lines)
-        // 胶囊→标题、标题→说明都留 12dp：比行间距宽一点，三行才不会挤成一段。
-        .gap(Dp::new(SPACE_M))
-        .align(ViewAlign::Stretch)
-        .flex(1.0);
-
-    let mut head = vec![text];
-    if let Some(side) = side {
-        head.push(side);
-    }
-
-    let mut children = vec![row(head).gap(Dp::new(SPACE_XL)).align(ViewAlign::Center)];
-    children.extend(extras);
-
-    stroked(
-        column(children)
-            // 说明行（报错 / 提示 / 权限）与上面那一组之间拉开距离，
-            // 否则它们会读成「标题说明的第四行」。
-            .gap(Dp::new(SPACE_M))
-            .padding(Dp::new(SPACE_XL))
-            .radius(Dp::new(CARD_RADIUS - CARD_STROKE))
-            .bg(ThemeColorToken::SurfaceRaised)
-            .align(ViewAlign::Stretch),
-    )
+/// 比 [`hairline`] 深一档：侧边栏与内容区是两块**并列**的面板，
+/// 深色主题下 `border_subtle()` 的分量不足以让边界立住。
+pub fn v_hairline(theme: &Theme) -> Div {
+    div().w(px(1.0)).h_full().flex_none().bg(theme.border())
 }
 
-/// 一行带图标的提示（权限不足、注意事项）。
+/// 胶囊标签：状态色 15% 底 + 同色文字，用于在标题上方标出状态。
 ///
-/// 图标负责一眼分类，文字保持 caption 尺寸，不抢首屏卡的主标题。
-///
-/// 文字要包一层 `column(...).align(Stretch).flex(1.0)`：`row` 里的可换行文字
-/// 按「最宽不可断词」测量，直接放进去会被压成一列竖排的汉字。
-pub fn notice<M: 'static>(icon: ZsIcon, tone: ColorRole, text: impl Into<String>) -> ViewNode<M> {
-    row([
-        zsui::icon(icon)
-            .icon_color(tone)
-            .width(Dp::new(16.0))
-            .height(Dp::new(16.0))
-            .min_width(Dp::new(16.0))
-            .min_height(Dp::new(16.0))
-            .flex(0.0),
-        column([hint(text)]).align(ViewAlign::Stretch).flex(1.0),
-    ])
-    .gap(Dp::new(SPACE_S))
-    .align(ViewAlign::Start)
+/// 形状照抄 gpuikit 的 `Badge`（高度 / 内边距 / 圆角 / 字号都取自
+/// `ControlScale`），只是把底色从 `accent()` 换成调用方给的状态色——
+/// 「未运行」和「运行中」必须是两种颜色，这一点 `Badge` 的四个固定变体
+/// 表达不了。
+pub fn pill(text: impl Into<SharedString>, color: Hsla, theme: &Theme) -> Div {
+    let metrics = theme.control(ControlSize::Medium);
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .h(metrics.height)
+        .px(metrics.padding_x)
+        .rounded(metrics.radius)
+        .text_size(metrics.text_size)
+        .font_weight(WEIGHT_SEMIBOLD)
+        .line_height(metrics.line_height)
+        .bg(color.opacity(0.15))
+        .text_color(color)
+        .whitespace_nowrap()
+        .child(text.into())
 }
 
-/// 卡片圆角。
-pub const CARD_RADIUS: f32 = 12.0;
-/// 卡片描边宽度。
-pub const CARD_STROKE: f32 = 1.0;
-
-/// 给任意节点套一圈 1dp 描边（`Border` 色），圆角用卡片圆角。
-fn stroked<M: 'static>(inner: ViewNode<M>) -> ViewNode<M> {
-    stroked_with(inner, CARD_RADIUS)
+/// 首屏卡右侧的流量色点。
+pub fn dot(color: Hsla) -> Div {
+    div()
+        .flex_none()
+        .w(px(8.0))
+        .h(px(8.0))
+        .rounded(px(4.0))
+        .bg(color)
 }
 
-/// 给任意节点套一圈 1dp 描边（`Border` 色），圆角可指定。
-fn stroked_with<M: 'static>(inner: ViewNode<M>, radius: f32) -> ViewNode<M> {
-    column([inner])
-        .padding(Dp::new(CARD_STROKE))
-        .radius(Dp::new(radius))
-        .bg(ThemeColorToken::Border)
-        .align(ViewAlign::Stretch)
-        .flex(0.0)
+/// 卡片外壳：surface 底 + 1dp 描边 + 0.5rem 圆角。
+///
+/// 与 gpuikit 的 `Card` 完全同一套：不再用「底色套一圈描边」的旧做法，
+/// 那种双层盒子在深色主题下会露出一圈亮边。
+fn stroked(inner: Div, radius: f32, theme: &Theme) -> Div {
+    div()
+        .flex_none()
+        .rounded(px(radius))
+        .border_1()
+        .border_color(theme.border())
+        .bg(theme.surface())
+        .overflow_hidden()
+        .child(inner)
 }
 
 // —— 设置分组（任务管理器的版式）——
 //
-// 一个分组 = 卡片外一行加粗小标题 + 一张白卡；卡片里是若干「行」，
+// 一个分组 = 卡片外一行加粗小标题 + 一张 surface 卡片；卡片里是若干「行」，
 // 行与行之间夹一条左右缩进的发丝线。行内部从左到右是：
 //
 // ```text
@@ -303,322 +231,314 @@ fn stroked_with<M: 'static>(inner: ViewNode<M>, radius: f32) -> ViewNode<M> {
 //         说明文字
 // ```
 //
-// 为什么不用一张卡一行：设置项多了以后，卡片之间的 16dp 间距会把页面拉得很长，
+// 为什么不用一张卡一行：设置项多了以后，卡片之间的间距会把页面拉得很长，
 // 而且每张卡都要单独描边，屏幕上全是框。分组把「同一类」的设置收进一张卡，
 // 靠行内的层级（标题 + 灰说明 + 右侧控件）区分，信息密度高得多。
 
-/// 行内边距（上下左右等宽）。
-///
-/// ZSUI 的 `padding` 是四边等宽的，所以这里只能选一个「上下不显肥、左右不显瘦」
-/// 的值：14dp 配上 32dp 左右的内容高度，行高约 60dp，和任务管理器相当。
-pub const ROW_PADDING: f32 = 14.0;
-/// 分组卡片的圆角（比浮动卡片小，分组更像列表）。
-pub const GROUP_RADIUS: f32 = 8.0;
-/// 行前导图标的尺寸。
-pub const ROW_ICON: f32 = 20.0;
-/// 行右侧控件的常用宽度（下拉框、输入框）。
-///
-/// 任务管理器里右侧控件是一列对齐的窄控件，而不是铺满整行：
-/// 铺满会让「标题」和「它的值」隔着一整个屏幕，读起来要来回扫。
-pub const ROW_CONTROL: f32 = 200.0;
-
-/// 分组标题：卡片外面那行加粗小字。
-///
-/// `BodyLarge`（18）：分组标题是页面的第二层结构（页标题 28 → 分组 18 → 行 14），
-/// 和行标题同为 14 时只能靠「加粗」区分，扫读时几乎看不出来。
-pub fn group_label<M: 'static>(text: impl Into<String>) -> ViewNode<M> {
-    styled_text(
-        text,
-        SemanticTextStyle {
-            weight: TextWeight::Semibold,
-            ..SemanticTextStyle::for_role(TextRole::BodyLarge)
-        },
-    )
-}
-
-/// 行的说明文字：小号、次要色、可换行。
-fn row_desc<M: 'static>(text: impl Into<String>) -> ViewNode<M> {
-    row_desc_tone(text, ColorRole::SecondaryText)
-}
-
-/// 带颜色的行说明：检测成功/失败这类结论要能一眼分出颜色。
-///
-/// 用 `Body`（14）而不是 `Caption`：行说明是设置项的主要阅读内容
-/// （「这些地址不走代理」「流量经它转发」），12px 太小。
-fn row_desc_tone<M: 'static>(text: impl Into<String>, color: ColorRole) -> ViewNode<M> {
-    styled_text(
-        text,
-        wrapped(SemanticTextStyle {
-            color,
-            ..SemanticTextStyle::for_role(TextRole::Body)
-        }),
-    )
-}
-
 /// 行的前导图标。
-pub fn row_icon<M: 'static>(icon: ZsIcon) -> ViewNode<M> {
-    zsui::icon(icon)
-        .width(Dp::new(ROW_ICON))
-        .height(Dp::new(ROW_ICON))
-        .min_width(Dp::new(ROW_ICON))
-        .min_height(Dp::new(ROW_ICON))
-        .flex(0.0)
+pub fn row_icon(icon: Svg, theme: &Theme) -> Div {
+    div()
+        .flex_none()
+        .w(px(ROW_ICON))
+        .h(px(ROW_ICON))
+        .text_color(theme.fg_muted())
+        .child(icon)
 }
 
 /// 一行设置。
 ///
-/// `leading` 一般是 [`row_icon`] 或单选圈，`trailing` 是控件或 [`row_value`]。
+/// `leading` 一般是 [`row_icon`]，`trailing` 是控件或 [`row_value`]。
 /// 两者都可省略：省略 `trailing` 就是纯说明行（比如日志块）。
-pub fn setting_row<M: 'static>(
-    leading: Option<ViewNode<M>>,
-    title: impl Into<String>,
+pub fn setting_row(
+    leading: Option<AnyElement>,
+    title: impl Into<SharedString>,
     desc: Option<String>,
-    trailing: Option<ViewNode<M>>,
-) -> ViewNode<M> {
-    setting_row_tone(leading, title, desc, None, trailing)
-}
-
-/// 和 [`setting_row`] 一样，但可以给说明文字指定颜色（结论类文字用）。
-pub fn setting_row_tone<M: 'static>(
-    leading: Option<ViewNode<M>>,
-    title: impl Into<String>,
-    desc: Option<String>,
-    desc_tone: Option<ColorRole>,
-    trailing: Option<ViewNode<M>>,
-) -> ViewNode<M> {
-    let mut texts = vec![styled_text(
-        title,
-        SemanticTextStyle::for_role(TextRole::Body),
-    )];
+    desc_tone: Option<Hsla>,
+    trailing: Option<AnyElement>,
+    theme: &Theme,
+) -> Div {
+    let mut texts = div().flex_col().gap(px(SPACE_XS)).flex_1().min_w_0().child(
+        div()
+            .text_size(px(TEXT_BODY))
+            .text_color(theme.fg())
+            .child(title.into()),
+    );
     if let Some(desc) = desc {
-        texts.push(match desc_tone {
-            Some(color) => row_desc_tone(desc, color),
-            None => row_desc(desc),
+        texts = texts.child(match desc_tone {
+            Some(color) => hint_tone(desc, color, theme),
+            None => hint(desc, theme),
         });
     }
 
-    let mut children = Vec::with_capacity(3);
+    let mut row = div()
+        .flex()
+        .items_center()
+        .gap(px(SPACE_M))
+        .px(px(ROW_PADDING))
+        .py(px(ROW_PADDING));
     if let Some(leading) = leading {
-        children.push(leading);
+        row = row.child(leading);
     }
-    // 文字列必须 `Stretch`：`Start` 会让可换行的说明取「最小宽度」（最长单词），
-    // 中文没有空格，于是整句只剩前两个字。拉伸后它占满剩余宽度再按宽度换行。
-    children.push(
-        column(texts)
-            .gap(Dp::new(SPACE_XS))
-            .align(ViewAlign::Stretch)
-            .flex(1.0),
-    );
+    row = row.child(texts);
     if let Some(trailing) = trailing {
-        children.push(trailing);
+        row = row.child(div().flex_none().child(trailing));
     }
-
-    row(children)
-        .gap(Dp::new(SPACE_M))
-        .padding(Dp::new(ROW_PADDING))
-        .align(ViewAlign::Center)
-}
-
-/// 行右侧的「值」：右对齐、次要色、单行。
-///
-/// 值太长时会被压缩——所以调用方要传已经截短的文本（比如代理地址用摘要）。
-pub fn row_value<M: 'static>(text: impl Into<String>) -> ViewNode<M> {
-    styled_text(
-        text,
-        SemanticTextStyle {
-            color: ColorRole::SecondaryText,
-            horizontal_align: HorizontalAlign::End,
-            ..SemanticTextStyle::body()
-        },
-    )
-    .flex(0.0)
-}
-
-/// 行右侧的一组图标按钮。
-///
-/// 间距用 8 而不是 4：右侧常见的是「一长串数值 + 铅笔」这种组合，
-/// 4dp 会让按钮看起来贴在文字上（比如上游代理那行的 `socks5://… · DNS 直连`）。
-pub fn row_actions<M: 'static>(children: impl IntoIterator<Item = ViewNode<M>>) -> ViewNode<M> {
-    row(children)
-        .gap(Dp::new(SPACE_S))
-        .align(ViewAlign::Center)
-        .flex(0.0)
-}
-
-/// 动作行：右侧一排按钮，左边不占文字宽度。
-///
-/// 带说明文字的「行 + 多个按钮」在小窗口下会把按钮推出卡片（ZSUI 不压缩控件，
-/// 直接裁掉），所以按钮多的时候单独占一行，行里只放按钮。
-pub fn action_row<M: 'static>(actions: impl IntoIterator<Item = ViewNode<M>>) -> ViewNode<M> {
-    let mut children = vec![push()];
-    children.extend(actions);
-    row(children)
-        .gap(Dp::new(SPACE_S))
-        .padding(Dp::new(ROW_PADDING))
-        .align(ViewAlign::Center)
+    row
 }
 
 /// 行与行之间的发丝线，左右缩进一个 [`ROW_PADDING`]，和行内容对齐。
-pub fn row_divider<M: 'static>() -> ViewNode<M> {
-    row([
-        spacer().width(Dp::new(ROW_PADDING)).flex(0.0),
-        hairline().flex(1.0),
-        spacer().width(Dp::new(ROW_PADDING)).flex(0.0),
-    ])
-    .gap(Dp::new(0.0))
-    .align(ViewAlign::Center)
-    .flex(0.0)
+///
+/// 用 `border()` 而不是 `border_subtle()`：卡片本身就是 `border()` 的描边，
+/// 行分隔再淡一档，深色主题下整张卡会读成一块没有结构的色块。
+pub fn row_divider(theme: &Theme) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .flex_none()
+        .px(px(ROW_PADDING))
+        .child(
+            div()
+                .h(px(1.0))
+                .w_full()
+                .flex_none()
+                .bg(theme.border()),
+        )
 }
 
-/// 一张分组卡片：白底 + 1dp 描边 + 小圆角，行之间夹发丝线。
-pub fn group_card<M: 'static>(rows: impl IntoIterator<Item = ViewNode<M>>) -> ViewNode<M> {
-    let mut children = Vec::new();
-    for (index, node) in rows.into_iter().enumerate() {
+/// 一张分组卡片：surface 底 + 1dp 描边 + 小圆角，行之间夹发丝线。
+pub fn group_card(rows: Vec<AnyElement>, theme: &Theme) -> Div {
+    let mut children: Vec<AnyElement> = Vec::with_capacity(rows.len() * 2);
+    for (index, row) in rows.into_iter().enumerate() {
         if index > 0 {
-            children.push(row_divider());
+            children.push(row_divider(theme).into_any_element());
         }
-        children.push(node);
+        children.push(row);
     }
 
-    stroked_with(
-        column(children)
-            .gap(Dp::new(0.0))
-            .radius(Dp::new(GROUP_RADIUS - CARD_STROKE))
-            .bg(ThemeColorToken::SurfaceRaised)
-            .align(ViewAlign::Stretch),
+    stroked(
+        div().flex_col().w_full().children(children),
         GROUP_RADIUS,
+        theme,
     )
 }
 
 /// 一个分组：标题 + 卡片。
-pub fn settings_group<M: 'static>(
-    label: impl Into<String>,
-    rows: impl IntoIterator<Item = ViewNode<M>>,
-) -> ViewNode<M> {
-    column([group_label(label), group_card(rows)])
-        .gap(Dp::new(SPACE_S))
-        .align(ViewAlign::Stretch)
-        .flex(0.0)
+pub fn settings_group(label: impl Into<SharedString>, rows: Vec<AnyElement>, theme: &Theme) -> Div {
+    div()
+        .flex_col()
+        .flex_none()
+        .gap(px(SPACE_S))
+        .child(group_label(label, theme))
+        .child(group_card(rows, theme))
 }
 
 /// 占满整行宽度的一块内容（多行输入框、日志窗格、进度条）。
 ///
 /// 标题与说明在上，控件在下：控件需要横向空间时，不能挤在行的右边。
-pub fn setting_block<M: 'static>(
-    title: impl Into<String>,
+pub fn setting_block(
+    title: impl Into<SharedString>,
     desc: Option<String>,
-    body: ViewNode<M>,
-) -> ViewNode<M> {
-    let mut children = vec![styled_text(
-        title,
-        SemanticTextStyle::for_role(TextRole::Body),
-    )];
+    body: impl IntoElement,
+    theme: &Theme,
+) -> Div {
+    let mut block = div()
+        .flex_col()
+        .gap(px(SPACE_S))
+        .px(px(ROW_PADDING))
+        .py(px(ROW_PADDING))
+        .child(
+            div()
+                .text_size(px(TEXT_BODY))
+                .text_color(theme.fg())
+                .child(title.into()),
+        );
     if let Some(desc) = desc {
-        children.push(row_desc(desc));
+        block = block.child(hint(desc, theme));
     }
-    children.push(body);
-
-    column(children)
-        .gap(Dp::new(SPACE_S))
-        .padding(Dp::new(ROW_PADDING))
-        .align(ViewAlign::Stretch)
-}
-/// 把后面的内容推到行的最右边。
-///
-/// `spacer()` 的固有宽度是 0，只有 `flex(1.0)` 才会吃掉行里剩下的空间——
-/// 裸的 `spacer()` 什么都不会推，标题和右侧按钮会紧挨在一起。
-pub fn push<M: 'static>() -> ViewNode<M> {
-    spacer().flex(1.0)
-}
-
-// —— 操作 ——
-
-/// 图标按钮：只显示图标，文字作为悬停提示与无障碍标签。
-///
-/// 用于「动作本身一眼就懂」的地方（新建 / 复制 / 删除 / 保存 / 清空），
-/// 把横向空间留给内容；文字按钮留给有歧义或主操作。
-pub fn icon_action<M: 'static + Clone>(
-    label: impl Into<String>,
-    icon: ZsIcon,
-    message: M,
-) -> ViewNode<M> {
-    let label = label.into();
-    icon_button(label.clone(), icon)
-        .tooltip(label)
-        .on_click(message)
-}
-
-/// 图标 + 文字的工具栏按钮，宽度贴着文字内容。
-///
-/// `toolbar_button` 的 `min_width` 里含「两个字形的 shaping 余量」
-/// （`estimated_text_width_with_shaping_reserve`），那是给西文连笔留的余量，
-/// 中文标签用不上；而 Toolbar 的标签是**左对齐**画的，多出来的宽度全落在
-/// 按钮右边——看起来就是「按钮比文字宽一截、右侧一片空白」。
-/// 这里把那段余量扣掉：图标保留，按钮宽度 = 文字 + 图标 + 内边距。
-pub fn labeled_action<M: 'static + Clone>(
-    label: impl Into<String>,
-    icon: ZsIcon,
-    message: M,
-) -> ViewNode<M> {
-    let label = label.into();
-    let node = toolbar_button(label.clone(), icon);
-    let reserve = ZsBaseControlMetrics::current().average_character_width.0 * 2.0;
-    let node = match node.style.min_width {
-        Some(width) => node.min_width(Dp::new((width.0 - reserve).max(0.0))),
-        None => node,
-    };
-    // 不再挂 tooltip：按钮上已经写着这几个字，鼠标一停就弹一个同名气泡，
-    // 只会盖住按钮本身。
-    node.on_click(message)
+    block.child(body)
 }
 
 /// 紧凑行：只有标题 + 右侧控件，没有前导图标、没有第二行说明。
 ///
 /// 给「两三项、标题自己就说得清」的分组用（窗口与托盘、开关类）。
-/// 带说明的行会把卡片撑成两倍高，而说明读起来比标题慢——一眼扫过去
-/// 能看懂的设置不需要解释。
-///
-/// 行高跟单行控件（复选框 / 按钮）对齐，所以 `trailing` 尽量给矮控件。
-pub fn compact_row<M: 'static>(
-    title: impl Into<String>,
-    trailing: Option<ViewNode<M>>,
-) -> ViewNode<M> {
-    let mut children =
-        vec![styled_text(title, SemanticTextStyle::for_role(TextRole::Body)).flex(1.0)];
+pub fn compact_row(
+    title: impl Into<SharedString>,
+    trailing: Option<AnyElement>,
+    theme: &Theme,
+) -> Div {
+    let mut row = div()
+        .flex()
+        .items_center()
+        .gap(px(SPACE_M))
+        .px(px(ROW_PADDING))
+        .py(px(ROW_PADDING))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_size(px(TEXT_BODY))
+                .text_color(theme.fg())
+                .child(title.into()),
+        );
     if let Some(trailing) = trailing {
-        children.push(trailing);
+        row = row.child(div().flex_none().child(trailing));
     }
-
-    row(children)
-        .gap(Dp::new(SPACE_M))
-        .padding(Dp::new(ROW_PADDING))
-        .align(ViewAlign::Center)
+    row
 }
 
-/// 纯文字按钮：宽度贴着文字，不带图标。
+// —— 操作 ——
+
+/// 主操作按钮：中性实心。
 ///
-/// [`labeled_action`] 带图标，塞进一行设置里会和标题抢注意力；这一行的动作
-/// 本身就写在标题旁边（「最小化到托盘」→ 按钮「最小化」），图标是冗余的。
-pub fn text_action<M: 'static + Clone>(label: impl Into<String>, message: M) -> ViewNode<M> {
-    button(label).min_width(Dp::new(0.0)).on_click(message)
-}
-
-/// 一个小圆点（直径 [DOT_SIZE]），用主题色填。
+/// 不用 accent 填充。accent 是留给「选中 / 焦点 / 数据」的，一整个按钮铺上
+/// 去，一屏里最大的色块就是它，比它要执行的操作本身还抢眼——尤其在深色主题
+/// 下，亮色块压在暗底上会一直把视线拽回来。
 ///
-/// 图标栏（48dp）里放不下「色点 + 文字」，只能用色点表达状态。
-/// 不用 `badge(Dot)`：那个胶囊是按「带底色的小标签」画的，在窄栏里
-/// 会被居中成一个看不见的点，干脆自己画一个实心圆。
-pub fn dot<M: 'static>(token: ThemeColorToken) -> ViewNode<M> {
-    column([])
-        .width(Dp::new(DOT_SIZE))
-        .height(Dp::new(DOT_SIZE))
-        .radius(Dp::new(DOT_SIZE / 2.0))
-        .bg(token)
-        .flex(0.0)
+/// 主按钮靠**对比度**立起来：`fg()` 作底、`bg()` 作字。深色主题是浅底深字，
+/// 浅色主题自动反转成深底浅字，不用判断 `variant`，也不用为两套主题各写一份。
+///
+/// 尺寸、圆角、字号仍取 `ControlSize::Large` 的 metrics，和 gpuikit 的
+/// `Button` 摆在一起看不出是两套实现。
+pub fn primary_button(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    theme: &Theme,
+    handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    let metrics = theme.control(ControlSize::Large);
+    let face = theme.fg();
+    let ink = theme.bg();
+    div()
+        .id(id)
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .gap(metrics.gap)
+        .h(metrics.height)
+        .px(metrics.padding_x)
+        .rounded(metrics.radius)
+        .bg(face)
+        .text_size(metrics.text_size)
+        .line_height(metrics.line_height)
+        .font_weight(WEIGHT_SEMIBOLD)
+        .text_color(ink)
+        .whitespace_nowrap()
+        .cursor_pointer()
+        // 悬停/按下靠透明度往背景透，明暗两套主题都是「变淡一档」。
+        .hover(move |style| style.bg(face.opacity(0.88)))
+        .active(move |style| style.bg(face.opacity(0.76)))
+        .on_click(handler)
+        .child(label.into())
 }
 
-/// 状态色点的直径。
-const DOT_SIZE: f32 = 10.0;
+/// 行内动作按钮：图标 + 文字，surface 底。
+///
+/// 用于「新建 / 复制 / 保存 / 检测」这类次要动作：把横向空间留给内容，
+/// 同时比纯图标好认。形状与 gpuikit 的 `Button`（Filled）一致——同样的
+/// 高度、圆角、字号，同样的 `button_bg()` 三态，只是多了图标位。
+pub fn labeled_action(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    icon: Svg,
+    theme: &Theme,
+    handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    action_button(id, label.into(), Some(icon), theme, handler)
+}
+
+/// 纯文字动作按钮：宽度贴着文字，不带图标。
+pub fn text_action(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    theme: &Theme,
+    handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    action_button(id, label.into(), None, theme, handler)
+}
+
+fn action_button(
+    id: impl Into<ElementId>,
+    label: SharedString,
+    icon: Option<Svg>,
+    theme: &Theme,
+    handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    let metrics = theme.control(ControlSize::Large);
+    let bg = theme.button_bg();
+    let bg_hover = theme.button_bg_hover();
+    let bg_active = theme.button_bg_active();
+    let mut button = div()
+        .id(id)
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .gap(metrics.gap)
+        .h(metrics.height)
+        .px(metrics.padding_x)
+        .rounded(metrics.radius)
+        .bg(bg)
+        .text_size(metrics.text_size)
+        .line_height(metrics.line_height)
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .text_color(theme.fg())
+        .whitespace_nowrap()
+        .cursor_pointer()
+        .hover(move |style| style.bg(bg_hover))
+        .active(move |style| style.bg(bg_active))
+        .on_click(handler);
+    if let Some(icon) = icon {
+        button = button.child(
+            div()
+                .flex_none()
+                .w(px(14.0))
+                .h(px(14.0))
+                .text_color(theme.fg_muted())
+                .child(icon),
+        );
+    }
+    button.child(label)
+}
+
+/// 图标按钮：只显示图标，文字作为悬停提示与无障碍标签。
+///
+/// 用于「动作本身一眼就懂」的地方（编辑 / 删除 / 返回 / 清空），
+/// 把横向空间留给内容；文字按钮留给有歧义或主操作。
+pub fn icon_action(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    icon: Svg,
+    handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    icon_button(id, icon)
+        .box_size(rems(1.5))
+        .tooltip(tooltip(label.into()))
+        .on_click(handler)
+}
+
+/// 勾选框：状态由调用方给，点击由调用方处理。
+///
+/// 不用 gpuikit 的 `Checkbox` 实体：那个实体自己存一份「勾没勾」，和配置里的
+/// 布尔值会各说各话（切配置后就对不上了）。这里只要它**画**，真值永远来自
+/// 配置——`checkbox_box` 正是 gpuikit 抽出来的「纯外观」那一层。
+pub fn toggle_control(
+    id: impl Into<ElementId>,
+    on: bool,
+    handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex_none()
+        .cursor_pointer()
+        .hover(|style| style.opacity(0.75))
+        .on_click(handler)
+        .child(checkbox_box(if on {
+            CheckState::Checked
+        } else {
+            CheckState::Unchecked
+        }))
+}
 
 /// 把字节数格式化成人类可读的大小。
 pub fn human_bytes(bytes: u64) -> String {

@@ -1,78 +1,62 @@
-//! 视图构建：左侧边栏 + 右侧内容区（必要时再叠一层「关闭确认」弹窗）。
+//! 根视图：左侧边栏 + 右侧内容区（必要时再叠一层「关闭确认」弹窗）。
 //!
-//! 每次状态变化都会整棵重建（ZSUI 的声明式做法），因此这里不做缓存，
-//! 只保证函数是纯的：同样的 [`App`] 一定渲染出同样的界面。
+//! 视图不是每帧重建的树：`App` 自己实现 [`Render`]，由 gpui 在需要时调用
+//! `render()`。所以本文件只做三件事：
+//!
+//! 1. 取一份后台状态快照（避免各页各自加锁）；
+//! 2. 把快照交给侧边栏与内容区去画；
+//! 3. 把「关闭确认」对话框挂成最后一个子节点（gpui 的 `deferred` 会把它
+//!    画在整棵树的上面，与顺序无关，但挂在最后读起来最清楚）。
 
-use zsui::{
-    content_dialog, row, Dp, ThemeColorToken, ViewAlign, ViewNode, WidgetId, ZsContentDialogButton,
-    ZsContentDialogSpec,
-};
-
-use crate::core::i18n::t;
+use gpui::{App as GpuiApp, Context, IntoElement, Render, Window, div, prelude::*};
+use gpuikit::theme::{ActiveTheme, ThemeVariant, Themeable};
 
 use super::pages;
-use super::sidebar::sidebar;
-use super::state::{App, Msg};
+use super::sidebar;
+use super::state::{App, UiHandle};
 
-/// 「要不要最小化到托盘」弹窗的标识。
-const CLOSE_DIALOG_ID: u64 = 0x7475_6e32_636c_6f73;
+impl Render for App {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 卡顿探针：一帧超过 3 秒同样会记一笔（布局算炸了也能看出是哪一段）。
+        let _guard = crate::core::watchdog::enter(crate::core::watchdog::VIEW);
 
-/// 构建整个窗口的内容。
-pub fn view(app: &App) -> ViewNode<Msg> {
-    // 卡顿探针：视图重建也在这条线程上，一帧里超过 3 秒同样会记一笔。
-    let _guard = crate::core::watchdog::enter(crate::core::watchdog::VIEW);
-    // 一次性把后台状态拷出来，避免各页各自加锁。
-    let snapshot = app.snapshot();
+        // 一次性把后台状态拷出来，避免各页各自加锁。
+        let snapshot = self.snapshot();
+        let theme = cx.theme().clone();
 
-    let root = row([
-        // 侧边栏：品牌、导航、常驻的启动/停止按钮。
-        sidebar(app, &snapshot),
-        // 内容区：随导航切换。
-        pages::content(app, &snapshot),
-    ])
-    .gap(Dp::new(0.0))
-    .align(ViewAlign::Stretch)
-    // 底色铺满整窗：内容区是灰底 + 白卡片（卡片自然浮起来），
-    // 侧边栏是白底——两块颜色不同，分区不靠分隔线也看得出来。
-    .bg(ThemeColorToken::Surface);
+        // 日志行数变了才把日志窗格滚到底，否则用户往回翻会被拽回最新一行。
+        self.follow_logs(snapshot.logs.len());
 
-    if app.close_prompt {
-        content_dialog(
-            WidgetId::new(CLOSE_DIALOG_ID),
-            true,
-            close_dialog_spec(snapshot.status.is_active()),
-            root,
-        )
-        .on_dialog_result(Msg::CloseDialog)
-    } else {
-        root
+        div()
+            .flex()
+            .size_full()
+            // 底色铺满整窗：内容区是 `bg` + `surface` 卡片，侧边栏是 `surface`。
+            // 两块面板靠这个色差分层，再加侧边栏右侧那条 1dp 竖线定边界。
+            .bg(theme.bg())
+            .child(sidebar::sidebar(self, &snapshot, &theme, cx))
+            .child(pages::content(self, &snapshot, &theme, cx))
+            .children(self.close_dialog.clone())
     }
 }
 
-/// 「关窗还是留在托盘」的弹窗内容。
+/// 装好「界面实体全局句柄」与「关窗拦截」。
 ///
-/// 文案随服务状态变：**没在跑**的时候说「会停掉隧道」是在骗人（根本没有
-/// 隧道），用户会怀疑这个提示是模板话术，进而不信任其它提示。
+/// 两件事都必须发生在窗口建好之后：
 ///
-/// 主按钮（默认、回车）= 留在托盘，关闭按钮 = 真退出：常驻服务误关窗口的
-/// 代价比多点一次「退出」大，所以默认落在安全的那一边。
-fn close_dialog_spec(running: bool) -> ZsContentDialogSpec {
-    // 正文只有一段：ZSUI 的 content dialog 不换行显示 `\n\n`，多段会被
-    // 拼成一行，所以干脆写成一句流畅的话。
-    let body = if running {
-        t(
-            "Tun2Proxy 正在代理流量，关掉窗口会把隧道一并停掉、网络恢复成直连。最小化到托盘可以继续代理，双击托盘图标就能把窗口叫回来。",
-            "Tun2Proxy is proxying traffic. Closing the window stops the tunnel and the network falls back to a direct connection. Minimize to the tray to keep proxying; double-click the tray icon to bring the window back.",
-        )
-    } else {
-        t(
-            "服务当前没有运行，关掉窗口只是退出程序。最小化到托盘可以让它留在后台，双击托盘图标就能把窗口叫回来。",
-            "The service is not running, so closing the window simply exits the app. Minimize to the tray to keep it in the background; double-click the tray icon to bring the window back.",
-        )
-    };
+/// - **全局句柄**：下拉框、对话框的回调只能拿到 `&mut App`，拿不到
+///   `&mut Context<App>`。把界面实体存成全局，这些回调就能顺着它找回来
+///   （见 [`super::state::with_app`]）。
+/// - **关窗拦截**：tun2proxy 是常驻服务，点叉直接把隧道停了很容易误操作。
+///   拦截函数返回 `false` 就否决这次关闭，窗口继续活着（可以只藏进托盘）。
+pub fn install_window_hooks(entity: gpui::Entity<App>, window: &mut Window, cx: &mut GpuiApp) {
+    cx.set_global(UiHandle(entity.downgrade()));
 
-    ZsContentDialogSpec::new(body, t("退出程序", "Quit"))
-        .title(t("最小化到托盘？", "Minimize to the tray?"))
-        .primary_button(t("最小化到托盘", "Minimize to tray"))
-        .default_button(ZsContentDialogButton::Primary)
+    // 原生标题栏跟着界面走。gpui 只在系统配色变化时同步 DWM 的深色标志，
+    // 而我们的主题是按 `TUN2PROXY_GUI_THEME` 选的，可能与系统不一致。
+    let dark = cx.theme().variant == ThemeVariant::Dark;
+    crate::core::platform::set_dark_titlebar(dark);
+
+    window.on_window_should_close(cx, move |window, cx| {
+        entity.update(cx, |app, cx| app.on_close_requested(window, cx))
+    });
 }

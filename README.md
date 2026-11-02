@@ -2,8 +2,10 @@
 
 [English](README.en.md) | **中文**
 
-tun2proxy 的跨平台桌面图形前端，用 Rust 编写，界面基于
-[ZSUI](https://github.com/qiu7824/zsui)（Rust 原生桌面 UI，不依赖 WebView）。
+tun2proxy 的跨平台桌面图形前端，用 Rust 编写。界面基于
+[GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui)（Zed 的 GPU 渲染
+UI 框架）和 gpuikit（shadcn 风格的 GPUI 组件库），不依赖 WebView；配色、圆角、
+控件尺度全部取自 gpuikit 自带的主题（默认 Gruvbox 深色）。
 
 界面层级与交互参考了 [Paper-Dragon/tun2proxy-gui](https://github.com/Paper-Dragon/tun2proxy-gui)，
 并按「多套代理配置 + 一键启停」重做了布局。
@@ -43,7 +45,7 @@ tun2proxy 的跨平台桌面图形前端，用 Rust 编写，界面基于
 ```
 src/
 ├─ main.rs         启动流程：权限 → DPI → 配置 → 引擎 → 窗口
-├─ core/           与界面无关的内核（不依赖 zsui，可单独测试）
+├─ core/           与界面无关的内核（不依赖 GUI 框架，可单独测试）
 │  ├─ mod.rs       模块说明与再导出
 │  ├─ paths.rs     配置 / 下载 / 日志的存放位置
 │  ├─ config.rs    多套代理配置的读写、校验、转成命令行参数
@@ -57,14 +59,15 @@ src/
 │  ├─ icon.rs      程序图标的多尺寸位图（窗口 / 托盘共用一份数据）
 │  ├─ i18n.rs      中英文文案与语言设置
 │  └─ platform.rs  进程级初始化（Windows DPI 感知）
-└─ ui/             界面层（zsui）
+└─ ui/             界面层（GPUI + gpuikit）
    ├─ state.rs     应用状态、消息枚举、数字输入草稿
-   ├─ view.rs      整棵视图树：左侧边栏 + 右侧内容区
+   ├─ view.rs      根视图：左侧边栏 + 右侧内容区
+   ├─ theme.rs     装载 gpuikit 主题（可换肤）与字号常量
    ├─ sidebar.rs   左侧边栏（标题、运行状态、导航、启动/停止）
    ├─ pages.rs     右侧内容区：细顶栏 + 各页的分组组合
    ├─ cards.rs     各页的分组与行
    ├─ widgets.rs   可复用的文字样式与小部件（首屏卡、分组、设置行、胶囊）
-   ├─ chart.rs     实时流量折线图（zsui canvas）
+   ├─ chart.rs     实时流量折线图（gpui canvas）
    └─ update.rs    消息处理（唯一修改状态的地方）
 assets/
 ├─ icon.ico       程序图标（多尺寸，编进 exe 资源）
@@ -74,12 +77,9 @@ build.rs         把 app.rc（图标 + 版本信息）编进 Windows exe
 
 ### 程序图标
 
-两条路各管一边，互不依赖：
-
-- **资源管理器 / 任务栏**：`app.rc` + `build.rs`（`embed-resource`）把
-  `assets/icon.ico` 编进 exe 的资源段，这是 Windows 取图标的唯一来源；
-- **窗口标题栏**：`core::paths::install_icon()` 把内嵌的 ico 写到数据目录，
-  再把绝对路径交给 `native_window(..).icon_path(..)`（非 Windows 平台只走这条）。
+图标的唯一来源是 exe 资源段：`app.rc` + `build.rs`（`embed-resource`）把
+`assets/icon.ico` 编进 exe，资源管理器、任务栏、窗口标题栏都从这里取——
+GPUI 不做运行时的图标加载，因此也没有「把 ico 落到数据目录」那条路径。
 
 图标本身是多尺寸 ico（16/24/32/48/64/128/256），系统按需挑一档，任务栏小图标
 不会糊。换图标只需替掉 `assets/icon.ico` 后重新 `cargo build`。
@@ -107,12 +107,13 @@ build.rs         把 app.rc（图标 + 版本信息）编进 Windows exe
 └──────────────┴──────────────────────────────────────┘
 ```
 
-视觉分三层：侧边栏白底，右侧内容区浅灰底（`Surface`），卡片白底 + 1dp 描边 +
-12dp 圆角——白卡片落在灰底上自然浮起来，相邻模块靠间距与描边区分，不靠分隔线。
+视觉分三层：侧边栏 `surface`、内容区 `bg`、卡片 `surface` + 1dp 描边 + 8dp 圆角。
+三档颜色都取自 gpuikit 的主题语义色，所以换一套主题（见下文「主题」）整窗一起变，
+没有一处写死的十六进制。
 
-设置项的版式照 Windows 11 任务管理器：**分组标题在卡片外**（加粗小字），卡片里是
-一行一个设置项——左边图标、中间「标题 + 灰说明」、右边控件或值，行与行之间夹一条
-左右缩进 14dp 的发丝线。同一类设置收进一张卡，比「一卡一项」密得多，也少了满屏的框。
+设置项的版式：**分组标题在卡片外**（加粗小字），卡片里是一行一个设置项——左边图标、
+中间「标题 + 灰说明」、右边控件或值，行与行之间夹一条左右缩进 12dp 的发丝线。
+同一类设置收进一张卡，比「一卡一项」密得多，也少了满屏的框。
 
 顶栏只有一行（页面名 + 右侧一句说明 + 底部发丝线），不再占两行高度；
 仪表盘的首屏卡片（状态胶囊 + 大标题 + 主操作）放在内容流的第一位。
@@ -139,8 +140,8 @@ cargo build --release
 依赖说明：
 
 - Windows：无需额外依赖。
-- Linux：ZSUI 走 `linux-direct` 后端（Cairo/Pango 自绘，不是 GTK 控件），需要
-  `libcairo2-dev libpango1.0-dev libglib2.0-dev pkg-config`。
+- Linux：GPUI 用 Vulkan 渲染、Wayland / X11 窗口，需要对应的开发库与
+  `pkg-config`；包名以 gpui 仓库的 Linux 说明为准。
 - macOS：需要 Xcode 命令行工具。
 
 ### 发布
@@ -150,7 +151,7 @@ cargo build --release
 
 ```bash
 # 先把 Cargo.toml 的 version 改好并提交，tag 必须与它一致（CI 会校验）
-git tag v0.1.1 && git push origin v0.1.1
+git tag v0.2.0 && git push origin v0.2.0
 ```
 
 产物：`tun2proxy-gui-<tag>-<target>.zip`（Windows）、`.tar.gz`（Linux /
@@ -224,6 +225,48 @@ $env:http_proxy="http://127.0.0.1:7890"; $env:https_proxy="http://127.0.0.1:7890
 设置页可选「跟随系统 / 中文 / English」，切换后立即生效并落盘（`language`
 字段）。文案写在代码里（`t("中文", "English")`），没有单独的翻译资源文件。
 
+## 主题
+
+配色、圆角、控件高度全部来自 gpuikit 的 `Themeable` 语义色与 `ControlScale`，
+本程序不自己配色。默认是 Catppuccin Mocha（冷灰底 + 蓝色强调色），设环境变量
+可以换：
+
+```powershell
+set TUN2PROXY_GUI_THEME=light    # Catppuccin Latte（浅色）
+set TUN2PROXY_GUI_THEME=frappe   # Catppuccin Frappe
+set TUN2PROXY_GUI_THEME=gruvbox  # gpuikit 的招牌 Gruvbox 深色
+```
+
+认不出来的名字回落到默认主题（不报错，免得环境变量写错就起不来）。
+换主题时 Windows 原生标题栏的深浅也会跟着切（`core::platform::set_dark_titlebar`）。
+
+为什么不用 gpuikit 的默认主题：Gruvbox 是暖褐底 + 亮绿强调色，那套色板适合终端
+和编辑器，放在满屏中文小字的设置页上有两个问题——暖褐底色让文字发黄显脏，绿色
+又同时占了侧栏选中、主按钮填充和图表三条线。`ui::theme::tune` 里做了三件事：
+
+1. **重排 Catppuccin 的层次。** gpuikit 把 `surface` 映射成 mantle（比 base 更暗），
+   照原样画，卡片会沉进背景里。改成背景 base < 卡片 surface0 < 按钮 surface1。
+2. **输入框改成「比卡片暗一档 + 更亮的描边」。** gpuikit 默认让输入框和卡片同色，
+   只靠 1dp 描边区分，在满屏卡片里那个方框几乎看不见。
+3. **深色主题的描边相对提亮一档**，1dp 的小控件才立得住。
+
+主按钮不用强调色填充：强调色留给「选中 / 焦点 / 数据」，整块铺在按钮上会一直把
+视线拽回来。主按钮靠对比度立起来——深色主题是浅底深字，浅色主题自动反转成深底
+浅字，不用为两套主题各写一份。
+
+## 托盘
+
+托盘图标按服务状态换色：**未运行是灰的，运行中是绿的**。托盘区域只有 16~32px，
+靠形状分不出在不在跑，颜色是最快的信号（鼠标悬停的提示文字也带着状态）。
+
+两档都从 `assets/icon.ico` 那一份算出来，不额外维护图片：ico 里的帧是 PNG，
+运行时解码、把有彩色像素的色相换成绿（未运行时去饱和压暗）、再编码回去造
+`HICON`（`core::icon::recolor_pixel`）。白色图案是无彩色像素，保持不动——否则
+图案和底色会糊成一片。
+
+「正在启动」也算「在跑」：用户已经按了启动，图标这时候就该亮，等真正 `Running`
+再变色会慢一拍。着色失败时退回原图，颜色不对是小事，图标消失是大事。
+
 ## 开发
 
 ```bash
@@ -232,28 +275,29 @@ cargo test         # 配置管理的单元测试
 cargo build        # 调试构建
 ```
 
-调试用的截图脚本在 `.probe/shot.ps1`（仅 Windows）：`-Resize` 改窗口尺寸、
-`-Click` 点一下、`-Wheel` 滚一下，然后用 `PrintWindow` 把窗口抓成 PNG，便于
-检查布局。设置 `TUN2PROXY_GUI_NO_ELEVATE=1` 可跳过提权。
+设置 `TUN2PROXY_GUI_NO_ELEVATE=1` 可跳过提权，直接以当前权限启动。
 
-> 别用屏幕截图（`CopyFromScreen`）：调试时窗口不一定被合成到可见桌面上，
-> 截出来会是别的应用。`PrintWindow(hwnd, hdc, 2)` 直接问窗口要画面，稳。
+### 调试时怎么截图
 
-### 布局上的三个坑（zsui 0.3）
+用 `PrintWindow(hwnd, hdc, PW_RENDERFULLCONTENT)` 向窗口要画面，**不要**用
+`CopyFromScreen`：调试时窗口常常被别的程序盖着，屏幕抓图会抓到上面那个程序，
+看起来像「界面没更新」，实际是截错了对象。
 
-1. **文字换行要写进样式**：`ViewNode::text_wrap()` 只对多行输入框生效，对普通
-   文字是空操作。要换行必须设 `SemanticTextStyle { wrap: TextWrap::Word, .. }`，
-   见 `src/ui/widgets.rs` 的 `wrapped()`。否则长说明会一直单行、超出卡片后被
-   窗口边缘裁掉。
-2. **容器宽度取「最宽子项的自然宽度」**：没有 `width: 100%` 这种写法。要让卡片
-   跟着窗口变宽，得给父级 `align(ViewAlign::Stretch)` + 子级 `flex(1.0)`（见
-   `src/ui/widgets.rs` 的 `card()`）；反过来，可换行的文字放进 `row` 会被压成
-   竖条，所以行内标签用 `caption_nowrap()`。
-3. **装不下是裁剪，不是换行**：控件与文字永远不会被压到平台度量以下，容器比
-   内在最小宽度还窄时右侧直接被切掉（`src/view/layout.rs` 的 hard-size
-   contract）。所以窗口最小宽度 `ui::MIN_WINDOW_WIDTH` 必须大于「最宽那一页
-   的内在最小宽度」——`ui::layout_probe::no_page_overflows_the_minimum_window`
-   会盯着这条，往卡片里塞更宽的控件时测试会先报错，而不是让用户看到切边。
+窗口矩形用 `GetWindowRect` 会包含 Win11 的不可见阴影边框（左右各约 11px、
+底部约 10px），按这个内缩裁一下，图里才不会混进桌面像素。点击可以直接
+`PostMessage` 一个 `WM_LBUTTONDOWN` / `WM_LBUTTONUP` 到窗口句柄（坐标是客户区
+坐标），不要求窗口在前台。
+
+### 布局上的三个坑
+
+1. **可换行的文字要 `flex_1 + min_w_0`**：不写的话，行内文字会按「最宽不可断词」
+   测量，中文会被压成一列竖排的字。见 `src/ui/widgets.rs` 的 `setting_row`。
+2. **自绘控件要取 `theme.control(size)`**：按钮、图标按钮、徽标的高度 / 圆角 /
+   字号都来自 gpuikit 的 `ControlScale`，自己画的东西也取同一组数，摆在一行才
+   不会一大一小。见 `src/ui/widgets.rs` 的 `primary_button`。
+3. **卡片用单层描边**：`bg(surface) + border_1(border) + rounded(0.5rem)`，和
+   gpuikit 的 `Card` 一致。别用「底色外面套一圈描边」的双层盒子——深色主题下
+   那会露出一圈亮边。
 
 ## 许可
 

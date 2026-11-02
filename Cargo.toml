@@ -1,35 +1,26 @@
 [package]
 name = "tun2proxy-gui"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
-rust-version = "1.90"
+rust-version = "1.95"
 description = "Cross-platform desktop GUI for tun2proxy"
 authors = ["HKMV"]
 license = "MIT"
 repository = "https://github.com/HKMV/tun2proxy-gui"
 
 [dependencies]
-# ZSUI：Rust 原生桌面 UI（Win32 / AppKit / GTK），不依赖 WebView。
-# 锁到具体 revision：流式日志需要的重绘句柄（invalidation_handle）
-# 只存在于 0.3 线。
-zsui = { git = "https://github.com/qiu7824/zsui", rev = "05432449765c52e757e93272fac709c16b99bcdd", default-features = false, features = [
-    "window",
-    "button",
-    "label",
-    "textbox",
-    "checkbox",
-    "radio",
-    "scroll",
-    "progress",
-    "shell",
-    "tooltip",
-    "icon",
-    "badge",
-    "combo",
-    "image-preview",
-    "canvas",
-    "dialog",
+# GPUI：GPU 加速的 Rust 原生桌面 UI（Windows / macOS / Linux 同一套渲染管线）。
+#
+# 版本必须**精确锁定**：gpuikit 0.9 只对得上 gpui-unofficial 1.14.2 的 API，
+# 而 1.x 之间并不兼容（1.26 就把 `Window::blur` 改成了带参数的签名，
+# gpuikit 会直接编译失败）。所以这里用 `=` 而不是 `^`。
+gpui = { package = "gpui-unofficial", version = "=1.14.2" }
+# 窗口平台层：gpui 自己不提供，必须由应用指定一个。
+gpui_platform = { package = "gpui-platform-gpui-unofficial", version = "=1.14.2", features = [
+    "font-kit",
 ] }
+# 组件库：按钮、输入框、下拉框、进度条、对话框、主题与图标。
+gpuikit = "0.9"
 
 log = { version = "0.4", features = ["std"] }
 serde = { version = "1", features = ["derive"] }
@@ -64,10 +55,18 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_LibraryLoader",
     "Win32_Globalization",
     "Win32_System_Threading",
+    # WNDCLASSW / RegisterClassW（托盘的自建窗口类）被 GDI 特性挡在后面，
+    # 只开 Win32_UI_WindowsAndMessaging 是找不到的。
+    "Win32_Graphics_Gdi",
+    # DwmSetWindowAttribute：让原生标题栏跟随界面的深浅。
+    "Win32_Graphics_Dwm",
     "Win32_UI_HiDpi",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
+# 托盘图标按状态着色：ico 里的帧是 PNG，要解码改像素再编码回去。
+# 纯 Rust、无系统依赖，只在 Windows 上编进来。
+png = "0.17"
 
 # 发布版：去掉符号表，用 thin LTO 平衡编译时间与运行性能。
 [profile.release]

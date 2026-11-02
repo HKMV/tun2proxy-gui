@@ -5,8 +5,8 @@
 //!
 //! ```text
 //! src/
-//! ├─ main.rs      启动流程：权限 → DPI → 配置 → 引擎 → 窗口
-//! ├─ core/        与界面无关的内核（不依赖 zsui，可单独测试）
+//! ├─ main.rs      启动流程：权限 → 配置 → 引擎 → 托盘 → 窗口
+//! ├─ core/        与界面无关的内核（不依赖 GPUI，可单独测试）
 //! │   ├─ mod.rs     模块说明与再导出
 //! │   ├─ paths.rs   配置 / 下载 / 日志的存放位置
 //! │   ├─ config.rs  用户配置的读写、校验、转成命令行参数
@@ -15,10 +15,14 @@
 //! │   ├─ elevate.rs 管理员 / root 权限检测与 Windows 自动提权
 //! │   ├─ watchdog.rs 界面线程卡顿探针（假死时记录卡在哪一段）
 //! │   └─ platform.rs 进程级初始化（Windows DPI 感知）
-//! └─ ui/          界面层（zsui）
-//!     ├─ state.rs   应用状态与消息枚举
-//!     ├─ view.rs    整棵视图树
+//! └─ ui/          界面层（GPUI + gpuikit）
+//!     ├─ state.rs   应用状态与消息枚举（`App` 同时是根视图实体）
+//!     ├─ view.rs    `impl Render for App`
+//!     ├─ theme.rs   gpuikit 主题的装载与换肤
+//!     ├─ sidebar.rs 左侧边栏
+//!     ├─ pages.rs   右侧内容区
 //!     ├─ cards.rs   各张设置卡片
+//!     ├─ chart.rs   流量折线图
 //!     ├─ widgets.rs 可复用的文字样式与小部件
 //!     └─ update.rs  消息处理
 //! ```
@@ -26,10 +30,10 @@
 //! 启动流程：
 //!
 //! 1. 检查权限（Windows 上没有管理员权限时会询问并 UAC 重新拉起自己）；
-//! 2. 声明 DPI 感知，拿到显示器缩放比例；
-//! 3. 读取配置，创建内核引擎；
-//! 4. 把「请求重绘」的回调交给引擎，后台线程改状态时界面会自动刷新；
-//! 5. 打开窗口并进入事件循环，窗口关闭后确保 tun2proxy 子进程已退出。
+//! 2. 读取配置，创建内核引擎；
+//! 3. 装托盘图标（装不上不影响主流程）；
+//! 4. 建 GPUI 应用：装组件库、装主题、开窗、挂关窗拦截；
+//! 5. 事件循环结束后确保 tun2proxy 子进程已退出。
 //!
 //! # 为什么是 `windows_subsystem = "windows"`
 //!
@@ -45,15 +49,19 @@
 mod core;
 mod ui;
 
-use std::sync::Arc;
+use gpui::{AppContext, Application, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px, size};
+use gpui_platform::current_platform;
 
-use crate::core::{elevate, platform, Config, Engine};
-use zsui::{native_window, UiInvalidationHandle};
+use crate::core::{Config, Engine, elevate};
 
-use ui::App;
-
-/// 标题栏的叉被按下时发出的应用命令。
-const CLOSE_COMMAND: &str = "close-window";
+/// 窗口标题。
+///
+/// Windows 上它有两个用途，都不能省：
+///
+/// - 任务栏 / Alt-Tab 里显示的名字；
+/// - 托盘「显示窗口」靠 `core::window::find_main()` 按「本进程里**有标题**的
+///   顶层窗口」反查主窗口，没有标题就找不到（点了没反应）。
+const WINDOW_TITLE: &str = "Tun2Proxy GUI";
 
 fn main() {
     // 0. 卡顿探针：之后界面线程无论卡在哪一段，都会写进 stall.log。
@@ -62,9 +70,8 @@ fn main() {
     // 1. 权限：不足时可能直接重新拉起自己（Windows 会弹 UAC 对话框）。
     elevate::ensure_elevated();
 
-    // 2. 声明 DPI 感知并拿到缩放比例（必须在建窗口之前）。
-    let scale = platform::init();
-    let logical_size = |w: f32, h: f32| ((w * scale) as u32, (h * scale) as u32);
+    // 2. 声明 DPI 感知（必须在建窗口之前）。
+    core::platform::init();
 
     // 3. 配置 + 引擎。Engine::new 会探测已安装的 tun2proxy 版本。
     let config = Config::load();
@@ -72,70 +79,60 @@ fn main() {
     // 先建窗口再切语言会闪一下另一门语言。
     core::i18n::apply(config.language);
     let engine = Engine::new();
+    let shared = engine.shared();
 
-    // 4. 引擎 → 界面的重绘通道。core 只认「回调」，不认 zsui。
-    let invalidation = UiInvalidationHandle::new();
-    let handle = invalidation.clone();
-    engine.set_rebuild_hook(Arc::new(move || {
-        handle.request_rebuild();
-    }));
-
-    // 5. 启动时静默检查一次更新（只查询，不下载）。
-    //
-    // 延后 0.8 秒再查：窗口刚建好时「请求重绘」还不生效，过早拿到的结果
-    // 会一直看不见，直到用户随手点一下界面。顺便在查之前先唤醒一次界面，
-    // 把这段时间里攒下的状态（版本号等）画出来。
-    if config.auto_check_update {
-        let engine = engine.clone();
-        let repo = config.release_repo.clone();
-        let wake = invalidation.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(800));
-            wake.request_rebuild();
-            engine.check_update(repo);
-        });
-    }
-
-    let app = App::new(config, engine.clone(), engine.shared());
-
-    // 系统托盘：装不上（非 Windows / 资源管理器拒绝）不影响主流程。
+    // 4. 系统托盘：装不上（非 Windows / 资源管理器拒绝）不影响主流程。
     let _ = core::tray::install(engine.clone());
 
-    let (width, height) = logical_size(900.0, 650.0);
-    let (min_width, min_height) = logical_size(ui::MIN_WINDOW_WIDTH, ui::MIN_WINDOW_HEIGHT);
-    let mut window = native_window("Tun2Proxy GUI")
-        .size(width, height)
-        .min_size(min_width, min_height)
-        .invalidation_handle(invalidation);
+    // 5. GPUI 应用。`with_assets` 把 gpuikit 的图标 / 字体资源挂进应用，
+    //    没有它所有 `Svg` 都会画成空白方块。
+    let window_engine = engine.clone();
+    Application::with_platform(current_platform(false))
+        .with_assets(gpuikit::assets())
+        .run(move |cx| {
+            // 组件库初始化（主题、输入键位、元素管理器）必须先于任何窗口。
+            gpuikit::init(cx);
+            // 再按 `TUN2PROXY_GUI_THEME` 装主题：默认就是 gpuikit 的 Gruvbox
+            // 深色，设了环境变量才换肤。整套配色与控件尺度都由组件库决定。
+            ui::theme::install(cx);
 
-    // 标题栏 / 任务栏图标。exe 资源里的那个图标负责资源管理器与任务栏，
-    // 这里再显式设一次：非 Windows 平台没有 exe 资源，只能走这条路。
-    if let Some(icon) = core::paths::install_icon() {
-        window = window.icon_path(icon.to_string_lossy().into_owned());
-    }
+            let window_size = size(px(900.0), px(650.0));
+            let options = WindowOptions {
+                // 居中：多显示器时落在主显示器中央，而不是左上角。
+                window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                    None,
+                    window_size,
+                    cx,
+                ))),
+                titlebar: Some(TitlebarOptions {
+                    title: Some(WINDOW_TITLE.into()),
+                    // 用系统原生标题栏：最小化 / 最大化 / 关闭交给 Windows，
+                    // 我们只在「关闭」这一路上插一道确认。
+                    appears_transparent: false,
+                    traffic_light_position: None,
+                }),
+                window_min_size: Some(size(
+                    px(ui::MIN_WINDOW_WIDTH),
+                    px(ui::MIN_WINDOW_HEIGHT),
+                )),
+                ..Default::default()
+            };
 
-    // 关窗走一道确认：tun2proxy 是常驻服务，点叉直接把隧道停了很容易误操作。
-    // `on_close_requested` 把原生 WM_CLOSE 转成一条应用命令，命令映射成
-    // `Msg::CloseRequested`；update 里不调 `cx.quit()` 就表示「否决关闭」，
-    // 于是窗口继续活着（可以只把它藏进托盘）。
-    let result = window
-        .stateful_view_with_app_commands(app, ui::view, ui::update, |command| match command {
-            zsui::Command::Custom { id, .. } if id == CLOSE_COMMAND => {
-                Some(ui::Msg::CloseRequested)
-            }
-            _ => None,
-        })
-        .on_close_requested(zsui::Command::custom(CLOSE_COMMAND))
-        .run();
+            let engine = window_engine.clone();
+            let shared = shared.clone();
+            cx.open_window(options, move |window, cx| {
+                // 窗口标题由 `titlebar.title` 决定（Windows 上 gpui 直接把它
+                // 作为 `CreateWindowExW` 的窗口名），托盘「显示窗口」全指着它。
+                let app = cx.new(|cx| ui::App::new(config, engine, shared, window, cx));
+                // 全局句柄 + 关窗拦截（拦截里要判断托盘「退出」是否已确认）。
+                ui::view::install_window_hooks(app.clone(), window, cx);
+                app
+            })
+            .expect("failed to open the main window");
+
+            cx.activate(true);
+        });
 
     // 6. 退出前确保子进程结束，避免残留 TUN 网卡和路由。
     engine.shutdown_blocking();
-
-    if let Err(err) = result {
-        eprintln!(
-            "{}",
-            tr_format!("窗口运行失败：{err}", "The window failed: {err}")
-        );
-        std::process::exit(1);
-    }
 }

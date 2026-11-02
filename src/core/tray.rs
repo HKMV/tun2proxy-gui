@@ -6,12 +6,12 @@
 //!
 //! # 实现方式
 //!
-//! ZSUI 自己管着主窗口的窗口过程，我们拿不到它的 `HWND` 回调，所以托盘
-//! **不挂在主窗口上**：这里单开一个后台线程，注册一个从不显示的窗口类，
-//! 用它接托盘消息（`Shell_NotifyIconW` 只要求一个能收消息的窗口）。
+//! GPUI 不对外暴露主窗口的 `HWND`，所以托盘**不挂在主窗口上**：这里单开一个
+//! 后台线程，注册一个从不显示的窗口类，用它接托盘消息（`Shell_NotifyIconW`
+//! 只要求一个能收消息的窗口）。
 //!
-//! 主窗口句柄用 `FindWindowW` 按标题找——标题是 `main.rs` 传给
-//! `native_window()` 的那一个，进程内唯一。
+//! 主窗口句柄由 [`crate::core::window::find_main`] 反查（按进程归属找，
+//! 不按标题），托盘「显示窗口」和关闭确认都走它。
 //!
 //! # 托盘上的动作
 //!
@@ -57,6 +57,7 @@ pub fn quit_armed() -> bool {
 mod imp {
     use std::ffi::c_void;
     use std::mem::size_of;
+    use std::sync::atomic::{AtomicPtr, Ordering};
     use std::sync::OnceLock;
 
     use crate::core::i18n::t;
@@ -326,7 +327,7 @@ mod imp {
         };
         engine.shutdown_blocking();
         match crate::core::window::find_main() {
-            // 关窗口 → zsui 的事件循环退出 → main 收尾。
+            // 关窗口 → gpui 的事件循环退出 → main 收尾。
             Some(hwnd) => unsafe {
                 PostMessageW(hwnd, WM_CLOSE, 0, 0);
             },
@@ -354,11 +355,24 @@ mod imp {
         data.uID = TRAY_ID;
         data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
         data.uCallbackMessage = WM_TRAY;
-        data.hIcon = app_icon();
+        data.hIcon = app_icon(service_running());
         let tip = wide(&tooltip_text());
         let len = tip.len().min(data.szTip.len() - 1);
         data.szTip[..len].copy_from_slice(&tip[..len]);
         data
+    }
+
+    /// 服务是否处于「在跑」的状态。
+    ///
+    /// 把「正在启动」也算进来：用户已经按了启动，图标这时候就该亮起来，
+    /// 等真正 `Running` 再变色会慢一拍，看起来像没响应。
+    fn service_running() -> bool {
+        ENGINE.get().is_some_and(|engine| {
+            matches!(
+                engine.status(),
+                crate::core::Status::Running | crate::core::Status::Starting
+            )
+        })
     }
 
     fn tooltip_text() -> String {
@@ -375,14 +389,40 @@ mod imp {
         format!("Tun2Proxy · {state}")
     }
 
-    /// 图标：直接用内嵌的 ico 字节造句柄，和标题栏 / 任务栏同一份图。
+    /// 两档图标句柄的缓存。
     ///
-    /// 之前用 `ExtractIconExW` 按 exe 路径反查，拿到的是资源管理器缓存里
-    /// 的那一份——换了图标之后托盘还是老图，和任务栏对不上。
-    fn app_icon() -> HICON {
+    /// 托盘每 2 秒 `NIM_MODIFY` 一次，如果每次都重新造 `HICON` 就会一直泄漏
+    /// 句柄（`Shell_NotifyIconW` 不会替调用方释放）。这里按档位各存一份，
+    /// 进程退出时由系统回收。
+    static IDLE_ICON: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+    static RUNNING_ICON: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+
+    /// 图标：未运行是灰的，运行中是绿的，一眼看出服务在不在跑。
+    ///
+    /// 两档都从内嵌的那一份 ico 算出来（见 [`crate::core::icon::recolor_pixel`]），
+    /// 不额外维护图片文件。
+    fn app_icon(running: bool) -> HICON {
+        let slot = if running {
+            &RUNNING_ICON
+        } else {
+            &IDLE_ICON
+        };
+        let cached = slot.load(Ordering::Relaxed) as HICON;
+        if !cached.is_null() {
+            return cached;
+        }
         // 32px 起步：托盘在 100% 缩放下是 16px，但 150%/200% 下是 24/32px，
         // 给小图会让 Windows 去放大，边缘发虚。
-        crate::core::icon::hicon(32).unwrap_or(std::ptr::null_mut())
+        let tint = if running {
+            crate::core::icon::Tint::Running
+        } else {
+            crate::core::icon::Tint::Idle
+        };
+        let icon = crate::core::icon::hicon_tinted(32, tint).unwrap_or(std::ptr::null_mut());
+        if !icon.is_null() {
+            slot.store(icon as *mut c_void, Ordering::Relaxed);
+        }
+        icon
     }
 
     fn wide(text: &str) -> Vec<u16> {

@@ -55,18 +55,3 @@ pub fn config_path() -> PathBuf {
 pub fn bin_dir() -> PathBuf {
     app_dir().join("bin")
 }
-
-/// 把内嵌的图标落到数据目录，返回它的绝对路径。
-///
-/// 窗口图标是按**文件路径**加载的（zsui 的 `icon_path`），而图标已经编进
-/// 二进制了；每次启动比对字节写一遍（二十来 KB）比「要求用户把 assets/ 目录
-/// 跟 exe 放在一起」或者「依赖工作目录」都可靠——从快捷方式、命令行、
-/// 资源管理器双击启动，工作目录可以完全不同。
-///
-/// 写不进去（比如目录只读）就返回 `None`：没有图标不影响程序能用，
-/// 窗口会用系统默认图标，不值得为此启动失败。
-///
-/// 实现搬到 [`crate::core::icon`]：图标只有一个真源，三处取法必须一致。
-pub fn install_icon() -> Option<PathBuf> {
-    crate::core::icon::install_to_app_dir()
-}
