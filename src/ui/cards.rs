@@ -22,6 +22,7 @@ use gpui::{
 use gpuikit::elements::progress::progress;
 use gpuikit::elements::text_field::text_field;
 use gpuikit::elements::textarea::textarea;
+use gpuikit::elements::tooltip::tooltip;
 use gpuikit::input::InputState;
 use gpuikit::theme::{Theme, Themeable};
 use gpuikit::traits::control_sized::ControlSized;
@@ -29,15 +30,16 @@ use gpuikit::DefaultIcons;
 
 use crate::core::engine::ProbeState;
 use crate::core::i18n::{t, tf};
-use crate::core::{Status, Update};
+use crate::core::{DnsMode, Status, Update};
 
 use super::chart::{LEGEND_GAP, legend_swatch, legend_text, traffic_chart};
 use super::state::{App, Field, Msg, Page, Snapshot};
 use super::theme::{TEXT_BODY, TEXT_SMALL};
 use super::widgets::{
     ROW_CONTROL, ROW_CONTROL_NARROW, SPACE_M, SPACE_S, SPACE_XS, compact_row, hero_title, hint,
-    human_bytes, icon, icon_action, labeled_action, log_line, primary_button, row_icon, row_value,
-    setting_block, setting_row, settings_group, text_action, toggle_control, v_hairline,
+    human_bytes, icon, icon_action, icon_action_off, labeled_action, log_line, primary_button,
+    row_icon, row_value, setting_block, setting_row, settings_group, text_action, toggle_control,
+    v_hairline,
 };
 
 /// 仪表盘日志框的高度。
@@ -81,11 +83,42 @@ fn eid(prefix: &str, index: usize) -> SharedString {
 ///
 /// `TextField` 自己不带宽度设置，只能在外面套一层固定宽度的容器：
 /// 它内部是 `w_full`，跟着外层走。
+///
+/// 占位文字必须经 `TextField::placeholder()` 传进去：`InputState` 里那份
+/// 只有实体自己知道，`Input` 元素不读它——少传这一句，空输入框在界面上
+/// 就是一个纯色方块，用户看不出这里该填什么、留空会怎样。
 fn text_input(state: &Entity<InputState>, width: f32, cx: &mut Context<App>) -> AnyElement {
+    field_box(state, width, false, cx)
+}
+
+/// 当前模式用不上的输入框：只读 + 灰一档。
+///
+/// 用 `read_only` 而不是 disabled（`TextField` 没有 disabled 构造器，只有
+/// `read_only`）：值仍然可以选中复制（用户可能要拿它去别处试），但改不了。
+/// 灰一档是为了让「这一项现在不生效」一眼可见，不必去读说明文字。
+fn text_input_off(state: &Entity<InputState>, width: f32, cx: &mut Context<App>) -> AnyElement {
+    field_box(state, width, true, cx)
+}
+
+fn field_box(
+    state: &Entity<InputState>,
+    width: f32,
+    off: bool,
+    cx: &mut Context<App>,
+) -> AnyElement {
+    let placeholder = state.read(cx).placeholder().clone();
+    let mut field = text_field(state, cx).full_width(true).large();
+    if !placeholder.is_empty() {
+        field = field.placeholder(placeholder);
+    }
+    if off {
+        field = field.read_only(true);
+    }
     div()
         .flex_none()
         .w(px(width))
-        .child(text_field(state, cx).full_width(true).large())
+        .when(off, |style| style.opacity(0.55))
+        .child(field)
         .into_any_element()
 }
 
@@ -162,10 +195,14 @@ pub fn hero_card(snap: &Snapshot, theme: &Theme, cx: &mut Context<App>) -> AnyEl
         .child(hint(desc, theme));
 
     if !elevated {
+        // 次要按钮而不是实心主按钮：提权是「缺权限时的补救」，而这一屏的
+        // 主角是状态标题。实心按钮会把视线从「隧道通不通」拽到按钮上，
+        // 而它并不比下面那句权限说明更重要。
         text_column = text_column.child(
-            div().flex().child(primary_button(
+            div().flex().child(labeled_action(
                 "relaunch-elevated",
                 t("使用管理员重启", "Restart as administrator"),
+                DefaultIcons::reload(),
                 theme,
                 cx.listener(|this, _, _, cx| this.handle(Msg::RelaunchElevated, cx)),
             )),
@@ -313,7 +350,7 @@ pub fn profile_picker_group(app: &App, theme: &Theme, cx: &mut Context<App>) -> 
         )
         .into_any_element(),
         setting_row(
-            Some(row_icon(DefaultIcons::gear(), theme).into_any_element()),
+            Some(row_icon(DefaultIcons::server(), theme).into_any_element()),
             t("上游代理", "Upstream proxy"),
             Some(
                 t(
@@ -328,7 +365,17 @@ pub fn profile_picker_group(app: &App, theme: &Theme, cx: &mut Context<App>) -> 
                     .flex()
                     .items_center()
                     .gap(px(SPACE_S))
-                    .child(div().max_w(px(220.0)).child(row_value(profile.summary(), theme)))
+                    .child(
+                        // 摘要是「地址 · DNS 模式」，长地址必然被省略号截断
+                        // （`socks5://192.168.10.121:1010 · DNS 虚拟 IP` 有
+                        // 近 40 个字符），而地址正是这一行唯一要读的东西。
+                        // 放宽一档，并把全文挂到 tooltip 上。
+                        div()
+                            .id("profile-summary")
+                            .max_w(px(300.0))
+                            .tooltip(tooltip(profile.summary()))
+                            .child(row_value(profile.summary(), theme)),
+                    )
                     .child(icon_action(
                         eid("picker-edit", config.active),
                         t("编辑这套配置", "Edit this profile"),
@@ -537,14 +584,28 @@ pub fn profile_list_group(app: &App, theme: &Theme, cx: &mut Context<App>) -> An
                                 this.handle(Msg::ProfileEditStart(index), cx)
                             }),
                         ))
-                        .child(icon_action(
-                            eid("profile-remove", index),
-                            t("删除这套配置", "Delete this profile"),
-                            DefaultIcons::trash(),
-                            cx.listener(move |this, _, _, cx| {
-                                this.handle(Msg::ProfileRemovedAt(index), cx)
-                            }),
-                        ))
+                        .child(if config.profiles.len() > 1 {
+                            icon_action(
+                                eid("profile-remove", index),
+                                t("删除这套配置", "Delete this profile"),
+                                DefaultIcons::trash(),
+                                // 删除不直接执行：先弹一句确认（见
+                                // `App::ask_remove_profile`）。
+                                cx.listener(move |this, _, window, cx| {
+                                    this.ask_remove_profile(index, window, cx)
+                                }),
+                            )
+                            .into_any_element()
+                        } else {
+                            // 只剩一套时禁用而不是「点了才说不行」：这条规则
+                            // 是固定的，没必要让用户先撞一次。
+                            icon_action_off(
+                                eid("profile-remove", index),
+                                t("至少要保留一套配置", "Keep at least one profile"),
+                                DefaultIcons::trash(),
+                            )
+                            .into_any_element()
+                        })
                         .into_any_element(),
                 ),
                 theme,
@@ -555,7 +616,10 @@ pub fn profile_list_group(app: &App, theme: &Theme, cx: &mut Context<App>) -> An
 
     rows.push(
         div()
+            .id("profile-actions")
             .flex()
+            .flex_none()
+            .w_full()
             .items_center()
             .gap(px(SPACE_S))
             .px(px(super::widgets::ROW_PADDING))
@@ -622,13 +686,11 @@ fn radio_dot(selected: bool, theme: &Theme) -> Div {
 /// 这里只放「这一套叫什么」，不放保存按钮：保存是本页的主操作，全页只该有
 /// 一个，位置在顶栏右上角（见 [`super::pages::page_header`]）。
 pub fn profile_edit_group(app: &App, theme: &Theme, cx: &mut Context<App>) -> AnyElement {
-    let profile = app.profile();
     let state = app.inputs.get(Field::Name);
     settings_group(
-        tf(
-            t("编辑配置 · {}", "Edit profile · {}"),
-            &[("", profile.name.trim())],
-        ),
+        // 顶栏已经写着「编辑配置」，分组标题再重复一遍只是噪音；改的是哪
+        // 一套，下面那个输入框自己说得清。
+        t("这套配置", "This profile"),
         vec![
             setting_row(
                 Some(row_icon(DefaultIcons::pencil_1(), theme).into_any_element()),
@@ -659,10 +721,12 @@ pub fn proxy_group(
     cx: &mut Context<App>,
 ) -> AnyElement {
     let profile = app.profile();
+    // 这两个字段是否参与，只看 DNS 模式（见下面两行的说明）。
+    let virtual_dns = profile.dns == DnsMode::Virtual;
 
     let rows = vec![
         setting_row(
-            Some(row_icon(DefaultIcons::gear(), theme).into_any_element()),
+            Some(row_icon(DefaultIcons::server(), theme).into_any_element()),
             t("上游代理地址", "Upstream proxy address"),
             Some(
                 t(
@@ -690,37 +754,57 @@ pub fn proxy_group(
             theme,
         )
         .into_any_element(),
+        // 「远程 DNS 服务器」和「虚拟地址池」各自只服务一半的 DNS 模式：
+        // 前者在「虚拟 IP」下完全不参与（本地应答，查询不出网），后者只
+        // 有「虚拟 IP」用得到。两个框以前一直可编辑，填了不生效也没人
+        // 说——现在跟着模式灰掉，并在说明里写清为什么不生效。
         setting_row(
             Some(row_icon(DefaultIcons::globe(), theme).into_any_element()),
             t("远程 DNS 服务器", "Remote DNS server"),
-            Some(
+            Some(if virtual_dns {
                 t(
-                    "DNS 模式为 Override 时使用",
-                    "Used when the DNS mode is Override",
+                    "「虚拟 IP」在本地应答，这一项不参与",
+                    "Virtual IP answers locally, so this is not used",
                 )
-                .to_string(),
-            ),
+                .to_string()
+            } else {
+                t(
+                    "查询经隧道发往这台服务器",
+                    "Queries are sent to this server through the tunnel",
+                )
+                .to_string()
+            }),
             None,
-            Some(text_input(&app.inputs.get(Field::DnsAddr), ROW_CONTROL, cx)),
+            Some(if virtual_dns {
+                text_input_off(&app.inputs.get(Field::DnsAddr), ROW_CONTROL, cx)
+            } else {
+                text_input(&app.inputs.get(Field::DnsAddr), ROW_CONTROL, cx)
+            }),
             theme,
         )
         .into_any_element(),
         setting_row(
-            Some(row_icon(DefaultIcons::code(), theme).into_any_element()),
+            Some(row_icon(DefaultIcons::database(), theme).into_any_element()),
             t("虚拟地址池", "Virtual address pool"),
-            Some(
+            Some(if virtual_dns {
                 t(
                     "接管 DNS 时分配给域名的假地址段",
                     "Fake range handed out to domains when DNS is intercepted",
                 )
-                .to_string(),
-            ),
+                .to_string()
+            } else {
+                t(
+                    "只有「虚拟 IP」模式会用到",
+                    "Only the Virtual IP mode uses this",
+                )
+                .to_string()
+            }),
             None,
-            Some(text_input(
-                &app.inputs.get(Field::VirtualPool),
-                ROW_CONTROL,
-                cx,
-            )),
+            Some(if virtual_dns {
+                text_input(&app.inputs.get(Field::VirtualPool), ROW_CONTROL, cx)
+            } else {
+                text_input_off(&app.inputs.get(Field::VirtualPool), ROW_CONTROL, cx)
+            }),
             theme,
         )
         .into_any_element(),
@@ -764,10 +848,12 @@ fn probe_row(snap: &Snapshot, theme: &Theme, cx: &mut Context<App>) -> AnyElemen
             DefaultIcons::reload(),
         ),
     };
-    // 前导图标跟着结论变：失败时再挂一个对勾，读起来像「检测通过」。
+    // 前导图标跟着结论变。没检测过 / 正在检测时**不能**用对勾：那看起来
+    // 像「已经通过了」，而这一行真正要读的是右侧那个按钮和下面那句结论。
     let leading = match &snap.probe {
-        Some(ProbeState::Done(report)) if !report.ok => DefaultIcons::exclamation_circled(),
-        _ => DefaultIcons::check_circled(),
+        Some(ProbeState::Done(report)) if report.ok => DefaultIcons::check_circled(),
+        Some(ProbeState::Done(_)) => DefaultIcons::exclamation_circled(),
+        _ => DefaultIcons::magnifying_glass(),
     };
 
     setting_row(
@@ -830,7 +916,7 @@ pub fn network_group(app: &App, theme: &Theme, cx: &mut Context<App>) -> AnyElem
         )
         .into_any_element(),
         setting_row(
-            Some(row_icon(DefaultIcons::timer(), theme).into_any_element()),
+            Some(row_icon(DefaultIcons::stopwatch(), theme).into_any_element()),
             t("UDP 超时（秒）", "UDP timeout (s)"),
             None,
             None,
@@ -862,7 +948,7 @@ pub fn network_group(app: &App, theme: &Theme, cx: &mut Context<App>) -> AnyElem
         )
         .into_any_element(),
         setting_row(
-            Some(row_icon(DefaultIcons::code(), theme).into_any_element()),
+            Some(row_icon(DefaultIcons::container(), theme).into_any_element()),
             t("TUN 名称", "TUN name"),
             Some(t("留空自动生成", "Leave empty to generate one").to_string()),
             None,
@@ -871,7 +957,7 @@ pub fn network_group(app: &App, theme: &Theme, cx: &mut Context<App>) -> AnyElem
         )
         .into_any_element(),
         setting_row(
-            Some(row_icon(DefaultIcons::check_circled(), theme).into_any_element()),
+            Some(row_icon(DefaultIcons::globe_2(), theme).into_any_element()),
             t("启用 IPv6", "Enable IPv6"),
             Some(
                 t(
@@ -1070,7 +1156,7 @@ pub fn udpgw_group(app: &App, theme: &Theme, cx: &mut Context<App>) -> AnyElemen
         )
         .into_any_element(),
         setting_row(
-            Some(row_icon(DefaultIcons::people(), theme).into_any_element()),
+            Some(row_icon(DefaultIcons::link_1(), theme).into_any_element()),
             t("UDPGW 连接数", "UDPGW connections"),
             Some(
                 t(
@@ -1524,9 +1610,6 @@ fn log_pane(
     // 偏移的符号：gpui 把 `delta` 直接加上去，再夹到 `[-max, 0]`，所以顶部
     // 是 0、底部是 -max。往下滚 delta 为正、偏移往 0 走。
     let scroll_handle = app.log_scroll.clone();
-    // 滚动条自己画：gpui 的滚动容器不画条，没有它就看不出「这里还能滚」。
-    // 拿上一次布局的偏移量算，滚一下 gpui 会通知重绘，条跟着走。
-    let indicator = super::widgets::scroll_indicator(&scroll_handle, theme);
 
     let viewport = div()
         .id("log-viewport")
@@ -1564,7 +1647,13 @@ fn log_pane(
                 ))
                 .child(inner),
         )
-        .children(indicator);
+        // 滚动条自己画：gpui 的滚动容器不画条，没有它就看不出「这里还能滚」。
+        .child(super::widgets::scroll_bar(
+            "log-scroll-bar",
+            &scroll_handle,
+            theme,
+            &app.scroll_drag,
+        ));
 
     div()
         .w_full()

@@ -15,14 +15,17 @@
 //! **强调色实心主按钮**、**图标 + 文字的行内动作**、**设置分组卡片**。
 
 use gpui::{
-    AnyElement, App, ClickEvent, Div, ElementId, Hsla, IntoElement, ScrollHandle, SharedString,
-    Stateful, Svg, Window, div, px, prelude::*, rems,
+    AnyElement, App, BorderStyle, Bounds, ClickEvent, DispatchPhase, Div, ElementId, Hsla,
+    IntoElement, MouseButton, MouseMoveEvent, ScrollHandle, SharedString, Stateful, Svg, Window,
+    canvas, div, point, px, prelude::*, quad, rems, size, transparent_black,
 };
 use gpuikit::elements::checkbox::{CheckState, checkbox_box};
 use gpuikit::elements::icon_button::icon_button;
 use gpuikit::elements::tooltip::tooltip;
 use gpuikit::theme::{ControlSize, Theme, Themeable};
 use gpuikit::traits::control_sized::ControlSized;
+use std::cell::Cell;
+use std::rc::Rc;
 
 use super::theme::{
     TEXT_BODY, TEXT_GROUP, TEXT_HERO, TEXT_MONO, TEXT_SMALL, TEXT_TITLE, WEIGHT_SEMIBOLD,
@@ -33,6 +36,19 @@ use super::theme::{
 /// 日志是唯一需要「自己滚」的区域：固定一个高度，页面滚动时它不动，
 /// 免得一边翻设置一边把日志推出视野。
 pub const LOG_PANE_HEIGHT: f32 = 220.0;
+
+/// 滚动条滑块的宽度（逻辑像素）。
+///
+/// 8dp：比系统滚动条（17dp）细，但比原来那 4dp 粗一倍——4dp 在 125% 缩放下
+/// 会被抗锯齿吃掉半个像素，看起来像一条脏线，而且几乎点不中。
+pub const SCROLL_BAR_WIDTH: f32 = 8.0;
+
+/// 正在被拖动的滚动条：按下那一刻的（指针 y、滚动偏移）。
+///
+/// 这份状态必须活在 `App` 上。渲染函数每帧都会重新调一次 [`scroll_bar`]，
+/// 把 `Rc<Cell>` 建在函数体里的话，`on_mouse_down` 写进去的那份和下一帧
+/// `canvas` 里读到的根本不是同一个——按下有反应，拖动永远没反应。
+pub type ScrollDrag = Rc<Cell<Option<(f32, f32)>>>;
 
 /// 最小间距：图标与文字、开关与说明之间。
 pub const SPACE_XS: f32 = 4.0;
@@ -146,42 +162,151 @@ pub fn row_value(text: impl Into<SharedString>, theme: &Theme) -> Div {
 
 // —— 容器 ——
 
-/// 滚动条指示器。
+/// 滚动条。
 ///
 /// gpui 的 `overflow_y_scroll` 只负责滚动，**不画滚动条**：内容超出视口时
 /// 界面上没有任何提示，用户只能靠滚轮试探。这里按 `ScrollHandle` 的偏移量
-/// 画一条，跟着滚动一起动。
+/// 画一条，跟着滚动一起动，也能点、能拖。
 ///
-/// 只做指示，不做拖拽：拖拽要接管鼠标并处理按下/移动/抬起三段状态，先把
-/// 「这里能滚、现在滚到哪儿」说清楚；真要拖的时候再补。
+/// 视觉取 gpuikit 的「滑块」语义而不是系统滚动条：没有凹槽、没有箭头，
+/// 只有一颗 8dp 的圆头滑块贴着视口右边缘（`right: 2dp`），静止时是
+/// `fg_muted` 的 55%——两套主题下都能看见，又不会在满屏卡片里多出一条竖线。
 ///
-/// 返回 `None` 表示内容没超出视口——这时候画一条满格的条反而像装饰。
-pub fn scroll_indicator(handle: &ScrollHandle, theme: &Theme) -> Option<AnyElement> {
+/// 交互是浏览器那套：轨道（整条 8dp 竖列）上按下，滑块中心先跳到指针处，
+/// 接着按住拖就跟手走。轨道本身透明，指针压上来才浮出一层 12% 的底，
+/// 用来告诉用户「这条能抓」。
+///
+/// 滑块用 `canvas` 画而不是塞一个 `div`：拖动时改的是 `ScrollHandle` 的
+/// 偏移量，`App` 不会重新 render，元素树里的 `top(...)` 是按下那一刻的旧值，
+/// 结果就是「内容在动、滑块不动」。绘制阶段每次都能读到最新偏移量。
+///
+/// 拖拽走窗口级事件（`window.on_mouse_event`）而不是元素自己的
+/// `on_mouse_move`：后者的 hitbox 只有这条 8dp 的窄条那么大，指针一动就跑出去了。
+/// 起点记在 [`ScrollDrag`] 里（`App` 上的字段），不能是局部变量——见那里的注释。
+///
+/// 内容没超出视口时什么也不画（判断放在绘制阶段，见函数体里的注释）。
+pub fn scroll_bar(
+    id: impl Into<ElementId>,
+    handle: &ScrollHandle,
+    theme: &Theme,
+    drag: &ScrollDrag,
+) -> AnyElement {
+    let thumb_color = theme.fg_muted().opacity(0.55);
+    let lane = theme.fg_muted().opacity(0.12);
+
+    let press_handle = handle.clone();
+    let press_drag = drag.clone();
+    let paint_handle = handle.clone();
+    let move_handle = handle.clone();
+    let move_drag = drag.clone();
+
+    div()
+        .id(id)
+        .absolute()
+        .top_0()
+        .bottom_0()
+        .right(px(2.0))
+        .w(px(SCROLL_BAR_WIDTH))
+        .cursor_pointer()
+        .hover(move |style| style.bg(lane))
+        .on_mouse_down(MouseButton::Left, move |event, window, _cx| {
+            let (viewport, thumb, travel) = geometry(&press_handle);
+            let thumb_top = progress(&press_handle) * travel;
+            // 指针 y 换算成轨道内的位置，用来判断点在滑块上还是空白处。
+            let local = (event.position.y.as_f32()
+                - press_handle.bounds().origin.y.as_f32())
+            .clamp(0.0, viewport);
+            let offset = if local >= thumb_top && local <= thumb_top + thumb {
+                // 抓的就是滑块本身：不动它，从当前偏移接着拖。
+                press_handle.offset().y.as_f32()
+            } else {
+                // 点空白处：滑块中心先过来，再接着拖（和浏览器一致）。
+                let target = ((local - thumb * 0.5) / travel.max(1.0)).clamp(0.0, 1.0);
+                let offset = -target * press_handle.max_offset().y.as_f32();
+                press_handle.set_offset(point(press_handle.offset().x, px(offset)));
+                window.refresh();
+                offset
+            };
+            press_drag.set(Some((event.position.y.as_f32(), offset)));
+        })
+        .child(
+            canvas(|_, _, _| (), move |bounds: Bounds<_>, _, window, _| {
+                // 「内容有没有超出视口」必须在这里判：render 阶段读到的是
+                // **上一帧**的布局结果，新切到一页时它还是 0，滚动条会缺席到
+                // 用户滚一下为止。prepaint 已经算完布局，paint 里读才是最新的。
+                if paint_handle.max_offset().y.as_f32() > 0.5 {
+                    let (_, thumb, travel) = geometry(&paint_handle);
+                    let top = progress(&paint_handle) * travel;
+                    let bar = Bounds::new(
+                        point(bounds.origin.x, bounds.origin.y + px(top)),
+                        size(bounds.size.width, px(thumb)),
+                    );
+                    window.paint_quad(quad(
+                        bar,
+                        gpui::Corners::all(px(bounds.size.width.as_f32() * 0.5)),
+                        thumb_color,
+                        gpui::Edges::all(px(0.0)),
+                        transparent_black(),
+                        BorderStyle::default(),
+                    ));
+                }
+
+                // 一次绘制里挂上窗口级监听：指针离开这条 8dp 的窄条也不会断。
+                let drag = move_drag.clone();
+                let handle = move_handle.clone();
+                window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, _| {
+                    if phase != DispatchPhase::Bubble {
+                        return;
+                    }
+                    let Some((start_y, start_offset)) = drag.get() else {
+                        return;
+                    };
+                    // 抬起没被这条滚动条收到时（指针跑出窗口），
+                    // `dragging()` 会变假，顺手结束这次拖拽。
+                    if !event.dragging() {
+                        drag.set(None);
+                        return;
+                    }
+                    // 滑块走完整条轨道 = 内容滚完整段距离。
+                    //
+                    // 符号：偏移量是 `[-max, 0]`，往下拖要把内容往上推，
+                    // 也就是偏移量更**负**——这里必须是减，写成加会被 layout
+                    // 钳回 0，界面上一点反应都没有。
+                    let (_, _, travel) = geometry(&handle);
+                    let max = handle.max_offset().y.as_f32();
+                    let moved = event.position.y.as_f32() - start_y;
+                    let delta = -moved * (max / travel.max(1.0));
+                    handle.set_offset(point(handle.offset().x, px(start_offset + delta)));
+                    window.refresh();
+                });
+            })
+            .absolute()
+            .size_full(),
+        )
+        .into_any_element()
+}
+
+/// 视口高度、滑块高度、滑块可走的距离。
+///
+/// 三处都要用（绘制、按下、拖动），算一处比抄三遍可靠：视口高度取
+/// `ScrollHandle` 上一次布局的结果，比调用方传一个可能过期的数字可靠。
+fn geometry(handle: &ScrollHandle) -> (f32, f32, f32) {
+    let viewport = handle.bounds().size.height.as_f32().max(1.0);
+    let content = viewport + handle.max_offset().y.as_f32();
+    // 内容越长滑块越短，但不短于 32dp：再短就点不中也看不见。
+    let thumb = (viewport * viewport / content).max(32.0).min(viewport);
+    (viewport, thumb, (viewport - thumb).max(0.0))
+}
+
+/// 当前滚动进度，0 到 1。
+///
+/// 偏移量是 `[-max, 0]`（顶部 0、底部 -max），取负再除就翻成了 0..1。
+fn progress(handle: &ScrollHandle) -> f32 {
     let max = handle.max_offset().y.as_f32();
     if max <= 0.5 {
-        return None;
+        return 0.0;
     }
-    // 视口高度取上一次布局的结果：调用方有的是固定高度、有的是 `flex_1`，
-    // 由句柄统一回答比自己传一个可能过期的数字可靠。
-    let viewport = handle.bounds().size.height.as_f32().max(1.0);
-    let content = viewport + max;
-    // 内容越长滑块越短，但不短于 24dp：再短就点不中也看不见。
-    let thumb = (viewport * viewport / content).max(24.0).min(viewport);
-    let travel = (viewport - thumb).max(0.0);
-    // 偏移量是 `[-max, 0]`（顶部 0、底部 -max），换成 0..1 的进度。
-    let progress = (-handle.offset().y.as_f32() / max).clamp(0.0, 1.0);
-
-    Some(
-        div()
-            .absolute()
-            .top(px(progress * travel))
-            .right(px(3.0))
-            .w(px(4.0))
-            .h(px(thumb))
-            .rounded_full()
-            .bg(theme.fg_muted().opacity(0.45))
-            .into_any_element(),
-    )
+    (-handle.offset().y.as_f32() / max).clamp(0.0, 1.0)
 }
 
 /// 1dp 发丝线：分隔顶栏与内容区、卡片内的分区。
@@ -353,7 +478,10 @@ pub fn group_card(rows: Vec<AnyElement>, theme: &Theme) -> Div {
     }
 
     stroked(
-        div().flex_col().w_full().children(children),
+        // `flex_none()` 不能省：卡片内层是 flex 容器里的 auto 项，默认
+        // `flex: 0 1 auto` 允许它被压缩。行多、页面挤的时候最后一行会被
+        // 压扁，卡片底部就对不上内容高度。
+        div().flex_col().flex_none().w_full().children(children),
         GROUP_RADIUS,
         theme,
     )
@@ -550,6 +678,22 @@ pub fn icon_action(
         .icon_size(rems(1.0))
         .tooltip(tooltip(label.into()))
         .on_click(handler)
+}
+
+/// 当前不能用的图标按钮：灰一档，点了没反应。
+///
+/// 比「能点但点了弹一句不行」好：用户不会先点一次才知道这条规则。
+/// 提示文字仍然保留，说明**为什么**不行。
+pub fn icon_action_off(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    icon: Svg,
+) -> impl IntoElement {
+    icon_button(id, icon)
+        .box_size(rems(2.0))
+        .icon_size(rems(1.0))
+        .disabled(true)
+        .tooltip(tooltip(label.into()))
 }
 
 /// 勾选框：状态由调用方给，点击由调用方处理。

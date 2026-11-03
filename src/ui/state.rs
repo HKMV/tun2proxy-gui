@@ -548,6 +548,11 @@ pub struct App {
     pub log_follow: bool,
     /// 每页各自的滚动位置。
     pub page_scroll: [ScrollHandle; 4],
+    /// 正在被拖动的滚动条（按下时的指针 y 与滚动偏移）。
+    ///
+    /// 挂在 `App` 上而不是渲染函数里：滚动条每帧重新构造，局部状态活不过一帧，
+    /// 按下时写进去的值下一帧就没了，拖动会彻底失灵。
+    pub scroll_drag: crate::ui::widgets::ScrollDrag,
     /// 上一次渲染时的日志累计行数：变了才把日志滚到底，否则每帧都在动。
     last_log_len: u64,
     /// 输入框 / 对话框的订阅，随实体一起活着。
@@ -633,6 +638,7 @@ impl App {
             log_scroll: ScrollHandle::default(),
             log_follow: true,
             page_scroll: std::array::from_fn(|_| ScrollHandle::default()),
+            scroll_drag: Default::default(),
             last_log_len: 0,
             _subscriptions: subscriptions,
         }

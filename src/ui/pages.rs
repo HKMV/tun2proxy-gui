@@ -29,7 +29,7 @@ use super::state::{App, Msg, Snapshot};
 use super::theme::TEXT_BODY;
 use super::widgets::{
     CONTENT_PADDING, SPACE_M, SPACE_S, SPACE_XL, caption_nowrap, hairline, icon, icon_action,
-    page_title, primary_button, scroll_indicator,
+    page_title, primary_button, scroll_bar,
 };
 
 /// 右侧内容区：细顶栏 + 提示条 + 可滚动的卡片列表。
@@ -135,7 +135,9 @@ fn page_header(app: &App, theme: &Theme, cx: &mut Context<App>) -> AnyElement {
         .flex()
         .items_center()
         .gap(px(SPACE_M))
-        .px(px(SPACE_M))
+        // 左右留白和内容区取同一个数（[`CONTENT_PADDING`]）：用 `SPACE_M`
+        // 的话标题比下面的卡片左缩 4dp，整页看起来像没对齐。
+        .px(px(CONTENT_PADDING))
         .py(px(SPACE_M));
 
     // 顶栏左侧：返回 → 标题。
@@ -192,7 +194,6 @@ fn page_header(app: &App, theme: &Theme, cx: &mut Context<App>) -> AnyElement {
 fn page_scroll_area(app: &App, snap: &Snapshot, theme: &Theme, cx: &mut Context<App>) -> AnyElement {
     let slot = app.page.slot();
     let handle = app.page_scroll[slot].clone();
-    let indicator = scroll_indicator(&handle, theme);
 
     div()
         .flex()
@@ -218,7 +219,12 @@ fn page_scroll_area(app: &App, snap: &Snapshot, theme: &Theme, cx: &mut Context<
                         .children(page_body(app, snap, theme, cx)),
                 ),
         )
-        .children(indicator)
+        .child(scroll_bar(
+            ("page-scroll-bar", slot),
+            &handle,
+            theme,
+            &app.scroll_drag,
+        ))
         .into_any_element()
 }
 
