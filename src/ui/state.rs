@@ -14,6 +14,7 @@
 //! 实体只是它的一份可编辑副本。
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use gpui::{App as GpuiApp, AppContext, Context, Entity, ScrollHandle, Subscription, Window, px};
 use gpuikit::elements::dialog::DialogState;
@@ -31,6 +32,12 @@ use crate::ui::widgets::ROW_CONTROL;
 
 /// 日志区最多显示多少行（完整日志仍在内存里，最多 2000 行）。
 pub const LOG_VIEW_LINES: usize = 200;
+
+/// 成功提示在屏幕上停留多久。
+///
+/// 够读完一句话（「配置已保存」四个字两秒就够，但复制日志那条要看清行数），
+/// 又不至于让上一句一直挂在那儿。
+const NOTICE_LINGER: Duration = Duration::from_secs(4);
 
 /// 左侧导航里的页面。
 ///
@@ -507,8 +514,13 @@ pub struct App {
     pub engine: Engine,
     /// 与后台线程共享的运行时状态。
     pub shared: Arc<Mutex<Shared>>,
-    /// 绿色提示（保存成功等）。
+    /// 绿色提示（保存成功等）。会自动消失，见 [`App::flash_notice`]。
     pub notice: Option<String>,
+    /// 提示的代数：每发一条新提示 +1。
+    ///
+    /// 自动消失靠一个定时任务，它醒来时得知道「这条提示还是我发的那条吗」，
+    /// 否则会把后面新出现的提示提前掐掉。
+    notice_seq: u64,
     /// 红色错误（启动失败等）。
     pub error: Option<String>,
 
@@ -604,6 +616,7 @@ impl App {
             engine,
             shared,
             notice: None,
+            notice_seq: 0,
             error: None,
             inputs,
             selects,
@@ -639,6 +652,29 @@ impl App {
         self.draft = Draft::from_profile(self.config.active_profile());
         self.error = None;
         self.notice = None;
+    }
+
+    /// 显示一条**会自己消失**的成功提示。
+    ///
+    /// 提示条常驻会让人怀疑「是不是没生效」：保存、复制这类一次性动作的结果
+    /// 看过就该走开，屏幕顶上不该长期挂着一句话。定时任务醒来时先核对代数，
+    /// 期间用户又触发了别的提示就直接放弃，不去动新那条。
+    ///
+    /// 错误不走这里：报错要留在屏幕上等人读完，只能手动关。
+    pub fn flash_notice(&mut self, text: impl Into<String>, cx: &mut Context<Self>) {
+        self.notice = Some(text.into());
+        self.notice_seq = self.notice_seq.wrapping_add(1);
+        let seq = self.notice_seq;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(NOTICE_LINGER).await;
+            let _ = this.update(cx, |app, cx| {
+                if app.notice_seq == seq && app.notice.take().is_some() {
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        cx.notify();
     }
 
     /// 把数字输入框的草稿写回当前配置，并做一次整体校验。

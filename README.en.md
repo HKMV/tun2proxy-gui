@@ -149,7 +149,8 @@ returns to the profile list.
 Action results all go through one **notice bar** just under the top bar (green
 for success, red for failure, amber when a start was blocked, dismissed with
 the ✕ on its right), so saving a profile, copying the log or a refused start
-gives feedback on every page — not only on the dashboard hero card.
+gives feedback on every page — not only on the dashboard hero card. A success
+notice clears itself after four seconds; an error stays until it is read.
 
 The log pane grows a thin scrollbar on its right when the content overflows
 (none is drawn otherwise), and its two corner icons copy the whole log and

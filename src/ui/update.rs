@@ -43,12 +43,12 @@ pub fn update(app: &mut App, msg: Msg, cx: &mut Context<App>) {
             app.select_profile(index);
             // 运行中切换配置不会影响已启动的进程，只提示下次启动生效。
             if app.engine.is_active() {
-                app.notice = Some(
+                app.flash_notice(
                     t(
                         "已切换配置，重启服务后生效",
                         "Profile switched; restart the service to apply it",
-                    )
-                    .to_string(),
+                    ),
+                    cx,
                 );
             }
             // 输入框显示的是「当前这套配置」，跟着换一套就得整组刷新。
@@ -75,7 +75,7 @@ pub fn update(app: &mut App, msg: Msg, cx: &mut Context<App>) {
                 app.rebuild_selects(cx);
                 app.sync_inputs(cx);
             } else {
-                app.notice = Some(t("至少要保留一套配置", "Keep at least one profile").to_string());
+                app.flash_notice(t("至少要保留一套配置", "Keep at least one profile"), cx);
             }
         }
         Msg::ProfileAdded => {
@@ -149,12 +149,10 @@ pub fn update(app: &mut App, msg: Msg, cx: &mut Context<App>) {
             app.error = None;
             app.config.normalize();
             match app.apply_draft().and_then(|()| app.config.save()) {
-                Ok(path) => {
-                    app.notice = Some(format!(
-                        "{} {}",
-                        t("配置已保存到", "Configuration saved to"),
-                        path.display()
-                    ));
+                Ok(_) => {
+                    // 只报结果，不报路径：写去哪儿是程序自己的事，把一整条
+                    // `D:\...\config.json` 摊在提示条上只会挤掉真正要看的话。
+                    app.flash_notice(t("配置已保存", "Configuration saved"), cx);
                     app.sync_inputs(cx);
                 }
                 Err(err) => app.error = Some(err),
@@ -177,14 +175,15 @@ pub fn update(app: &mut App, msg: Msg, cx: &mut Context<App>) {
                 })
                 .unwrap_or_default();
             if text.trim().is_empty() {
-                app.notice = Some(t("还没有日志可复制", "There is no log to copy").to_string());
+                app.flash_notice(t("还没有日志可复制", "There is no log to copy"), cx);
             } else {
                 let lines = text.lines().count();
                 cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
-                app.notice = Some(tf(
+                let text = tf(
                     t("已复制 {lines} 行日志到剪贴板", "Copied {lines} log lines to the clipboard"),
                     &[("lines", &lines.to_string())],
-                ));
+                );
+                app.flash_notice(text, cx);
             }
         }
         Msg::DismissNotice => {
@@ -347,14 +346,13 @@ impl App {
     /// 消息到达时这次关闭处理早已返回。
     pub fn minimize_to_tray(&mut self, cx: &mut Context<Self>) {
         if crate::core::window::hide_main_deferred() {
-            self.notice = Some(
+            self.flash_notice(
                 t(
                     "已最小化到托盘，双击托盘图标可恢复窗口",
                     "Minimized to the tray. Double-click the tray icon to restore the window.",
-                )
-                .to_string(),
+                ),
+                cx,
             );
-            cx.notify();
         } else {
             cx.quit();
         }
