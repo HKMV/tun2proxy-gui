@@ -35,10 +35,9 @@ use super::chart::{LEGEND_GAP, legend_swatch, legend_text, traffic_chart};
 use super::state::{App, Field, Msg, Page, Snapshot};
 use super::theme::{TEXT_BODY, TEXT_SMALL};
 use super::widgets::{
-    ROW_CONTROL, ROW_CONTROL_NARROW, SPACE_M, SPACE_S, SPACE_XS, compact_row, error_text,
-    hero_title, hint, human_bytes, icon, icon_action, labeled_action, log_line, primary_button,
-    row_icon, row_value, setting_block, setting_row, settings_group, text_action, toggle_control,
-    v_hairline,
+    ROW_CONTROL, ROW_CONTROL_NARROW, SPACE_M, SPACE_S, SPACE_XS, compact_row, hero_title, hint,
+    human_bytes, icon, icon_action, labeled_action, log_line, primary_button, row_icon, row_value,
+    setting_block, setting_row, settings_group, text_action, toggle_control, v_hairline,
 };
 
 /// 仪表盘日志框的高度。
@@ -169,16 +168,14 @@ pub fn hero_card(snap: &Snapshot, theme: &Theme, cx: &mut Context<App>) -> AnyEl
         );
     }
 
-    // 说明行（启动被拦下的原因 / 权限提示）与上面那一组之间拉开距离，
-    // 否则它们会读成「标题说明的第四行」。
+    // 说明行（权限提示）与上面那一组之间拉开距离，否则它会读成「标题说明的
+    // 第四行」。
     //
-    // 保存结果和动作报错不在这里：它们由内容区顶部的提示条统一显示
-    // （见 [`super::pages::content`]），否则「在代理配置页点保存」就看不到
-    // 任何反馈——提示只画在仪表盘上，而按钮在别的页面。
+    // 保存结果、动作报错、启动被拦下的原因都不在这里：它们由内容区顶部的
+    // 提示条统一显示（见 [`super::pages::content`]），否则「在代理配置页点
+    // 保存」「在日志页点启动」都看不到任何反馈——提示只画在仪表盘上，而
+    // 按钮在别的页面。
     let mut extras = div().flex().flex_col().gap(px(SPACE_S));
-    if let Some(blocked) = &snap.blocked {
-        extras = extras.child(error_text(blocked.clone(), theme));
-    }
     if let Some(tip) = crate::core::elevate::privilege_hint() {
         extras = extras.child(
             div()

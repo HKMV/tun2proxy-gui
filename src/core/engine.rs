@@ -290,6 +290,17 @@ impl Engine {
         self.touch();
     }
 
+    /// 关掉「启动被拦下」的原因。
+    ///
+    /// 原因存在共享状态里（检测线程写的），只清界面那一份，下一帧从快照里
+    /// 又会读出来——提示条上的 ✕ 得真的把它清掉。
+    pub fn dismiss_start_blocked(&self) {
+        if let Ok(mut shared) = self.shared.lock() {
+            shared.start_blocked = None;
+        }
+        self.touch();
+    }
+
     fn touch(&self) {
         self.dirty.store(true, Ordering::Relaxed);
     }

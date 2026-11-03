@@ -115,14 +115,6 @@ pub fn hint_tone(text: impl Into<SharedString>, color: Hsla, _theme: &Theme) -> 
         .child(text.into())
 }
 
-/// 错误提示：危险色。
-pub fn error_text(text: impl Into<SharedString>, theme: &Theme) -> Div {
-    div()
-        .text_size(px(TEXT_SMALL))
-        .text_color(theme.danger())
-        .child(text.into())
-}
-
 /// 日志行：等宽字体，方便对齐时间戳与级别。
 pub fn log_line(text: impl Into<SharedString>, theme: &Theme) -> Div {
     div()

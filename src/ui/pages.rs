@@ -42,23 +42,43 @@ pub fn content(app: &App, snap: &Snapshot, theme: &Theme, cx: &mut Context<App>)
         .h_full()
         .bg(theme.bg())
         .child(page_header(app, theme, cx))
-        .children(notice_bar(app, theme, cx))
+        .children(notice_bar(app, snap, theme, cx))
         .child(page_scroll_area(app, snap, theme, cx))
         .into_any_element()
 }
 
-/// 顶部提示条：保存结果、动作出错、已复制…都在这里说。
+/// 顶部提示条：保存结果、动作出错、启动被拦下、已复制…都在这里说。
 ///
 /// 原来这些提示只画在仪表盘的首屏卡里，可「保存到磁盘」的按钮在代理配置页
 /// 的顶栏上——点完什么也不会出现，看起来就像没生效。提示条挂在内容区，
 /// 任何一页做任何动作都能立刻看到结果。
 ///
-/// 只显示一条：错误优先（出问题时不该被上一句「已保存」盖住）。
-fn notice_bar(app: &App, theme: &Theme, cx: &mut Context<App>) -> Option<AnyElement> {
-    let (text, color) = match (&app.error, &app.notice) {
-        (Some(error), _) => (error.clone(), theme.danger()),
-        (None, Some(notice)) => (notice.clone(), theme.success()),
-        (None, None) => return None,
+/// 只显示一条：错误优先（出问题时不该被上一句「已保存」盖住），其次是动作
+/// 回执，最后是「启动被拦下的原因」——它由后台的检测线程写进快照，在别的
+/// 页面点「启动」时原来同样毫无反馈。
+fn notice_bar(
+    app: &App,
+    snap: &Snapshot,
+    theme: &Theme,
+    cx: &mut Context<App>,
+) -> Option<AnyElement> {
+    let (text, color, glyph) = match (&app.error, &app.notice, &snap.blocked) {
+        (Some(error), _, _) => (
+            error.clone(),
+            theme.danger(),
+            DefaultIcons::info_circled(),
+        ),
+        (None, Some(notice), _) => (
+            notice.clone(),
+            theme.success(),
+            DefaultIcons::info_circled(),
+        ),
+        (None, None, Some(blocked)) => (
+            blocked.clone(),
+            theme.warning(),
+            DefaultIcons::exclamation_triangle(),
+        ),
+        (None, None, None) => return None,
     };
 
     Some(
@@ -82,11 +102,7 @@ fn notice_bar(app: &App, theme: &Theme, cx: &mut Context<App>) -> Option<AnyElem
                     .child(
                         div()
                             .flex_none()
-                            .child(icon(
-                                DefaultIcons::info_circled(),
-                                TEXT_BODY,
-                                color,
-                            )),
+                            .child(icon(glyph, TEXT_BODY, color)),
                     )
                     .child(
                         div()
