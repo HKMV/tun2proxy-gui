@@ -353,6 +353,35 @@ impl Profile {
     }
 }
 
+/// 配置里存的主题偏好：跟随系统 / 强制浅色 / 强制深色。
+///
+/// 只记「想要哪一种」，不记具体的色板：`auto` 每次启动都重新问系统，
+/// 用户白天在浅色系统上、晚上切了深色，程序下次启动就会跟上。
+///
+/// 放在 `core` 而不是 `ui` 层：它只是配置里的一个值，与 gpui 无关，
+/// 换 UI 框架也不用动配置文件。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeSetting {
+    #[default]
+    Auto,
+    Light,
+    Dark,
+}
+
+impl ThemeSetting {
+    pub const ALL: [ThemeSetting; 3] = [Self::Auto, Self::Light, Self::Dark];
+
+    /// 下拉框里的文字。
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Auto => t("跟随系统", "System"),
+            Self::Light => t("浅色", "Light"),
+            Self::Dark => t("深色", "Dark"),
+        }
+    }
+}
+
 /// 应用级配置：多套代理配置 + 当前选中的下标 + 与代理无关的选项。
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -364,6 +393,8 @@ pub struct Config {
     pub release_repo: String,
     /// 界面语言。
     pub language: LangSetting,
+    /// 界面主题：跟随系统 / 浅色 / 深色。
+    pub theme: ThemeSetting,
     /// 点标题栏的叉时，先问「要不要最小化到托盘」而不是直接退出。
     ///
     /// 默认开：tun2proxy 是常驻服务，误关窗口会把正在跑的隧道一起停掉。
@@ -397,6 +428,7 @@ impl Default for Config {
             auto_check_update: true,
             release_repo: "tun2proxy/tun2proxy".to_string(),
             language: LangSetting::Auto,
+            theme: ThemeSetting::Auto,
             confirm_close_to_tray: true,
             config_version: CONFIG_VERSION,
         }

@@ -16,7 +16,7 @@
 //! 收起只省地方，不藏功能：导航项全带 tooltip，状态点带状态文字，
 //! 启停按钮也还在原位。
 
-use gpui::{AnyElement, Context, Div, IntoElement, Svg, div, px, prelude::*};
+use gpui::{AnyElement, Context, Div, IntoElement, Svg, div, px, rems, prelude::*};
 use gpuikit::theme::{Theme, Themeable};
 use gpuikit::{DefaultIcons, elements::icon_button::icon_button};
 
@@ -25,7 +25,7 @@ use crate::core::i18n::t;
 use super::cards::status_label;
 use super::state::{App as UiApp, Msg, Page, Snapshot};
 use super::theme::{TEXT_BODY, TEXT_GROUP, WEIGHT_SEMIBOLD};
-use super::widgets::{SPACE_S, SPACE_XL, dot, hairline, pill, primary_button, v_hairline};
+use super::widgets::{SPACE_S, SPACE_XL, dot, hairline, v_hairline};
 
 /// 侧边栏宽度（逻辑像素）。
 ///
@@ -75,7 +75,7 @@ fn expanded(app: &UiApp, snap: &Snapshot, theme: &Theme, cx: &mut Context<UiApp>
     let brand = div()
         .flex()
         .flex_col()
-        .gap(px(SPACE_S))
+        .gap(px(2.0))
         .child(
             div()
                 .flex()
@@ -93,10 +93,17 @@ fn expanded(app: &UiApp, snap: &Snapshot, theme: &Theme, cx: &mut Context<UiApp>
                 )
                 .child(toggle(app, theme, cx)),
         )
-        // 版本胶囊单独一行而不是挤在名字右边：版本号是可变长文字
-        // （「tun2proxy 未安装」比「tun2proxy v0.8.6」长），挤在名字那一行
-        // 会把侧边栏的宽度变成一个会变的量。
-        .child(div().flex().child(pill(version_label(snap), color_accent(theme), theme)));
+        // 版本号是小字而不是彩色胶囊：胶囊是「状态」的形状（未运行 / 运行中
+        // 都是胶囊），版本号是静态信息，给它同一个形状会让侧栏顶部出现两个
+        // 视觉焦点，也让人以为版本会变。
+        .child(
+            div()
+                .px(px(4.0))
+                .text_size(px(11.0))
+                .text_color(theme.fg_muted())
+                .whitespace_nowrap()
+                .child(version_label(snap)),
+        );
 
     let nav = div().flex().flex_col().gap(px(2.0)).children(
         Page::ALL
@@ -104,24 +111,35 @@ fn expanded(app: &UiApp, snap: &Snapshot, theme: &Theme, cx: &mut Context<UiApp>
             .map(|page| nav_item(app, page, theme, cx)),
     );
 
-    // 主操作：运行中用普通按钮（停止是「收尾」动作），未运行用主按钮强调。
-    let action = if snap.status.is_active() {
-        super::widgets::text_action(
+    // 主操作：和状态同一行，一个 28dp 的方形图标按钮。
+    //
+    // 不撑满侧栏宽度、不占独立一行：整条侧栏最重的色块如果是底部那个按钮，
+    // 视线会先落到它上面，再倒回去找「我在哪一页」——侧栏的主线是导航，
+    // 启停是常驻的快捷入口，不该抢这条主线。图标按钮仍然常驻、仍然一步可达，
+    // 悬停有 tooltip 说明。
+    let (action_id, action_icon, action_label, action_msg) = if snap.status.is_active() {
+        (
             "sidebar-stop",
+            DefaultIcons::stop(),
             t("停止", "Stop"),
-            theme,
-            cx.listener(|this, _, _, cx| this.handle(Msg::Stop, cx)),
+            Msg::Stop,
         )
-        .w_full()
     } else {
-        primary_button(
+        (
             "sidebar-start",
+            DefaultIcons::play(),
             t("启动", "Start"),
-            theme,
-            cx.listener(|this, _, _, cx| this.handle(Msg::Start, cx)),
+            Msg::Start,
         )
-        .w_full()
     };
+    // 用 gpuikit 的 `icon_button` 而不是自绘方框：它的盒模型、悬停底色、
+    // 禁用态和 tooltip 都由组件自己维护，侧栏顶部那个收起按钮也是它，
+    // 两处口径一致。28dp 的盒 + 16dp 的图标，正好压在状态文字那一行里。
+    let action = icon_button(action_id, action_icon)
+        .box_size(rems(1.75))
+        .icon_size(rems(1.0))
+        .tooltip(gpuikit::elements::tooltip::tooltip(action_label))
+        .on_click(cx.listener(move |this, _, _, cx| this.handle(action_msg.clone(), cx)));
 
     div()
         .flex()
@@ -136,8 +154,8 @@ fn expanded(app: &UiApp, snap: &Snapshot, theme: &Theme, cx: &mut Context<UiApp>
         .child(div().flex_none().h(px(SPACE_XL)))
         .child(nav)
         .child(div().flex_1())
-        // 底部操作区：一条发丝线把「导航」和「状态 + 启停」分开，
-        // 否则状态那一行悬在空白里，读起来像是没画完。
+        // 底部：一条发丝线把「导航」和「状态 + 启停」分开，否则状态那一行
+        // 悬在空白里，读起来像是没画完。
         .child(hairline(theme))
         .child(
             div()
@@ -156,9 +174,9 @@ fn expanded(app: &UiApp, snap: &Snapshot, theme: &Theme, cx: &mut Context<UiApp>
                         .text_ellipsis()
                         .whitespace_nowrap()
                         .child(status_text),
-                ),
+                )
+                .child(action),
         )
-        .child(action)
 }
 
 /// 收起形态：只剩一列图标。
@@ -361,9 +379,4 @@ fn version_label(snap: &Snapshot) -> String {
         .clone()
         .map(|v| format!("tun2proxy v{v}"))
         .unwrap_or_else(|| t("tun2proxy 未安装", "tun2proxy not installed").to_string())
-}
-
-/// 版本胶囊的文字颜色。
-fn color_accent(theme: &Theme) -> gpui::Hsla {
-    theme.accent()
 }

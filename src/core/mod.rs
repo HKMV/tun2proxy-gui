@@ -38,6 +38,6 @@ pub mod tray;
 pub mod watchdog;
 pub mod window;
 
-pub use config::{Config, DnsMode, Profile, Verbosity};
+pub use config::{Config, DnsMode, Profile, ThemeSetting, Verbosity};
 pub use engine::{Engine, Shared, Status, Update};
 pub use traffic::TrafficSample;

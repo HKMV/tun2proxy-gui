@@ -23,7 +23,8 @@ use gpuikit::input::InputState;
 use crate::core::engine::ProbeState;
 use crate::core::i18n::{LangSetting, t, tf};
 use crate::core::{
-    Config, DnsMode, Engine, Profile, Shared, Status, TrafficSample, Update, Verbosity,
+    Config, DnsMode, Engine, Profile, Shared, Status, ThemeSetting, TrafficSample, Update,
+    Verbosity,
 };
 
 /// 日志区最多显示多少行（完整日志仍在内存里，最多 2000 行）。
@@ -166,6 +167,8 @@ pub enum Msg {
     MinimizeToTray,
     /// 切换界面语言（跟随系统 / 中文 / English）。
     SetLanguage(LangSetting),
+    /// 切换界面主题（跟随系统 / 浅色 / 深色）。
+    SetTheme(ThemeSetting),
 }
 
 /// 数字输入框的原始文本。
@@ -327,6 +330,7 @@ pub struct Selects {
     pub dns: Entity<SelectState<usize>>,
     pub verbosity: Entity<SelectState<usize>>,
     pub language: Entity<SelectState<usize>>,
+    pub theme: Entity<SelectState<usize>>,
 }
 
 impl Selects {
@@ -338,6 +342,7 @@ impl Selects {
                 SelectState::new(verbosity_select(config.active_profile()))
             }),
             language: cx.new(|_| SelectState::new(language_select(config))),
+            theme: cx.new(|_| SelectState::new(theme_select(config))),
         }
     }
 }
@@ -415,6 +420,26 @@ fn language_select(config: &Config) -> gpuikit::elements::select::Select<usize> 
         .on_change(|index, _window, cx| {
             let setting = LangSetting::ALL[index.min(LangSetting::ALL.len() - 1)];
             with_app(cx, |app, cx| app.handle(Msg::SetLanguage(setting), cx));
+        })
+}
+
+/// 界面主题下拉框。
+fn theme_select(config: &Config) -> gpuikit::elements::select::Select<usize> {
+    let options: Vec<(usize, String)> = ThemeSetting::ALL
+        .iter()
+        .enumerate()
+        .map(|(index, setting)| (index, setting.label().to_string()))
+        .collect();
+    let current = ThemeSetting::ALL
+        .iter()
+        .position(|setting| *setting == config.theme)
+        .unwrap_or(0);
+    select("theme-select", t("界面主题", "Theme"), options)
+        .selected(current)
+        .full_width(true)
+        .on_change(|index, _window, cx| {
+            let setting = ThemeSetting::ALL[index.min(ThemeSetting::ALL.len() - 1)];
+            with_app(cx, |app, cx| app.handle(Msg::SetTheme(setting), cx));
         })
 }
 
@@ -693,6 +718,10 @@ impl App {
             .iter()
             .position(|setting| *setting == self.config.language)
             .unwrap_or(0);
+        let theme = ThemeSetting::ALL
+            .iter()
+            .position(|setting| *setting == self.config.theme)
+            .unwrap_or(0);
 
         self.selects
             .profile
@@ -706,6 +735,9 @@ impl App {
         self.selects
             .language
             .update(cx, |state, cx| state.set_selected(Some(language), cx));
+        self.selects
+            .theme
+            .update(cx, |state, cx| state.set_selected(Some(theme), cx));
     }
 
     /// 日志行数变了就滚到底（贴住最新一行）。

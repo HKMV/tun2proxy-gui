@@ -5,14 +5,14 @@
 tun2proxy 的跨平台桌面图形前端，用 Rust 编写。界面基于
 [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui)（Zed 的 GPU 渲染
 UI 框架）和 gpuikit（shadcn 风格的 GPUI 组件库），不依赖 WebView；配色、圆角、
-控件尺度全部取自 gpuikit 自带的主题（默认 Gruvbox 深色）。
+控件尺度全部取自 gpuikit 自带的主题（Catppuccin，浅色 / 深色 / 跟随系统三选一）。
 
 界面层级与交互参考了 [Paper-Dragon/tun2proxy-gui](https://github.com/Paper-Dragon/tun2proxy-gui)，
 并按「多套代理配置 + 一键启停」重做了布局。
 
 ![仪表盘](assets/screenshots/dashboard-zh.png)
 
-*中文界面（仪表盘）：左侧常驻运行状态与启停按钮，右侧是当前配置、运行参数与实时日志。*
+*中文界面（仪表盘）：左侧常驻导航与运行状态，右侧是当前配置、运行参数与实时日志。*
 
 ## 功能
 
@@ -34,6 +34,8 @@ UI 框架）和 gpuikit（shadcn 风格的 GPUI 组件库），不依赖 WebView
   看日志。
 - **中英文界面**：设置里可选「跟随系统 / 中文 / English」，切换立即生效。
   代码里每条文案都是 `t("中文", "English")`，没有单独的翻译文件要维护。
+- **浅色 / 深色 / 跟随系统**：设置里三选一，切换立即生效并落盘；「跟随系统」
+  读 Windows 的浅色设置，原生标题栏一起跟着变。
 - **实时流量折线图**：仪表盘首屏卡右侧显示最近一分钟的下行/上行速率。
 - **系统托盘**：托盘图标常驻，提示文字跟着运行状态变；右键菜单可启动 / 停止 /
   显示窗口 / 退出，双击图标唤回窗口。
@@ -151,7 +153,7 @@ cargo build --release
 
 ```bash
 # 先把 Cargo.toml 的 version 改好并提交，tag 必须与它一致（CI 会校验）
-git tag v0.2.1 && git push origin v0.2.1
+git tag v0.3.0 && git push origin v0.3.0
 ```
 
 产物：`tun2proxy-gui-<tag>-<target>.zip`（Windows）、`.tar.gz`（Linux /
@@ -228,8 +230,12 @@ $env:http_proxy="http://127.0.0.1:7890"; $env:https_proxy="http://127.0.0.1:7890
 ## 主题
 
 配色、圆角、控件高度全部来自 gpuikit 的 `Themeable` 语义色与 `ControlScale`，
-本程序不自己配色。默认是 Catppuccin Mocha（冷灰底 + 蓝色强调色），设环境变量
-可以换：
+本程序不自己配色。明暗由三处决定，优先级从高到低：
+
+1. **环境变量 `TUN2PROXY_GUI_THEME`**（排障与截图用，能一次定死明暗）；
+2. **设置页 →「程序与日志」→「界面」→「界面主题」**（跟随系统 / 浅色 / 深色，
+   改完立即生效并落盘）；
+3. **跟随系统**时读 Windows 的 `AppsUseLightTheme` 注册表值。
 
 ```powershell
 set TUN2PROXY_GUI_THEME=light    # Catppuccin Latte（浅色）
@@ -238,7 +244,10 @@ set TUN2PROXY_GUI_THEME=gruvbox  # gpuikit 的招牌 Gruvbox 深色
 ```
 
 认不出来的名字回落到默认主题（不报错，免得环境变量写错就起不来）。
-换主题时 Windows 原生标题栏的深浅也会跟着切（`core::platform::set_dark_titlebar`）。
+换主题时 Windows 原生标题栏的深浅也会跟着切（`core::platform::set_dark_titlebar`），
+运行时切换同理——否则系统是浅色、界面切成深色时，顶上会顶一条白带。
+
+「跟随系统」只在 Windows 上真正读系统偏好；其它平台回落为深色。
 
 为什么不用 gpuikit 的默认主题：Gruvbox 是暖褐底 + 亮绿强调色，那套色板适合终端
 和编辑器，放在满屏中文小字的设置页上有两个问题——暖褐底色让文字发黄显脏，绿色

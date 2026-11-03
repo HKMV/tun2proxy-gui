@@ -205,6 +205,15 @@ pub fn update(app: &mut App, msg: Msg, cx: &mut Context<App>) {
                 super::state::with_app(cx, |app, cx| app.rebuild_selects(cx));
             });
         }
+        Msg::SetTheme(value) => {
+            app.config.theme = value;
+            // 主题是「一点就想看到结果」的东西：先换，再存盘。存盘失败只影响
+            // 下次启动，不该拦住这次切换。
+            super::theme::reinstall(cx, value);
+            if let Err(err) = app.config.save() {
+                app.error = Some(err);
+            }
+        }
     }
 
     // 状态改完了，让根视图重画一帧。

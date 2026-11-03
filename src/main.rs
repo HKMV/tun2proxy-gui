@@ -78,6 +78,8 @@ fn main() {
     // 语言要在建任何界面元素之前定下来：视图是「读全局语言」渲染的，
     // 先建窗口再切语言会闪一下另一门语言。
     core::i18n::apply(config.language);
+    // 主题同理：开窗之前就要装好，否则第一帧是默认配色，闪一下才变色。
+    let theme_setting = config.theme;
     let engine = Engine::new();
     let shared = engine.shared();
 
@@ -92,9 +94,9 @@ fn main() {
         .run(move |cx| {
             // 组件库初始化（主题、输入键位、元素管理器）必须先于任何窗口。
             gpuikit::init(cx);
-            // 再按 `TUN2PROXY_GUI_THEME` 装主题：默认就是 gpuikit 的 Gruvbox
-            // 深色，设了环境变量才换肤。整套配色与控件尺度都由组件库决定。
-            ui::theme::install(cx);
+            // 再按「环境变量 > 设置项 > 系统」装主题。整套配色与控件尺度
+            // 都由组件库决定，这里只挑明暗并做层次修正。
+            ui::theme::install(cx, theme_setting);
 
             let window_size = size(px(900.0), px(650.0));
             let options = WindowOptions {

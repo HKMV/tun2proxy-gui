@@ -1,6 +1,6 @@
 [package]
 name = "tun2proxy-gui"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.95"
 description = "Cross-platform desktop GUI for tun2proxy"
@@ -63,6 +63,8 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_HiDpi",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
+    # 「跟随系统」主题要读 AppsUseLightTheme 这个注册表值。
+    "Win32_System_Registry",
 ] }
 # 托盘图标按状态着色：ico 里的帧是 PNG，要解码改像素再编码回去。
 # 纯 Rust、无系统依赖，只在 Windows 上编进来。

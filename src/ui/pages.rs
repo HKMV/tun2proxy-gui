@@ -21,9 +21,9 @@ use gpuikit::theme::{Theme, Themeable};
 use crate::core::i18n::t;
 
 use super::cards::{
-    about_group, binary_group, bypass_group, editing_profile, hero_card, language_group, log_group,
-    log_preview_group, network_group, profile_edit_group, profile_list_group, profile_picker_group,
-    proxy_group, runtime_group, stat_group, udpgw_group, window_group,
+    about_group, appearance_group, binary_group, bypass_group, editing_profile, hero_card,
+    log_group, log_preview_group, network_group, profile_edit_group, profile_list_group,
+    profile_picker_group, proxy_group, runtime_group, stat_group, udpgw_group, window_group,
 };
 use super::state::{App, Msg, Snapshot};
 use super::widgets::{
@@ -165,7 +165,7 @@ fn page_body(app: &App, snap: &Snapshot, theme: &Theme, cx: &mut Context<App>) -
             binary_group(snap, theme, cx),
             runtime_group(app, theme, cx),
             window_group(app, theme, cx),
-            language_group(app, theme),
+            appearance_group(app, theme),
             log_group(app, snap, theme, cx),
             about_group(theme),
         ],

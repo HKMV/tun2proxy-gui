@@ -6,8 +6,8 @@ A cross-platform desktop front end for [tun2proxy](https://github.com/tun2proxy/
 written in Rust. The UI is built on
 [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) (Zed's GPU-rendered
 UI framework) and gpuikit (a shadcn-style component library for GPUI) — no WebView.
-Colours, radii and control metrics all come from gpuikit's own themes (Gruvbox Dark
-by default).
+Colours, radii and control metrics all come from gpuikit's own themes (Catppuccin,
+with Light / Dark / Follow-system).
 
 The layout and interaction model were inspired by
 [Paper-Dragon/tun2proxy-gui](https://github.com/Paper-Dragon/tun2proxy-gui), then
@@ -15,7 +15,7 @@ rebuilt around "multiple proxy profiles + one-click start/stop".
 
 ![Dashboard](assets/screenshots/dashboard-en.png)
 
-*English UI (Dashboard): service state and start/stop always in the sidebar;
+*English UI (Dashboard): navigation and service state always in the sidebar;
 current profile, runtime options and live log on the right.*
 
 ## Features
@@ -179,7 +179,7 @@ Releases (see `.github/workflows/release.yml`):
 
 ```bash
 # Bump `version` in Cargo.toml, commit it, then tag — CI enforces that they match
-git tag v0.2.1 && git push origin v0.2.1
+git tag v0.3.0 && git push origin v0.3.0
 ```
 
 Artifacts: `tun2proxy-gui-<tag>-<target>.zip` (Windows) and `.tar.gz` (Linux /
@@ -271,9 +271,14 @@ and is persisted (the `language` field). Strings live in code
 ## Theme
 
 Colours, radii and control heights all come from gpuikit's `Themeable` semantic
-colours and `ControlScale`; this app does no colouring of its own. The default is
-Catppuccin Mocha (cool grey background, blue accent), and an environment variable
-switches it:
+colours and `ControlScale`; this app does no colouring of its own. Light/dark is
+decided in three places, highest priority first:
+
+1. **The `TUN2PROXY_GUI_THEME` environment variable** (for debugging and
+   screenshots — it pins light/dark regardless of everything else);
+2. **Settings → "Program & logs" → "Appearance" → "Theme"** (System / Light /
+   Dark, applied immediately and saved);
+3. **System** reads Windows' `AppsUseLightTheme` registry value.
 
 ```powershell
 set TUN2PROXY_GUI_THEME=light    # Catppuccin Latte (light)
@@ -283,8 +288,12 @@ set TUN2PROXY_GUI_THEME=gruvbox  # gpuikit's signature Gruvbox Dark
 
 An unknown name falls back to the default instead of failing (a typo in an
 environment variable should not stop the app from starting). The Windows title
-bar's light/dark mode follows the theme too
-(`core::platform::set_dark_titlebar`).
+bar's light/dark mode follows the theme too (`core::platform::set_dark_titlebar`),
+including when the theme changes at runtime — otherwise a dark UI on a
+light-themed system keeps a white strip on top.
+
+"System" only truly reads the OS preference on Windows; other platforms fall
+back to dark.
 
 Why not gpuikit's own default: Gruvbox is a warm brown background with a bright
 green accent. That palette suits terminals and editors, but on a settings screen

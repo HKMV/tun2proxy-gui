@@ -36,6 +36,7 @@ use super::widgets::{
     ROW_CONTROL, ROW_CONTROL_NARROW, SPACE_M, SPACE_S, SPACE_XS, compact_row, error_text,
     hero_title, hint, human_bytes, icon_action, labeled_action, log_line, primary_button,
     row_icon, row_value, setting_block, setting_row, settings_group, text_action, toggle_control,
+    v_hairline,
 };
 
 /// 仪表盘上最多显示多少行日志。
@@ -195,13 +196,20 @@ pub fn hero_card(app: &App, snap: &Snapshot, theme: &Theme, cx: &mut Context<App
         .flex()
         .flex_col()
         .gap(px(SPACE_M))
-        .p(px(super::widgets::SPACE_XL))
+        .p(px(20.0))
         .child(
+            // 左文右图，中间一条发丝线。不加这条线时，两块内容只是「并排
+            // 放着」，中间那 24dp 的空隙读起来像排版没排完；有了线，右侧
+            // 就明确是「附属于这一屏的读数」，而不是另一块正文。
+            //
+            // `items_stretch` 让分隔线拿到整行的高度；右侧面板自己
+            // `justify_center`，在拉高之后垂直居中，和左边那摞文字的重心对齐。
             div()
                 .flex()
-                .items_center()
-                .gap(px(super::widgets::SPACE_XL))
+                .items_stretch()
+                .gap(px(SPACE_M))
                 .child(text_column)
+                .child(v_hairline(theme))
                 .child(traffic_panel(snap, theme)),
         )
         .child(extras);
@@ -235,6 +243,7 @@ fn traffic_panel(snap: &Snapshot, theme: &Theme) -> AnyElement {
         .flex()
         .flex_col()
         .flex_none()
+        .justify_center()
         .w(px(CHART_WIDTH))
         .gap(px(SPACE_XS))
         .child(
@@ -1168,18 +1177,31 @@ pub fn window_group(app: &App, theme: &Theme, cx: &mut Context<App>) -> AnyEleme
     settings_group(t("窗口与托盘", "Window & tray"), rows, theme).into_any_element()
 }
 
-/// 界面语言：跟随系统 / 中文 / English。
+/// 界面语言 + 主题：都属于「界面怎么显示」，放在同一组里。
 ///
-/// 改完立即生效并落盘：语言是「看一眼就想换」的东西，不该要求再点一次保存。
-pub fn language_group(app: &App, theme: &Theme) -> AnyElement {
-    let rows = vec![compact_row(
-        t("界面语言", "Language"),
-        Some(select_input(app.selects.language.clone(), ROW_CONTROL)),
-        theme,
-    )
-    .into_any_element()];
+/// 两个都是下拉框而不是三选一的按钮组：gpuikit 的下拉框已经带上了选中态、
+/// 键盘操作和弹出层，用一组自制按钮会把这几样重新实现一遍，还会让设置页
+/// 出现两套控件语言。
+///
+/// 改完立即生效并落盘：语言和主题都是「看一眼就想换」的东西，不该要求
+/// 再点一次保存。
+pub fn appearance_group(app: &App, theme: &Theme) -> AnyElement {
+    let rows = vec![
+        compact_row(
+            t("界面语言", "Language"),
+            Some(select_input(app.selects.language.clone(), ROW_CONTROL)),
+            theme,
+        )
+        .into_any_element(),
+        compact_row(
+            t("界面主题", "Theme"),
+            Some(select_input(app.selects.theme.clone(), ROW_CONTROL)),
+            theme,
+        )
+        .into_any_element(),
+    ];
 
-    settings_group(t("界面语言", "Language"), rows, theme).into_any_element()
+    settings_group(t("界面", "Appearance"), rows, theme).into_any_element()
 }
 
 /// tun2proxy 程序本体：版本、检查更新、下载安装。
