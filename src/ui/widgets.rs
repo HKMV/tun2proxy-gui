@@ -235,14 +235,20 @@ fn stroked(inner: Div, radius: f32, theme: &Theme) -> Div {
 // 而且每张卡都要单独描边，屏幕上全是框。分组把「同一类」的设置收进一张卡，
 // 靠行内的层级（标题 + 灰说明 + 右侧控件）区分，信息密度高得多。
 
+/// 把一个 `Svg` 画出来：尺寸与颜色都落在 `Svg` 自己身上。
+///
+/// gpui 的 `Svg` 是**叶子元素**，不从父容器继承宽高。外面套一层
+/// `w(18).h(18)` 的 `div` 只把盒子撑开，里面的图标量出来仍是 0×0——
+/// 于是图标整片「消失」，而布局上看不出任何异常。gpuikit 自己的组件
+/// （`icon_button` 的图标、`Select` 的箭头）也都是在 `Svg` 上
+/// `.size()` + `.text_color()`，这里照同一个口径来。
+pub fn icon(svg: Svg, size: f32, color: Hsla) -> impl IntoElement {
+    svg.flex_none().w(px(size)).h(px(size)).text_color(color)
+}
+
 /// 行的前导图标。
-pub fn row_icon(icon: Svg, theme: &Theme) -> Div {
-    div()
-        .flex_none()
-        .w(px(ROW_ICON))
-        .h(px(ROW_ICON))
-        .text_color(theme.fg_muted())
-        .child(icon)
+pub fn row_icon(svg: Svg, theme: &Theme) -> impl IntoElement {
+    icon(svg, ROW_ICON, theme.fg_muted())
 }
 
 /// 一行设置。
@@ -460,7 +466,7 @@ pub fn text_action(
 fn action_button(
     id: impl Into<ElementId>,
     label: SharedString,
-    icon: Option<Svg>,
+    svg: Option<Svg>,
     theme: &Theme,
     handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Stateful<Div> {
@@ -488,15 +494,8 @@ fn action_button(
         .hover(move |style| style.bg(bg_hover))
         .active(move |style| style.bg(bg_active))
         .on_click(handler);
-    if let Some(icon) = icon {
-        button = button.child(
-            div()
-                .flex_none()
-                .w(px(14.0))
-                .h(px(14.0))
-                .text_color(theme.fg_muted())
-                .child(icon),
-        );
+    if let Some(svg) = svg {
+        button = button.child(icon(svg, 14.0, theme.fg_muted()));
     }
     button.child(label)
 }

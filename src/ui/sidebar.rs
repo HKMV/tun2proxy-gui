@@ -25,7 +25,7 @@ use crate::core::i18n::t;
 use super::cards::status_label;
 use super::state::{App as UiApp, Msg, Page, Snapshot};
 use super::theme::{TEXT_BODY, TEXT_GROUP, WEIGHT_SEMIBOLD};
-use super::widgets::{SPACE_S, SPACE_XL, dot, hairline, v_hairline};
+use super::widgets::{SPACE_S, SPACE_XL, dot, hairline, icon, v_hairline};
 
 /// 侧边栏宽度（逻辑像素）。
 ///
@@ -209,13 +209,7 @@ fn rail(app: &UiApp, snap: &Snapshot, theme: &Theme, cx: &mut Context<UiApp>) ->
         .hover(|style| style.bg(theme.surface_secondary()))
         .tooltip(gpuikit::elements::tooltip::tooltip(action_label))
         .on_click(cx.listener(move |this, _, _, cx| this.handle(action_msg.clone(), cx)))
-        .child(
-            div()
-                .w(px(16.0))
-                .h(px(16.0))
-                .text_color(theme.fg_muted())
-                .child(action_icon),
-        );
+        .child(icon(action_icon, 16.0, theme.fg_muted()));
 
     div()
         .flex()
@@ -299,14 +293,7 @@ fn nav_item(
                 .rounded(px(2.0))
                 .bg(if selected { accent } else { theme.surface() }),
         )
-        .child(
-            div()
-                .flex_none()
-                .w(px(18.0))
-                .h(px(18.0))
-                .text_color(fg)
-                .child(page_icon(page)),
-        )
+        .child(icon(page_icon(page), 18.0, fg))
         .child(
             div()
                 .flex_1()
@@ -350,13 +337,7 @@ fn rail_item(
         })
         .tooltip(gpuikit::elements::tooltip::tooltip(page.label()))
         .on_click(cx.listener(move |this, _, _, cx| this.handle(Msg::PageSelected(page), cx)))
-        .child(
-            div()
-                .w(px(18.0))
-                .h(px(18.0))
-                .text_color(fg)
-                .child(page_icon(page)),
-        )
+        .child(icon(page_icon(page), 18.0, fg))
 }
 
 /// 导航项的图标。

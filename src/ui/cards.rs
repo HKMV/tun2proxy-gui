@@ -23,6 +23,7 @@ use gpuikit::elements::text_field::text_field;
 use gpuikit::elements::textarea::textarea;
 use gpuikit::input::InputState;
 use gpuikit::theme::{Theme, Themeable};
+use gpuikit::traits::control_sized::ControlSized;
 use gpuikit::DefaultIcons;
 
 use crate::core::engine::ProbeState;
@@ -34,7 +35,7 @@ use super::state::{App, Field, Msg, Page, Snapshot};
 use super::theme::{TEXT_BODY, TEXT_SMALL};
 use super::widgets::{
     ROW_CONTROL, ROW_CONTROL_NARROW, SPACE_M, SPACE_S, SPACE_XS, compact_row, error_text,
-    hero_title, hint, human_bytes, icon_action, labeled_action, log_line, primary_button,
+    hero_title, hint, human_bytes, icon, icon_action, labeled_action, log_line, primary_button,
     row_icon, row_value, setting_block, setting_row, settings_group, text_action, toggle_control,
     v_hairline,
 };
@@ -81,7 +82,7 @@ fn text_input(state: &Entity<InputState>, width: f32, cx: &mut Context<App>) -> 
     div()
         .flex_none()
         .w(px(width))
-        .child(text_field(state, cx).full_width(true))
+        .child(text_field(state, cx).full_width(true).large())
         .into_any_element()
 }
 
@@ -180,14 +181,7 @@ pub fn hero_card(app: &App, snap: &Snapshot, theme: &Theme, cx: &mut Context<App
                 .flex()
                 .items_start()
                 .gap(px(SPACE_S))
-                .child(
-                    div()
-                        .flex_none()
-                        .w(px(16.0))
-                        .h(px(16.0))
-                        .text_color(theme.warning())
-                        .child(DefaultIcons::exclamation_triangle()),
-                )
+                .child(icon(DefaultIcons::exclamation_triangle(), 16.0, theme.warning()))
                 .child(div().flex_1().min_w_0().child(hint(tip, theme))),
         );
     }
@@ -952,7 +946,7 @@ pub fn bypass_group(app: &App, theme: &Theme, cx: &mut Context<App>) -> AnyEleme
             ),
             div()
                 .w_full()
-                .child(textarea(&bypass, cx).rows(6).max_height(px(150.0))),
+                .child(textarea(&bypass, cx).rows(6).max_height(px(150.0)).large()),
             theme,
         )
         .into_any_element(),

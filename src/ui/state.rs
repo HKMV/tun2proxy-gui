@@ -19,6 +19,7 @@ use gpui::{App as GpuiApp, AppContext, Context, Entity, ScrollHandle, Subscripti
 use gpuikit::elements::dialog::DialogState;
 use gpuikit::elements::select::{SelectState, select};
 use gpuikit::input::InputState;
+use gpuikit::traits::control_sized::ControlSized;
 
 use crate::core::engine::ProbeState;
 use crate::core::i18n::{LangSetting, t, tf};
@@ -356,6 +357,7 @@ fn profile_select(config: &Config) -> gpuikit::elements::select::Select<usize> {
         .map(|(index, profile)| (index, profile.name.trim().to_string()))
         .collect();
     select("profile-select", t("配置文件", "Profile"), options)
+        .large()
         .selected(config.active)
         .full_width(true)
         .on_change(|index, _window, cx| {
@@ -375,6 +377,7 @@ fn dns_select(profile: &Profile) -> gpuikit::elements::select::Select<usize> {
         .position(|mode| *mode == profile.dns)
         .unwrap_or(0);
     select("dns-select", t("DNS 模式", "DNS mode"), options)
+        .large()
         .selected(current)
         .full_width(true)
         .on_change(|index, _window, cx| {
@@ -395,6 +398,7 @@ fn verbosity_select(profile: &Profile) -> gpuikit::elements::select::Select<usiz
         .position(|level| *level == profile.verbosity)
         .unwrap_or(0);
     select("verbosity-select", t("日志级别", "Log level"), options)
+        .large()
         .selected(current)
         .full_width(true)
         .on_change(|index, _window, cx| {
@@ -415,6 +419,7 @@ fn language_select(config: &Config) -> gpuikit::elements::select::Select<usize> 
         .position(|setting| *setting == config.language)
         .unwrap_or(0);
     select("language-select", t("界面语言", "Language"), options)
+        .large()
         .selected(current)
         .full_width(true)
         .on_change(|index, _window, cx| {
@@ -435,6 +440,7 @@ fn theme_select(config: &Config) -> gpuikit::elements::select::Select<usize> {
         .position(|setting| *setting == config.theme)
         .unwrap_or(0);
     select("theme-select", t("界面主题", "Theme"), options)
+        .large()
         .selected(current)
         .full_width(true)
         .on_change(|index, _window, cx| {
