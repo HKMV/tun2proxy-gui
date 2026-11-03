@@ -210,19 +210,42 @@ jobs:
 
       # 用 gh CLI（runner 自带）而不是第三方 action：不用 pin 第三方版本。
       # 已存在同名 Release 时只补传/覆盖文件，不重建，方便重跑。
+      #
+      # 发布说明**不用** `--generate-notes`：它靠 PR 标题拼 "What's Changed"，
+      # 而这个仓库直接推 main、不开 PR，生成出来只剩一行 compare 链接——
+      # 0.3.3 到 0.3.7 的 Release 页面全都是那样，详细说明写在了版本提交里
+      # 却没人看得见。
+      #
+      # 现在的顺序：先取 tag 正文（`git tag -a -m "..."` 写的那段），
+      # 没写再退回版本提交的正文（`chore(release): ...` 下面那段）。
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          notes="$(git tag -l --format='%(contents:body)' "$TAG")"
+          if [ -z "$(printf '%s' "$notes" | tr -d '[:space:]')" ]; then
+            notes="$(git log -1 --pretty=%b HEAD)"
+          fi
+          if [ -z "$(printf '%s' "$notes" | tr -d '[:space:]')" ]; then
+            notes="**Full Changelog**: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/compare/$TAG~1...$TAG"
+          fi
+          printf '%s\n' "$notes" > "$RUNNER_TEMP/notes.md"
+          echo "--- release notes ---"
+          cat "$RUNNER_TEMP/notes.md"
+
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" dist/* --clobber
+            # 重跑时把说明也同步一遍，别让正文停在第一次那一版。
+            gh release edit "$TAG" \
+              --title "Tun2Proxy GUI $TAG" \
+              --notes-file "$RUNNER_TEMP/notes.md"
           else
             prerelease=""
             case "$TAG" in *-*) prerelease="--prerelease" ;; esac
             gh release create "$TAG" dist/* \
               --verify-tag \
               --title "Tun2Proxy GUI $TAG" \
-              --generate-notes \
+              --notes-file "$RUNNER_TEMP/notes.md" \
               $prerelease
           fi

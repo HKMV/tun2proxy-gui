@@ -160,12 +160,21 @@ cargo build --release
 
 ```bash
 # 先把 Cargo.toml 的 version 改好并提交，tag 必须与它一致（CI 会校验）
-git tag v0.3.8 && git push origin v0.3.8
+# 用 annotated tag（-a），正文会原样变成 Release 的发布说明
+git tag -a v0.3.8 -m "v0.3.8
+
+- 第一条改动
+- 第二条改动" && git push origin v0.3.8
 ```
 
 产物：`tun2proxy-gui-<tag>-<target>.zip`（Windows）、`.tar.gz`（Linux /
 macOS，macOS 里是 `Tun2Proxy GUI.app`），外加一份 `SHA256SUMS.txt`。
-也可以在 Actions 页面手动 Run workflow，填一个已存在的 tag 重跑发布。
+也可以在 Actions 页面手动 Run workflow，填一个已存在的 tag 重跑发布
+（重跑会连发布说明一起刷新）。
+
+**发布说明**取自 tag 正文；tag 没写正文时退回版本提交的正文（`chore(release):`
+下面那段）。不用 GitHub 自动生成的 changelog：这个仓库直接推 `main`、不开
+PR，`--generate-notes` 只会产出一行 compare 链接。
 
 ## 网络与代理
 

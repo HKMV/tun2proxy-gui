@@ -189,13 +189,22 @@ Releases (see `.github/workflows/release.yml`):
 
 ```bash
 # Bump `version` in Cargo.toml, commit it, then tag — CI enforces that they match
-git tag v0.3.8 && git push origin v0.3.8
+# Use an annotated tag (-a): its message becomes the release notes verbatim
+git tag -a v0.3.8 -m "v0.3.8
+
+- First change
+- Second change" && git push origin v0.3.8
 ```
 
 Artifacts: `tun2proxy-gui-<tag>-<target>.zip` (Windows) and `.tar.gz` (Linux /
 macOS, containing `Tun2Proxy GUI.app` on macOS), plus a `SHA256SUMS.txt`.
 You can also run the workflow manually from the Actions page with the name of
-an existing tag to republish.
+an existing tag to republish (a rerun refreshes the release notes too).
+
+Release notes come from the tag message; if the tag has no body, the version
+bump commit's body is used instead. GitHub's generated changelog is not used:
+this repo pushes straight to `main` without PRs, so `--generate-notes` only
+ever produces a compare link.
 
 ## Network and proxies
 
