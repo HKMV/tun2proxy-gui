@@ -15,7 +15,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use gpui::{App as GpuiApp, AppContext, Context, Entity, ScrollHandle, Subscription, Window};
+use gpui::{App as GpuiApp, AppContext, Context, Entity, ScrollHandle, Subscription, Window, px};
 use gpuikit::elements::dialog::DialogState;
 use gpuikit::elements::select::{SelectState, select};
 use gpuikit::input::InputState;
@@ -27,6 +27,7 @@ use crate::core::{
     Config, DnsMode, Engine, Profile, Shared, Status, ThemeSetting, TrafficSample, Update,
     Verbosity,
 };
+use crate::ui::widgets::ROW_CONTROL;
 
 /// 日志区最多显示多少行（完整日志仍在内存里，最多 2000 行）。
 pub const LOG_VIEW_LINES: usize = 200;
@@ -360,6 +361,8 @@ fn profile_select(config: &Config) -> gpuikit::elements::select::Select<usize> {
         .large()
         .selected(config.active)
         .full_width(true)
+        // 弹层默认按内容排版，会比 220dp 的触发框窄一截，看着不像同一个控件。
+        .popup_width(px(ROW_CONTROL))
         .on_change(|index, _window, cx| {
             with_app(cx, |app, cx| app.handle(Msg::ProfileSelected(index), cx));
         })
@@ -380,6 +383,8 @@ fn dns_select(profile: &Profile) -> gpuikit::elements::select::Select<usize> {
         .large()
         .selected(current)
         .full_width(true)
+        // 弹层默认按内容排版，会比 220dp 的触发框窄一截，看着不像同一个控件。
+        .popup_width(px(ROW_CONTROL))
         .on_change(|index, _window, cx| {
             let mode = DnsMode::ALL[index.min(DnsMode::ALL.len() - 1)];
             with_app(cx, |app, cx| app.handle(Msg::SetDns(mode), cx));
@@ -401,6 +406,8 @@ fn verbosity_select(profile: &Profile) -> gpuikit::elements::select::Select<usiz
         .large()
         .selected(current)
         .full_width(true)
+        // 弹层默认按内容排版，会比 220dp 的触发框窄一截，看着不像同一个控件。
+        .popup_width(px(ROW_CONTROL))
         .on_change(|index, _window, cx| {
             let level = Verbosity::ALL[index.min(Verbosity::ALL.len() - 1)];
             with_app(cx, |app, cx| app.handle(Msg::SetVerbosity(level), cx));
@@ -422,6 +429,8 @@ fn language_select(config: &Config) -> gpuikit::elements::select::Select<usize> 
         .large()
         .selected(current)
         .full_width(true)
+        // 弹层默认按内容排版，会比 220dp 的触发框窄一截，看着不像同一个控件。
+        .popup_width(px(ROW_CONTROL))
         .on_change(|index, _window, cx| {
             let setting = LangSetting::ALL[index.min(LangSetting::ALL.len() - 1)];
             with_app(cx, |app, cx| app.handle(Msg::SetLanguage(setting), cx));
@@ -443,6 +452,8 @@ fn theme_select(config: &Config) -> gpuikit::elements::select::Select<usize> {
         .large()
         .selected(current)
         .full_width(true)
+        // 弹层默认按内容排版，会比 220dp 的触发框窄一截，看着不像同一个控件。
+        .popup_width(px(ROW_CONTROL))
         .on_change(|index, _window, cx| {
             let setting = ThemeSetting::ALL[index.min(ThemeSetting::ALL.len() - 1)];
             with_app(cx, |app, cx| app.handle(Msg::SetTheme(setting), cx));

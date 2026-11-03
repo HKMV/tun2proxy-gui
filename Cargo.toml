@@ -1,6 +1,6 @@
 [package]
 name = "tun2proxy-gui"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 rust-version = "1.95"
 description = "Cross-platform desktop GUI for tun2proxy"
@@ -20,6 +20,10 @@ gpui_platform = { package = "gpui-platform-gpui-unofficial", version = "=1.14.2"
     "font-kit",
 ] }
 # 组件库：按钮、输入框、下拉框、进度条、对话框、主题与图标。
+#
+# 走 vendor/ 里的 0.9.0 副本（见文件末尾的 [patch.crates-io]），因为上游的
+# Select 弹层宽度写死按内容排版、且不给应用任何旋钮，而这里的下拉框必须和
+# 触发框同宽。补丁只有二十来行，见 vendor/gpuikit/PATCH.md。
 gpuikit = "0.9"
 
 log = { version = "0.4", features = ["std"] }
@@ -75,3 +79,13 @@ png = "0.17"
 strip = "symbols"
 lto = "thin"
 codegen-units = 16
+
+# gpuikit 0.9.0 的本地副本。上游 `Select` 把弹层宽度交给了内容（只有
+# `min_w(120px)`），触发框多宽它都不管，应用侧拿不到任何开关；`Listbox`
+# 又是 `pub(crate)`，没法在应用里拼一个同宽的。所以这里只给 `Select` 加一个
+# `popup_width`，让弹层跟着触发框走，其余逻辑原样不动。
+#
+# 升级 gpui / gpuikit 时：把新版源码重新拷到 vendor/gpuikit，再按
+# vendor/gpuikit/PATCH.md 里的清单重打一遍；上游补了这个 API 就可以删掉本段。
+[patch.crates-io]
+gpuikit = { path = "vendor/gpuikit" }

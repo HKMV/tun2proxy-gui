@@ -2,8 +2,9 @@
 //!
 //! 这里**不自己发明组件**。gpuikit 的按钮、输入框、下拉框、对话框、卡片、
 //! 徽标全部从 [`Themeable`] 的语义色取色，圆角/内边距/高度由库的
-//! `ControlScale` 决定，我们一个都不覆盖——「用 gpuikit 的风格」就是让它
-//! 的组件按自己的规则画，只把颜色换成本应用要的那一套。
+//! `ControlScale` 决定——「用 gpuikit 的风格」就是让它的组件按自己的规则
+//! 画，只把颜色换成本应用要的那一套。唯一一处例外是 [`tune`] 末尾把
+//! `ControlScale` 的 Large 档抬到 32dp：那是尺寸对不上正文，不是风格问题。
 //!
 //! # 为什么不是 gpuikit 的默认主题
 //!
@@ -34,8 +35,8 @@
 
 use std::sync::Arc;
 
-use gpui::{App, FontWeight, Hsla};
-use gpuikit::theme::{GlobalTheme, Theme, ThemeVariant};
+use gpui::{App, FontWeight, Hsla, rems};
+use gpuikit::theme::{ControlMetrics, GlobalTheme, Theme, ThemeVariant};
 
 use crate::core::config::ThemeSetting;
 
@@ -247,6 +248,25 @@ fn tune(theme: &mut Theme) {
         border.l = (border.l + 0.04).min(1.0);
         theme.border_color = border;
     }
+
+    // 控件档位：gpuikit 的 Large 是 24dp 高 / 13px 字，而本应用的正文是
+    // 14px——按钮和输入框里的字比旁边那行说明还小半号，24dp 的框装 14px 的
+    // 字也只剩上下各 3dp 的余量，看着发挤。抬到 32dp / 14px（Windows 11
+    // 设置页的尺寸）：按钮、输入框、下拉框、下拉弹层的行全部落在同一档上，
+    // 弹层行高也跟着从 24 变 32，点起来不再是一条细缝。
+    //
+    // 只动 Large 一档：Small（16dp）留给徽标，Medium（20dp）留给侧栏的图标
+    // 按钮，它们本来就不该和输入框一样高。`ink` 保持 16dp，勾选框和开关的
+    // 图形尺寸不跟着变。
+    theme.controls.large = ControlMetrics {
+        height: rems(2.0),
+        padding_x: rems(0.75),
+        gap: rems(0.375),
+        radius: rems(0.375),
+        text_size: rems(0.875),
+        line_height: rems(1.25),
+        ink: rems(1.0),
+    };
 }
 
 /// `0xRRGGBB` → `Hsla`。

@@ -1,0 +1,25 @@
+[
+  {
+    "context": "Global",
+    "bindings": {
+      "cmd-q": "app::Quit",
+      "ctrl-q": "app::Quit",
+      "cmd-w": "window::Close",
+      "ctrl-w": "window::Close"
+    }
+  },
+  {
+    "context": "Core",
+    "bindings": {
+      "up": "core::Previous",
+      "down": "core::Next",
+      "tab": "core:Next",
+      "enter": "core::Confirm",
+      "escape": "core::Cancel",
+      "home": "core::First",
+      "end": "core::Last",
+      "pageup": "core::First",
+      "pagedown": "core::Last"
+    }
+  }
+]
