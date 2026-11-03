@@ -22,7 +22,9 @@ use std::io::{BufRead, BufReader, Read};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
+#[cfg(not(windows))]
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use log::{Log, Metadata, Record};
 
@@ -876,16 +878,24 @@ fn install_logger(shared: Arc<Mutex<Shared>>, dirty: Arc<AtomicBool>) {
     }
 }
 
+/// 日志行首的 `HH:MM:SS`，取**本地时间**。
+///
+/// `SystemTime` 给的是 UTC 秒数，直接取余会整整差出一个时区（东八区差 8
+/// 小时），日志时间戳对不上系统时钟，排查问题时没法拿它跟别处的日志对齐。
+#[cfg(windows)]
+fn timestamp() -> String {
+    let mut st: windows_sys::Win32::Foundation::SYSTEMTIME = unsafe { std::mem::zeroed() };
+    unsafe { windows_sys::Win32::System::SystemInformation::GetLocalTime(&mut st) };
+    format!("{:02}:{:02}:{:02}", st.wHour, st.wMinute, st.wSecond)
+}
+
+#[cfg(not(windows))]
 fn timestamp() -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_secs();
-    let seconds = now % 86_400;
-    format!(
-        "{:02}:{:02}:{:02}",
-        seconds / 3600,
-        (seconds % 3600) / 60,
-        seconds % 60
-    )
+        .as_secs() as libc::time_t;
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    unsafe { libc::localtime_r(&now, &mut tm) };
+    format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec)
 }

@@ -26,12 +26,13 @@ use super::cards::{
     profile_picker_group, proxy_group, runtime_group, stat_group, udpgw_group, window_group,
 };
 use super::state::{App, Msg, Snapshot};
+use super::theme::TEXT_BODY;
 use super::widgets::{
-    CONTENT_PADDING, SPACE_M, SPACE_XL, caption_nowrap, hairline, icon_action, page_title,
-    primary_button,
+    CONTENT_PADDING, SPACE_M, SPACE_S, SPACE_XL, caption_nowrap, hairline, icon, icon_action,
+    page_title, primary_button, scroll_indicator,
 };
 
-/// 右侧内容区：细顶栏 + 可滚动的卡片列表。
+/// 右侧内容区：细顶栏 + 提示条 + 可滚动的卡片列表。
 pub fn content(app: &App, snap: &Snapshot, theme: &Theme, cx: &mut Context<App>) -> AnyElement {
     div()
         .flex()
@@ -41,8 +42,69 @@ pub fn content(app: &App, snap: &Snapshot, theme: &Theme, cx: &mut Context<App>)
         .h_full()
         .bg(theme.bg())
         .child(page_header(app, theme, cx))
+        .children(notice_bar(app, theme, cx))
         .child(page_scroll_area(app, snap, theme, cx))
         .into_any_element()
+}
+
+/// 顶部提示条：保存结果、动作出错、已复制…都在这里说。
+///
+/// 原来这些提示只画在仪表盘的首屏卡里，可「保存到磁盘」的按钮在代理配置页
+/// 的顶栏上——点完什么也不会出现，看起来就像没生效。提示条挂在内容区，
+/// 任何一页做任何动作都能立刻看到结果。
+///
+/// 只显示一条：错误优先（出问题时不该被上一句「已保存」盖住）。
+fn notice_bar(app: &App, theme: &Theme, cx: &mut Context<App>) -> Option<AnyElement> {
+    let (text, color) = match (&app.error, &app.notice) {
+        (Some(error), _) => (error.clone(), theme.danger()),
+        (None, Some(notice)) => (notice.clone(), theme.success()),
+        (None, None) => return None,
+    };
+
+    Some(
+        div()
+            .flex()
+            .flex_none()
+            .w_full()
+            .px(px(CONTENT_PADDING))
+            .pb(px(SPACE_M))
+            .child(
+                div()
+                    .flex()
+                    .items_start()
+                    .gap(px(SPACE_S))
+                    .w_full()
+                    .p(px(SPACE_M))
+                    .rounded(px(6.0))
+                    .border_1()
+                    .border_color(color.opacity(0.35))
+                    .bg(color.opacity(0.10))
+                    .child(
+                        div()
+                            .flex_none()
+                            .child(icon(
+                                DefaultIcons::info_circled(),
+                                TEXT_BODY,
+                                color,
+                            )),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_size(px(TEXT_BODY))
+                            .text_color(theme.fg())
+                            .child(text),
+                    )
+                    .child(icon_action(
+                        "dismiss-notice",
+                        t("关闭提示", "Dismiss"),
+                        DefaultIcons::cross_1(),
+                        cx.listener(|this, _, _, cx| this.handle(Msg::DismissNotice, cx)),
+                    )),
+            )
+            .into_any_element(),
+    )
 }
 
 /// 细顶栏：单行标题 + 右侧说明 + 底部发丝线。
@@ -113,24 +175,34 @@ fn page_header(app: &App, theme: &Theme, cx: &mut Context<App>) -> AnyElement {
 /// 一条空带子。把留白给内层，滚动条就贴着窗口右边，卡片离它 16dp。
 fn page_scroll_area(app: &App, snap: &Snapshot, theme: &Theme, cx: &mut Context<App>) -> AnyElement {
     let slot = app.page.slot();
+    let handle = app.page_scroll[slot].clone();
+    let indicator = scroll_indicator(&handle, theme);
+
     div()
-        .id(("page-scroll", slot))
         .flex()
         .flex_col()
         .flex_1()
         .min_h_0()
         .w_full()
-        .overflow_y_scroll()
-        .track_scroll(&app.page_scroll[slot])
         .child(
             div()
+                .id(("page-scroll", slot))
                 .flex()
                 .flex_col()
-                .w_full()
-                .gap(px(SPACE_XL))
-                .p(px(CONTENT_PADDING))
-                .children(page_body(app, snap, theme, cx)),
+                .size_full()
+                .overflow_y_scroll()
+                .track_scroll(&handle)
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .w_full()
+                        .gap(px(SPACE_XL))
+                        .p(px(CONTENT_PADDING))
+                        .children(page_body(app, snap, theme, cx)),
+                ),
         )
+        .children(indicator)
         .into_any_element()
 }
 
@@ -142,7 +214,7 @@ fn page_body(app: &App, snap: &Snapshot, theme: &Theme, cx: &mut Context<App>) -
         // 仪表盘：首屏卡片 + 选配置 + 三个关键参数 + 最近日志。
         // 参数编辑搬到「代理配置」页：仪表盘只回答「现在什么状态、用哪套配置」。
         super::state::Page::Dashboard => vec![
-            hero_card(app, snap, theme, cx),
+            hero_card(snap, theme, cx),
             profile_picker_group(app, theme, cx),
             stat_group(app, theme),
             log_preview_group(app, snap, theme, cx),

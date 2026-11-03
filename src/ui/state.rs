@@ -155,6 +155,10 @@ pub enum Msg {
     Stop,
     SaveConfig,
     ClearLogs,
+    /// 把整份日志（不只是屏幕上这几百行）复制到剪贴板。
+    CopyLogs,
+    /// 收起顶部那条提示（保存成功 / 出错）。
+    DismissNotice,
     /// 以管理员身份重启自己（UAC 提权后新进程接手）。
     RelaunchElevated,
     /// 检测上游代理地址是否连得通。

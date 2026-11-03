@@ -13,8 +13,10 @@
 
 use gpui::{AppContext, Context, Window};
 use gpuikit::elements::dialog::{DialogState, dialog};
+use gpuikit::theme::ControlSize;
+use gpuikit::traits::control_sized::ControlSized;
 
-use crate::core::i18n::{apply as apply_language, t};
+use crate::core::i18n::{apply as apply_language, t, tf};
 use crate::core::watchdog;
 
 use super::state::{App, Msg, Page};
@@ -159,6 +161,36 @@ pub fn update(app: &mut App, msg: Msg, cx: &mut Context<App>) {
             }
         }
         Msg::ClearLogs => app.engine.clear_logs(),
+        Msg::CopyLogs => {
+            // 复制的是引擎里保留的全部日志（2000 行），不是屏幕上那 200 行：
+            // 用户要贴给别人看时，「为什么停了」多半在更早的位置。
+            let text = app
+                .shared
+                .lock()
+                .map(|shared| {
+                    shared
+                        .logs
+                        .iter()
+                        .cloned()
+                        .collect::<Vec<String>>()
+                        .join("\r\n")
+                })
+                .unwrap_or_default();
+            if text.trim().is_empty() {
+                app.notice = Some(t("还没有日志可复制", "There is no log to copy").to_string());
+            } else {
+                let lines = text.lines().count();
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+                app.notice = Some(tf(
+                    t("已复制 {lines} 行日志到剪贴板", "Copied {lines} log lines to the clipboard"),
+                    &[("lines", &lines.to_string())],
+                ));
+            }
+        }
+        Msg::DismissNotice => {
+            app.notice = None;
+            app.error = None;
+        }
         Msg::RelaunchElevated => {
             // 先把内核收掉：否则旧进程退出后，新进程会碰到还在跑的 tun2proxy
             // （TUN 网卡与路由都还挂在旧进程名下）。
@@ -265,6 +297,9 @@ impl App {
                 DialogState::new(
                     dialog("close-to-tray")
                         .confirm(t("最小化到托盘？", "Minimize to the tray?"), body)
+                        // 弹窗里的按钮要和窗口里其它控件同档：默认的 Medium
+                        // 只有 24dp，在 32dp 的界面上看着像缩水了一圈。
+                        .control_size(ControlSize::Large)
                         // 两个答案都不破坏数据，别用红色主按钮喊「危险」。
                         .destructive(false)
                         .confirm_label(t("最小化到托盘", "Minimize to tray"))

@@ -146,6 +146,15 @@ becomes a primary "Save to disk" button: when a form is long enough to scroll,
 Save must not scroll out of view. The back button sits left of the title and
 returns to the profile list.
 
+Action results all go through one **notice bar** just under the top bar (green
+for success, red for failure, dismissed with the ✕ on its right), so saving a
+profile or copying the log gives feedback on every page — not only on the
+dashboard hero card.
+
+The log pane grows a thin scrollbar on its right when the content overflows
+(none is drawn otherwise), and its two corner icons copy the whole log and
+clear it. Log timestamps are local wall-clock time.
+
 Each of the four pages owns one group of settings, and switching pages never
 loses anything you typed (all state lives in `App`). The old "Advanced options"
 page is gone: log level moved to "App & logs", UDP forwarding (UDPGW) to
@@ -179,7 +188,7 @@ Releases (see `.github/workflows/release.yml`):
 
 ```bash
 # Bump `version` in Cargo.toml, commit it, then tag — CI enforces that they match
-git tag v0.3.4 && git push origin v0.3.4
+git tag v0.3.5 && git push origin v0.3.5
 ```
 
 Artifacts: `tun2proxy-gui-<tag>-<target>.zip` (Windows) and `.tar.gz` (Linux /

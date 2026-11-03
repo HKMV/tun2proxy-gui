@@ -1,6 +1,6 @@
 [package]
 name = "tun2proxy-gui"
-version = "0.3.4"
+version = "0.3.5"
 edition = "2021"
 rust-version = "1.95"
 description = "Cross-platform desktop GUI for tun2proxy"
@@ -59,6 +59,8 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_LibraryLoader",
     "Win32_Globalization",
     "Win32_System_Threading",
+    # 日志时间戳要取本地时间（GetLocalTime 在这个特性下）。
+    "Win32_System_SystemInformation",
     # WNDCLASSW / RegisterClassW（托盘的自建窗口类）被 GDI 特性挡在后面，
     # 只开 Win32_UI_WindowsAndMessaging 是找不到的。
     "Win32_Graphics_Gdi",

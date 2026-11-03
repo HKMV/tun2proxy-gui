@@ -97,7 +97,7 @@ fn select_input(state: impl IntoElement, width: f32) -> AnyElement {
 ///
 /// 仪表盘要回答的第一个问题是「隧道通不通」，所以状态不是一行小字，
 /// 而是这一屏的标题。
-pub fn hero_card(app: &App, snap: &Snapshot, theme: &Theme, cx: &mut Context<App>) -> AnyElement {
+pub fn hero_card(snap: &Snapshot, theme: &Theme, cx: &mut Context<App>) -> AnyElement {
     let (status_text, color) = status_label(&snap.status, theme);
     let (title, desc) = match &snap.status {
         Status::Running => (
@@ -169,17 +169,15 @@ pub fn hero_card(app: &App, snap: &Snapshot, theme: &Theme, cx: &mut Context<App
         );
     }
 
-    // 说明行（报错 / 提示 / 权限）与上面那一组之间拉开距离，
+    // 说明行（启动被拦下的原因 / 权限提示）与上面那一组之间拉开距离，
     // 否则它们会读成「标题说明的第四行」。
+    //
+    // 保存结果和动作报错不在这里：它们由内容区顶部的提示条统一显示
+    // （见 [`super::pages::content`]），否则「在代理配置页点保存」就看不到
+    // 任何反馈——提示只画在仪表盘上，而按钮在别的页面。
     let mut extras = div().flex().flex_col().gap(px(SPACE_S));
     if let Some(blocked) = &snap.blocked {
         extras = extras.child(error_text(blocked.clone(), theme));
-    }
-    if let Some(error) = &app.error {
-        extras = extras.child(error_text(error.clone(), theme));
-    }
-    if let Some(notice) = &app.notice {
-        extras = extras.child(hint(notice.clone(), theme));
     }
     if let Some(tip) = crate::core::elevate::privilege_hint() {
         extras = extras.child(
@@ -468,13 +466,27 @@ pub fn log_preview_group(app: &App, snap: &Snapshot, theme: &Theme, cx: &mut Con
                 .to_string(),
             ),
             None,
-            Some(icon_action(
-                "open-full-log",
-                t("查看全部日志", "Open the full log"),
-                DefaultIcons::chevron_right(),
-                cx.listener(|this, _, _, cx| this.handle(Msg::PageSelected(Page::Program), cx)),
-            )
-            .into_any_element()),
+            Some(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(SPACE_S))
+                    .child(icon_action(
+                        "copy-log-preview",
+                        t("复制全部日志", "Copy the whole log"),
+                        DefaultIcons::copy(),
+                        cx.listener(|this, _, _, cx| this.handle(Msg::CopyLogs, cx)),
+                    ))
+                    .child(icon_action(
+                        "open-full-log",
+                        t("查看全部日志", "Open the full log"),
+                        DefaultIcons::chevron_right(),
+                        cx.listener(|this, _, _, cx| {
+                            this.handle(Msg::PageSelected(Page::Program), cx)
+                        }),
+                    ))
+                    .into_any_element(),
+            ),
             theme,
         )
         .into_any_element(),
@@ -1382,13 +1394,23 @@ pub fn log_group(
         compact_row(
             t("实时输出", "Live output"),
             Some(
-                icon_action(
-                    "clear-log",
-                    t("清空日志", "Clear log"),
-                    DefaultIcons::eraser(),
-                    cx.listener(|this, _, _, cx| this.handle(Msg::ClearLogs, cx)),
-                )
-                .into_any_element(),
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(SPACE_S))
+                    .child(icon_action(
+                        "copy-log",
+                        t("复制全部日志", "Copy the whole log"),
+                        DefaultIcons::copy(),
+                        cx.listener(|this, _, _, cx| this.handle(Msg::CopyLogs, cx)),
+                    ))
+                    .child(icon_action(
+                        "clear-log",
+                        t("清空日志", "Clear log"),
+                        DefaultIcons::eraser(),
+                        cx.listener(|this, _, _, cx| this.handle(Msg::ClearLogs, cx)),
+                    ))
+                    .into_any_element(),
             ),
             theme,
         )
@@ -1501,6 +1523,9 @@ fn log_pane(
     // 偏移的符号：gpui 把 `delta` 直接加上去，再夹到 `[-max, 0]`，所以顶部
     // 是 0、底部是 -max。往下滚 delta 为正、偏移往 0 走。
     let scroll_handle = app.log_scroll.clone();
+    // 滚动条自己画：gpui 的滚动容器不画条，没有它就看不出「这里还能滚」。
+    // 拿上一次布局的偏移量算，滚一下 gpui 会通知重绘，条跟着走。
+    let indicator = super::widgets::scroll_indicator(&scroll_handle, theme);
 
     let viewport = div()
         .id("log-viewport")
@@ -1537,7 +1562,8 @@ fn log_pane(
                     },
                 ))
                 .child(inner),
-        );
+        )
+        .children(indicator);
 
     div()
         .w_full()

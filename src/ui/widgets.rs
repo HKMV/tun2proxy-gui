@@ -15,8 +15,8 @@
 //! **强调色实心主按钮**、**图标 + 文字的行内动作**、**设置分组卡片**。
 
 use gpui::{
-    AnyElement, App, ClickEvent, Div, ElementId, Hsla, IntoElement, SharedString, Stateful, Svg,
-    Window, div, px, prelude::*, rems,
+    AnyElement, App, ClickEvent, Div, ElementId, Hsla, IntoElement, ScrollHandle, SharedString,
+    Stateful, Svg, Window, div, px, prelude::*, rems,
 };
 use gpuikit::elements::checkbox::{CheckState, checkbox_box};
 use gpuikit::elements::icon_button::icon_button;
@@ -153,6 +153,44 @@ pub fn row_value(text: impl Into<SharedString>, theme: &Theme) -> Div {
 }
 
 // —— 容器 ——
+
+/// 滚动条指示器。
+///
+/// gpui 的 `overflow_y_scroll` 只负责滚动，**不画滚动条**：内容超出视口时
+/// 界面上没有任何提示，用户只能靠滚轮试探。这里按 `ScrollHandle` 的偏移量
+/// 画一条，跟着滚动一起动。
+///
+/// 只做指示，不做拖拽：拖拽要接管鼠标并处理按下/移动/抬起三段状态，先把
+/// 「这里能滚、现在滚到哪儿」说清楚；真要拖的时候再补。
+///
+/// 返回 `None` 表示内容没超出视口——这时候画一条满格的条反而像装饰。
+pub fn scroll_indicator(handle: &ScrollHandle, theme: &Theme) -> Option<AnyElement> {
+    let max = handle.max_offset().y.as_f32();
+    if max <= 0.5 {
+        return None;
+    }
+    // 视口高度取上一次布局的结果：调用方有的是固定高度、有的是 `flex_1`，
+    // 由句柄统一回答比自己传一个可能过期的数字可靠。
+    let viewport = handle.bounds().size.height.as_f32().max(1.0);
+    let content = viewport + max;
+    // 内容越长滑块越短，但不短于 24dp：再短就点不中也看不见。
+    let thumb = (viewport * viewport / content).max(24.0).min(viewport);
+    let travel = (viewport - thumb).max(0.0);
+    // 偏移量是 `[-max, 0]`（顶部 0、底部 -max），换成 0..1 的进度。
+    let progress = (-handle.offset().y.as_f32() / max).clamp(0.0, 1.0);
+
+    Some(
+        div()
+            .absolute()
+            .top(px(progress * travel))
+            .right(px(3.0))
+            .w(px(4.0))
+            .h(px(thumb))
+            .rounded_full()
+            .bg(theme.fg_muted().opacity(0.45))
+            .into_any_element(),
+    )
+}
 
 /// 1dp 发丝线：分隔顶栏与内容区、卡片内的分区。
 ///

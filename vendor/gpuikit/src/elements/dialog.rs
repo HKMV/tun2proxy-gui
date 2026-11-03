@@ -666,6 +666,10 @@ impl Render for DialogState {
                                                 scoped(&self.id, "close"),
                                                 Icons::cross_1(),
                                             )
+                                            // 和弹窗里的按钮同档：标题栏那个 ✕
+                                            // 若不跟 `size` 走，32dp 的界面上会
+                                            // 比下面两个按钮矮一截。
+                                            .control_size(size)
                                             .on_click(
                                                 cx.listener(|this, _, window, cx| {
                                                     this.dismiss(window, cx);
