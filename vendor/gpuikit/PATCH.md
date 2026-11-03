@@ -1,4 +1,4 @@
-# gpuikit 0.9.0（本地副本 + 一处补丁）
+# gpuikit 0.9.0（本地副本 + 两处补丁）
 
 这里是 `gpuikit` 0.9.0 的源码副本，来自 crates.io，通过 `Cargo.toml` 末尾的
 `[patch.crates-io]` 指向本目录。除了下面列的补丁，其余文件与上游完全一致；
@@ -37,9 +37,24 @@
 7. `Listbox::build` 的调用点补一个 `None` —— 组合框的弹层是过滤结果列表，
    本来就该按内容排版。
 
+## 第二处补丁：`Dialog` 的「取消」与「随手关掉」分开
+
+确认弹窗里，Esc、点弹层外面、标题栏 ✕ 三条路都走 `dismiss`，而上游的
+`dismiss` 对确认弹窗一律当成「取消」。本应用「关闭后最小化？」那个弹窗的
+取消答案是**退出程序**，于是一次误点就把整个程序关掉。
+
+`src/elements/dialog.rs`
+
+8. `Confirmation` 加 `on_dismiss` 字段（默认 `None`，行为与上游一致）；
+9. 新增构建方法 `Dialog::on_dismiss(handler)`；
+10. `dismiss` 改为：非确认弹窗照旧关闭；确认弹窗**有** `on_dismiss` 时只
+    关闭并调用它（不发 `DialogCancelled`），没有时仍然走 `cancel`；
+11. 标题栏 ✕ 的 `icon_button` 补 `.control_size(size)` —— 页脚按钮会跟随
+    `ControlSize`，标题栏那颗原来是写死的 Medium，32dp 的界面上像缩水一圈。
+
 ## 升级时怎么做
 
 1. 把新版本源码拷到本目录（`src/`、`assets/`、`Cargo.toml`、两个 LICENSE）；
-2. 按上面 7 条重新打一遍（`git diff` 对着看最快）；
-3. 如果新版上游已经给了 `Select::popup_width`，直接删掉本目录和
-   `Cargo.toml` 里的 `[patch.crates-io]` 段，把依赖换回 crates.io。
+2. 按上面 11 条重新打一遍（`git diff` 对着看最快）；
+3. 如果新版上游已经给了 `Select::popup_width` 和 `Dialog::on_dismiss`，直接
+   删掉本目录和 `Cargo.toml` 里的 `[patch.crates-io]` 段，把依赖换回 crates.io。

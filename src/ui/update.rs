@@ -315,6 +315,14 @@ impl App {
                         .on_cancel(|_window, cx| {
                             let _guard = watchdog::enter(watchdog::MSG_CLOSE_DIALOG);
                             cx.quit();
+                        })
+                        // 点弹窗外面（或按 Esc）只是把这句话问完就走开：这个
+                        // 弹窗的「取消」答案是**退出程序**，一次误点就把整个
+                        // 工作区关掉。所以三种「不回答」的退出方式只关弹窗，
+                        // 真正退出必须点到「退出程序」。
+                        .on_dismiss(|_window, cx| {
+                            let _guard = watchdog::enter(watchdog::MSG_CLOSE_DIALOG);
+                            super::state::with_app(cx, |app, _cx| app.close_dialog = None);
                         }),
                 )
             });

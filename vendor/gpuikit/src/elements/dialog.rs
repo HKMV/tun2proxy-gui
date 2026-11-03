@@ -73,7 +73,11 @@ pub struct DialogClosed;
 pub struct DialogConfirmed;
 
 /// Event emitted when a confirmation dialog was answered "no" — by the cancel
-/// button, by Escape, or by a click on the backdrop.
+/// button, or by Escape / a backdrop click **when the dialog has no
+/// `on_dismiss` handler**.
+///
+/// A dialog that sets [`Dialog::on_dismiss`] treats those two as "just close
+/// the box", not as an answer, and emits nothing: see the note on `dismiss`.
 pub struct DialogCancelled;
 
 /// The confirmation half of a [`Dialog`]: a question, and two answers of which
@@ -103,6 +107,7 @@ pub struct Confirmation {
     destructive: bool,
     on_confirm: Option<Rc<dyn Fn(&mut Window, &mut App)>>,
     on_cancel: Option<Rc<dyn Fn(&mut Window, &mut App)>>,
+    on_dismiss: Option<Rc<dyn Fn(&mut Window, &mut App)>>,
 }
 
 impl Default for Confirmation {
@@ -116,6 +121,7 @@ impl Default for Confirmation {
             destructive: true,
             on_confirm: None,
             on_cancel: None,
+            on_dismiss: None,
         }
     }
 }
@@ -246,6 +252,19 @@ impl Dialog {
     pub fn on_cancel(self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
         let handler = Rc::new(handler);
         self.with_confirmation(|confirmation| confirmation.on_cancel = Some(handler))
+    }
+
+    /// What to run when the dialog is dismissed **without answering**: Escape,
+    /// a click on the backdrop, or the header's close button.
+    ///
+    /// Without this handler those three all mean "cancel" — which is wrong for
+    /// a confirmation whose cancel answer is destructive. A "Minimize to the
+    /// tray?" box that quits the app when the user clicks beside it turns a
+    /// stray click into data loss. With it, the three shortcuts only close the
+    /// box; the footer buttons remain the only way to answer.
+    pub fn on_dismiss(self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
+        let handler = Rc::new(handler);
+        self.with_confirmation(|confirmation| confirmation.on_dismiss = Some(handler))
     }
 
     /// Set the dialog title.
@@ -484,11 +503,29 @@ impl DialogState {
     /// here: a confirmation is cancelled, a plain dialog is closed. Keeping
     /// them on one path is what guarantees there is no route from a key or a
     /// stray click to [`DialogConfirmed`].
+    ///
+    /// A confirmation that supplies [`Dialog::on_dismiss`] opts out of the
+    /// "dismissed means cancelled" half: the box closes and that handler runs,
+    /// with no [`DialogCancelled`] emitted — a stray click is not an answer,
+    /// and the app is the one that knows whether its cancel answer is safe.
     fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.is_confirmation() {
-            self.cancel(window, cx);
-        } else {
+        if !self.is_confirmation() {
             self.close(cx);
+            return;
+        }
+
+        let handler = self
+            .confirmation
+            .as_ref()
+            .and_then(|confirmation| confirmation.on_dismiss.clone());
+        match handler {
+            Some(handler) => {
+                if self.is_open {
+                    self.close(cx);
+                    handler(window, cx);
+                }
+            }
+            None => self.cancel(window, cx),
         }
     }
 
@@ -933,6 +970,40 @@ mod tests {
                 assert!(!state.is_open());
             })
             .unwrap();
+    }
+
+    /// A confirmation that supplies `on_dismiss` says its cancel answer is too
+    /// loud to run from a stray click: Escape and the backdrop only close the
+    /// box, and `on_cancel` stays untouched.
+    #[gpui::test]
+    fn on_dismiss_keeps_a_stray_click_from_cancelling(cx: &mut TestAppContext) {
+        // `add_window` renders, and `render` reads the theme.
+        cx.update(crate::theme::init);
+
+        let cancelled = Rc::new(RefCell::new(0usize));
+        let dismissed = Rc::new(RefCell::new(0usize));
+        let (no, closed) = (cancelled.clone(), dismissed.clone());
+
+        let window = cx.add_window(move |_window, _cx| {
+            DialogState::new(
+                confirmation()
+                    .on_cancel(move |_, _| *no.borrow_mut() += 1)
+                    .on_dismiss(move |_, _| *closed.borrow_mut() += 1),
+            )
+        });
+
+        window
+            .update(cx, |state, window, cx| {
+                state.open(window, cx);
+                state.dismiss(window, cx);
+                assert!(!state.is_open());
+                // A second Escape must not run the handler again.
+                state.dismiss(window, cx);
+            })
+            .unwrap();
+
+        assert_eq!(*cancelled.borrow(), 0, "a dismiss ran the cancel answer");
+        assert_eq!(*dismissed.borrow(), 1);
     }
 
     #[gpui::test]
