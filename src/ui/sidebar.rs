@@ -134,9 +134,10 @@ fn expanded(app: &UiApp, snap: &Snapshot, theme: &Theme, cx: &mut Context<UiApp>
     };
     // 用 gpuikit 的 `icon_button` 而不是自绘方框：它的盒模型、悬停底色、
     // 禁用态和 tooltip 都由组件自己维护，侧栏顶部那个收起按钮也是它，
-    // 两处口径一致。28dp 的盒 + 16dp 的图标，正好压在状态文字那一行里。
+    // 两处口径一致。32dp 的盒 = `Large` 档，和内容区的按钮、输入框同高；
+    // 16dp 的图标仍取 `ink`。
     let action = icon_button(action_id, action_icon)
-        .box_size(rems(1.75))
+        .box_size(rems(2.0))
         .icon_size(rems(1.0))
         .tooltip(gpuikit::elements::tooltip::tooltip(action_label))
         .on_click(cx.listener(move |this, _, _, cx| this.handle(action_msg.clone(), cx)));
@@ -247,6 +248,8 @@ fn toggle(app: &UiApp, _theme: &Theme, cx: &mut Context<UiApp>) -> impl IntoElem
         t("收起侧边栏", "Collapse sidebar")
     };
     icon_button("sidebar-toggle", DefaultIcons::panel_left())
+        .box_size(rems(2.0))
+        .icon_size(rems(1.0))
         .tooltip(gpuikit::elements::tooltip::tooltip(label))
         .on_click(cx.listener(|this, _, _, cx| this.handle(Msg::ToggleSidebar, cx)))
 }

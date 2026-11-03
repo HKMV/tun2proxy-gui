@@ -118,6 +118,14 @@ impl Verbosity {
 /// 打印机会连不上、NAS 找不到、投屏卡住，而且内网流量绕一圈上游代理再回来，
 /// 既慢又可能被上游直接丢弃。
 ///
+/// 默认的并发会话上限。
+///
+/// tun2proxy 自己的默认值是 200，那是给「单程序走代理」的量级。本应用接管
+/// 整机流量，200 条并发连接在浏览器 + 系统服务 + DNS 查询面前撑不了几秒，
+/// 打满之后 `--exit-on-fatal-error` 会把隧道直接踢掉（用户看到的就是「启动
+/// 几秒就停了」）。2000 给足了余量，同时仍然是个有意义的护栏。
+pub const DEFAULT_MAX_SESSIONS: usize = 2000;
+
 /// 每行一个 CIDR（`--bypass` 逐行透传）。不要在这里写注释：校验会把它当成
 /// 非法地址拒绝。
 pub const DEFAULT_BYPASS: &str = "10.0.0.0/8
@@ -147,6 +155,12 @@ pub struct Profile {
     pub mtu: u16,
     pub tcp_timeout: u64,
     pub udp_timeout: u64,
+    /// 同时保持的会话上限，直接传给 `--max-sessions`。
+    ///
+    /// 这是**并发**上限，不是总量：一条 TCP 会话在 `tcp_timeout` 秒没有新包
+    /// 之前一直占着名额。整机流量（浏览器 + 系统服务 + 每条 DNS 查询各算一个
+    /// UDP 会话）很容易同时开几百条，所以 200 这种「单程序」尺度的值会把隧道
+    /// 在启动几秒后顶到上限——tun2proxy 随即以 `max sessions reached` 退出。
     pub max_sessions: usize,
     pub verbosity: Verbosity,
     pub udpgw_server: String,
@@ -155,7 +169,12 @@ pub struct Profile {
     pub ipv6: bool,
     pub setup: bool,
     pub unshare: bool,
-    /// 发生致命错误时立即退出（作为系统服务运行时有用）。
+    /// 会话数打满时是否直接退出进程（对应 `--exit-on-fatal-error`）。
+    ///
+    /// 名字里的「fatal」在 tun2proxy 0.8.6 里只对应一种情况：并发会话数达到
+    /// `--max-sessions`。默认关掉，是因为整机流量下任何一个客户端（浏览器标签、
+    /// IM、更新器）的重连风暴都能把名额吃满，而打满名额不该等于「整条隧道下线」——
+    /// 关掉之后 tun2proxy 只丢新连接，已经建立的连接照常跑，风暴过去即恢复。
     pub exit_on_fatal: bool,
 }
 
@@ -172,7 +191,7 @@ impl Default for Profile {
             mtu: 1500,
             tcp_timeout: 600,
             udp_timeout: 10,
-            max_sessions: 200,
+            max_sessions: DEFAULT_MAX_SESSIONS,
             verbosity: Verbosity::Info,
             udpgw_server: String::new(),
             udpgw_connections: 5,
@@ -180,7 +199,7 @@ impl Default for Profile {
             ipv6: false,
             setup: true,
             unshare: false,
-            exit_on_fatal: true,
+            exit_on_fatal: false,
         }
     }
 }
@@ -417,8 +436,10 @@ fn missing_config_version() -> u32 {
 /// 当前配置文件格式版本。
 ///
 /// * 1 —— 初始格式；
-/// * 2 —— `exit_on_fatal` 默认改为开。
-const CONFIG_VERSION: u32 = 2;
+/// * 2 —— `exit_on_fatal` 默认改为开（v3 已撤回）；
+/// * 3 —— `max_sessions` 默认从 200 抬到 [`DEFAULT_MAX_SESSIONS`]，
+///   `exit_on_fatal` 默认改回关。
+const CONFIG_VERSION: u32 = 3;
 
 impl Default for Config {
     fn default() -> Self {
@@ -508,14 +529,24 @@ impl Config {
     ///
     /// 只做「用户没有表态」的字段。`exit_on_fatal` 在旧版里是显式的
     /// `false`（序列化写进去的），无法与新版的「用户主动关掉」区分，
-    /// 所以只能靠版本号判断：v2 之前一律改成开，之后完全听用户的。
+    /// 所以只能靠版本号判断：v3 之前一律改成关，之后完全听用户的。
     fn migrate(&mut self) -> bool {
         if self.config_version >= CONFIG_VERSION {
             return false;
         }
-        if self.config_version < 2 {
+        if self.config_version < 3 {
+            // 200 是 v2 及更早的默认值，而在整机流量下它几秒就会打满：
+            // tun2proxy 报 `max sessions reached (200/200)` 后退出，用户看到
+            // 的是「启动几秒就停了」。只改还停在旧默认值的配置——用户自己
+            // 填过的数字一律不动。
+            //
+            // 名额打满时直接退出同样是「几秒就停了」的来源之一（v2 把这个
+            // 开关默认打开过），所以一并改回关：隧道掉线比丢几条新连接更糟。
             for profile in &mut self.profiles {
-                profile.exit_on_fatal = true;
+                if profile.max_sessions == 200 {
+                    profile.max_sessions = DEFAULT_MAX_SESSIONS;
+                }
+                profile.exit_on_fatal = false;
             }
         }
         self.config_version = CONFIG_VERSION;
@@ -663,26 +694,54 @@ mod tests {
     }
 
     #[test]
-    fn old_config_files_switch_exit_on_fatal_on() {
-        // v1 的文件里 exit_on_fatal 是显式的 false，靠 serde default 改不动它，
-        // 只能靠 config_version 判断「这条设置用户到底表过态没有」。
+    fn old_config_files_stop_exiting_on_a_full_session_table() {
+        // v2 把 exit_on_fatal 默认打开过，那是「名额打满就整条隧道下线」。
+        // 整机流量下名额打满只需要几秒，所以旧文件要跟着改回关。
         let old = r#"{
             "profiles": [{ "name": "默认配置", "proxy_url": "socks5://127.0.0.1:1080",
-                           "exit_on_fatal": false }],
+                           "exit_on_fatal": true }],
             "active": 0
         }"#;
         let mut config: Config = serde_json::from_str(old).expect("v1 config must still parse");
         assert_eq!(config.config_version, 0, "缺字段时必须落到 0，迁移才会跑");
         assert!(config.migrate());
-        assert!(config.profiles[0].exit_on_fatal);
+        assert!(!config.profiles[0].exit_on_fatal);
         assert_eq!(config.config_version, CONFIG_VERSION);
 
-        // 迁移只跑一次：之后用户自己关掉，再读盘不许被改回来。
-        config.profiles[0].exit_on_fatal = false;
+        // 迁移只跑一次：之后用户自己打开，再读盘不许被改回来。
+        config.profiles[0].exit_on_fatal = true;
         let saved = serde_json::to_string(&config).unwrap();
         let mut reloaded: Config = serde_json::from_str(&saved).unwrap();
         assert!(!reloaded.migrate());
-        assert!(!reloaded.profiles[0].exit_on_fatal);
+        assert!(reloaded.profiles[0].exit_on_fatal);
+    }
+
+    #[test]
+    fn old_config_files_raise_the_session_limit() {
+        // 200 是旧默认值：整机流量几秒就打满，tun2proxy 随之以
+        // 「max sessions reached」退出。旧文件必须跟着新默认值一起抬。
+        let old = r#"{
+            "profiles": [
+                { "name": "旧", "proxy_url": "socks5://127.0.0.1:1080", "max_sessions": 200 },
+                { "name": "自己填过", "proxy_url": "socks5://127.0.0.1:1080", "max_sessions": 500 }
+            ],
+            "active": 0,
+            "config_version": 2
+        }"#;
+        let mut config: Config = serde_json::from_str(old).expect("v2 config must still parse");
+        assert!(config.migrate());
+        assert_eq!(config.profiles[0].max_sessions, DEFAULT_MAX_SESSIONS);
+        assert_eq!(
+            config.profiles[1].max_sessions, 500,
+            "用户自己填的数字不许被迁移改掉"
+        );
+
+        // 之后再手动改回 200 也不许被改回来：迁移只按版本号跑一次。
+        config.profiles[0].max_sessions = 200;
+        let saved = serde_json::to_string(&config).unwrap();
+        let mut reloaded: Config = serde_json::from_str(&saved).unwrap();
+        assert!(!reloaded.migrate());
+        assert_eq!(reloaded.profiles[0].max_sessions, 200);
     }
 
     #[test]

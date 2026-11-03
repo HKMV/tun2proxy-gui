@@ -25,14 +25,14 @@ use gpuikit::theme::{ControlSize, Theme, Themeable};
 use crate::core::i18n::t;
 use crate::core::TrafficSample;
 
-use super::theme::TEXT_SMALL;
+use super::theme::{CONTROL_HEIGHT_LARGE, TEXT_SMALL};
 use super::widgets::{hint, SPACE_XS};
 
-/// 折线图高度：3 个 `ControlSize::Large` 控件高（24 × 3）。
+/// 折线图高度：3 个 `ControlSize::Large` 控件高（32 × 3）。
 ///
-/// 和控件同源，旁边按钮的高度改一档时图表跟着改，不会出现「图表比按钮
-/// 矮半头」这种只有肉眼能发现的对不齐。
-pub const CHART_HEIGHT: f32 = 72.0;
+/// 和控件同源（见 [`CONTROL_HEIGHT_LARGE`]），旁边按钮的高度改一档时图表
+/// 跟着改，不会出现「图表比按钮矮半头」这种只有肉眼能发现的对不齐。
+pub const CHART_HEIGHT: f32 = CONTROL_HEIGHT_LARGE * 3.0;
 
 /// 画一张流量折线图。
 ///

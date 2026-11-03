@@ -57,6 +57,13 @@ pub const TEXT_HERO: f32 = 24.0;
 /// 等宽日志。
 pub const TEXT_MONO: f32 = 12.5;
 
+/// `ControlSize::Large` 档的控件高度（逻辑像素）。
+///
+/// 输入框、下拉框、按钮、勾选框的外框、行内的图标按钮全部落在这一档；
+/// [`tune`] 用它设 `ControlScale`，折线图高度按 3 倍算——同一个数字只写
+/// 一处，改档位时不会有人漏改。
+pub const CONTROL_HEIGHT_LARGE: f32 = 32.0;
+
 /// 日志区用的等宽字体。
 ///
 /// 只写字体名，不判断平台：找不到时 cosmic-text 会回落到系统默认字体，
@@ -259,7 +266,7 @@ fn tune(theme: &mut Theme) {
     // 按钮，它们本来就不该和输入框一样高。`ink` 保持 16dp，勾选框和开关的
     // 图形尺寸不跟着变。
     theme.controls.large = ControlMetrics {
-        height: rems(2.0),
+        height: rems(CONTROL_HEIGHT_LARGE / 16.0),
         padding_x: rems(0.75),
         gap: rems(0.375),
         radius: rems(0.375),

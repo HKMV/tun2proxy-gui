@@ -22,6 +22,7 @@ use gpuikit::elements::checkbox::{CheckState, checkbox_box};
 use gpuikit::elements::icon_button::icon_button;
 use gpuikit::elements::tooltip::tooltip;
 use gpuikit::theme::{ControlSize, Theme, Themeable};
+use gpuikit::traits::control_sized::ControlSized;
 
 use super::theme::{
     TEXT_BODY, TEXT_GROUP, TEXT_HERO, TEXT_MONO, TEXT_SMALL, TEXT_TITLE, WEIGHT_SEMIBOLD,
@@ -504,6 +505,10 @@ fn action_button(
 ///
 /// 用于「动作本身一眼就懂」的地方（编辑 / 删除 / 返回 / 清空），
 /// 把横向空间留给内容；文字按钮留给有歧义或主操作。
+///
+/// 外框和文字按钮一样落在 `Large` 档（32dp），图标仍是 16dp 的 `ink`：
+/// 一排设置里既有「检测」这样的文字按钮、又有行尾的铅笔，两者高度必须
+/// 相等，否则同一行会忽高忽低。
 pub fn icon_action(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
@@ -511,7 +516,8 @@ pub fn icon_action(
     handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
     icon_button(id, icon)
-        .box_size(rems(1.5))
+        .box_size(rems(2.0))
+        .icon_size(rems(1.0))
         .tooltip(tooltip(label.into()))
         .on_click(handler)
 }
@@ -521,6 +527,10 @@ pub fn icon_action(
 /// 不用 gpuikit 的 `Checkbox` 实体：那个实体自己存一份「勾没勾」，和配置里的
 /// 布尔值会各说各话（切配置后就对不上了）。这里只要它**画**，真值永远来自
 /// 配置——`checkbox_box` 正是 gpuikit 抽出来的「纯外观」那一层。
+///
+/// 档位必须是 `Large`：`checkbox_box` 自己就带一个 rung 高度的外框（框里画
+/// `ink` 大小的小方块），默认的 `Medium` 只有 20dp，会和同一张卡片里 32dp
+/// 的输入框、下拉框差出一整档——一行 44、下一行 56，卡片像被掰过。
 pub fn toggle_control(
     id: impl Into<ElementId>,
     on: bool,
@@ -532,11 +542,14 @@ pub fn toggle_control(
         .cursor_pointer()
         .hover(|style| style.opacity(0.75))
         .on_click(handler)
-        .child(checkbox_box(if on {
-            CheckState::Checked
-        } else {
-            CheckState::Unchecked
-        }))
+        .child(
+            checkbox_box(if on {
+                CheckState::Checked
+            } else {
+                CheckState::Unchecked
+            })
+            .control_size(ControlSize::Large),
+        )
 }
 
 /// 把字节数格式化成人类可读的大小。

@@ -16,7 +16,8 @@
 //! （状态变更统一在 [`super::update`] 里完成）。
 
 use gpui::{
-    AnyElement, Context, Div, Entity, Hsla, IntoElement, SharedString, div, px, prelude::*,
+    AnyElement, Context, Div, Entity, Hsla, IntoElement, ScrollWheelEvent, SharedString, div, px,
+    prelude::*,
 };
 use gpuikit::elements::progress::progress;
 use gpuikit::elements::text_field::text_field;
@@ -40,8 +41,11 @@ use super::widgets::{
     v_hairline,
 };
 
-/// 仪表盘上最多显示多少行日志。
-const LOG_PREVIEW_LINES: usize = 12;
+/// 仪表盘日志框的高度。
+///
+/// 不再按行数截断：框是能滚的，只留 12 行的话滚一下就到底，等于还是看不见
+/// 前面说过什么——而「刚才为什么停了」恰恰在更早的那几行里。
+const LOG_PREVIEW_HEIGHT: f32 = 200.0;
 
 /// 首屏卡右侧的流量面板宽度。
 ///
@@ -56,13 +60,9 @@ pub fn status_label(status: &Status, theme: &Theme) -> (String, Hsla) {
         Status::Starting => (t("正在启动…", "Starting…").to_string(), theme.warning()),
         Status::Running => (t("运行中", "Running").to_string(), theme.success()),
         Status::Stopping => (t("正在停止…", "Stopping…").to_string(), theme.warning()),
-        Status::Failed(reason) => (
-            tf(
-                t("已停止：{reason}", "Stopped: {reason}"),
-                &[("reason", reason)],
-            ),
-            theme.danger(),
-        ),
+        // 原因写在首屏的说明行里，不塞进胶囊：胶囊只有一行高，长原因会被
+        // 截成半句话，反而更像没解释。
+        Status::Failed(_) => (t("已停止", "Stopped").to_string(), theme.danger()),
     }
 }
 
@@ -105,27 +105,32 @@ pub fn hero_card(app: &App, snap: &Snapshot, theme: &Theme, cx: &mut Context<App
             t(
                 "系统流量正在通过 TUN 虚拟网卡转发到上游代理。",
                 "System traffic is being forwarded to the upstream proxy through the TUN adapter.",
-            ),
+            )
+            .to_string(),
         ),
         Status::Starting => (
             t("正在启动…", "Starting…"),
             t(
                 "正在创建 TUN 网卡并配置系统路由，请稍候。",
                 "Creating the TUN adapter and configuring system routes…",
-            ),
+            )
+            .to_string(),
         ),
         Status::Stopping => (
             t("正在停止…", "Stopping…"),
             t(
                 "正在回收 TUN 网卡与路由，请稍候。",
                 "Releasing the TUN adapter and routes…",
-            ),
+            )
+            .to_string(),
         ),
-        Status::Failed(_) => (
-            t("启动失败", "Start failed"),
-            t(
-                "上次运行异常退出，具体原因见下方运行日志。",
-                "The last run exited abnormally. See the log below for details.",
+        // 退出原因直接进说明行：这一屏是用户「刚发现隧道没了」第一眼看的地方，
+        // 让他还要去翻日志才知道为什么，等于没解释。
+        Status::Failed(reason) => (
+            t("已停止", "Stopped"),
+            tf(
+                t("隧道已经退出：{reason}", "The tunnel exited: {reason}"),
+                &[("reason", reason)],
             ),
         ),
         Status::Stopped => (
@@ -133,7 +138,8 @@ pub fn hero_card(app: &App, snap: &Snapshot, theme: &Theme, cx: &mut Context<App
             t(
                 "选一套配置并点击启动，系统流量将通过 TUN 虚拟网卡转发。",
                 "Pick a profile and start it: system traffic is then routed through the TUN adapter.",
-            ),
+            )
+            .to_string(),
         ),
     };
 
@@ -448,19 +454,19 @@ pub fn stat_group(app: &App, theme: &Theme) -> AnyElement {
     settings_group(t("运行参数", "Runtime"), rows, theme).into_any_element()
 }
 
-/// 仪表盘上的日志：最近几行 + 去「程序与日志」看全部。
+/// 仪表盘上的日志：最近若干行 + 去「程序与日志」看全部。
 pub fn log_preview_group(app: &App, snap: &Snapshot, theme: &Theme, cx: &mut Context<App>) -> AnyElement {
     let rows = vec![
         setting_row(
             None,
             t("实时输出", "Live output"),
-            Some(tf(
+            Some(
                 t(
-                    "显示最近 {LOG_PREVIEW_LINES} 行",
-                    "Shows the last {LOG_PREVIEW_LINES} lines",
-                ),
-                &[("LOG_PREVIEW_LINES", &LOG_PREVIEW_LINES.to_string())],
-            )),
+                    "从最新一行往回翻",
+                    "Scroll back from the newest line",
+                )
+                .to_string(),
+            ),
             None,
             Some(icon_action(
                 "open-full-log",
@@ -472,7 +478,7 @@ pub fn log_preview_group(app: &App, snap: &Snapshot, theme: &Theme, cx: &mut Con
             theme,
         )
         .into_any_element(),
-        log_pane(app, snap, LOG_PREVIEW_LINES, 200.0, false, theme),
+        log_pane(app, snap, snap.logs.len(), LOG_PREVIEW_HEIGHT, theme, cx),
     ];
 
     settings_group(t("运行日志", "Log"), rows, theme).into_any_element()
@@ -1084,7 +1090,7 @@ pub fn runtime_group(app: &App, theme: &Theme, cx: &mut Context<App>) -> AnyElem
     let profile = app.profile();
 
     let mut rows = vec![compact_row(
-        t("致命错误时退出", "Exit on fatal error"),
+        t("会话打满时退出", "Exit when sessions run out"),
         Some(
             toggle_control(
                 "toggle-exit-on-fatal",
@@ -1387,7 +1393,14 @@ pub fn log_group(
             theme,
         )
         .into_any_element(),
-        log_pane(app, snap, snap.logs.len(), super::widgets::LOG_PANE_HEIGHT, true, theme),
+        log_pane(
+            app,
+            snap,
+            snap.logs.len(),
+            super::widgets::LOG_PANE_HEIGHT,
+            theme,
+            cx,
+        ),
     ];
 
     settings_group(t("运行日志", "Log"), rows, theme).into_any_element()
@@ -1436,16 +1449,13 @@ pub fn about_group(theme: &Theme) -> AnyElement {
 /// 固定高度必须写在外层容器上，不能写在滚动容器自己身上：滚动容器的高度
 /// 就是「视口高度」，给它写死高度会让「内容高度 = 视口高度」，滚动条永远
 /// 不会出现。内层填满外层，超出部分靠 `overflow_y_scroll` 滚。
-///
-/// `follow` = true 时把滚动句柄挂上去：日志一多就自动贴住最新一行
-/// （见 [`App::follow_logs`]）。预览窗格不挂，它只是「最近几行」的剪影。
 fn log_pane(
     app: &App,
     snap: &Snapshot,
     lines: usize,
     height: f32,
-    follow: bool,
     theme: &Theme,
+    cx: &mut Context<App>,
 ) -> AnyElement {
     if snap.logs.is_empty() {
         return setting_block(
@@ -1481,6 +1491,17 @@ fn log_pane(
         .p(px(10.0))
         .children(tail);
 
+    // 日志框自己处理滚轮：里面滚到头了再把事件交给页面。
+    //
+    // 两个滚动容器套在一起时 gpui 会把滚轮发给**所有**命中的容器，页面会
+    // 跟着日志一起滚——看起来就是「日志滚不动，整页在动」。这里在日志还能
+    // 滚的时候截住事件。判断放在元素自己的监听器里，gpui 的内建滚动在同一
+    // 元素上先注册、先执行，所以读到的是已经应用过本次增量之后的偏移。
+    //
+    // 偏移的符号：gpui 把 `delta` 直接加上去，再夹到 `[-max, 0]`，所以顶部
+    // 是 0、底部是 -max。往下滚 delta 为正、偏移往 0 走。
+    let scroll_handle = app.log_scroll.clone();
+
     let viewport = div()
         .id("log-viewport")
         .w_full()
@@ -1490,21 +1511,33 @@ fn log_pane(
         .border_color(theme.border())
         .bg(theme.surface_secondary())
         .overflow_hidden()
-        .child(if follow {
+        .child(
             div()
                 .id("log-scroll")
                 .size_full()
                 .overflow_y_scroll()
-                .track_scroll(&app.log_scroll)
-                .child(inner)
-                .into_any_element()
-        } else {
-            div()
-                .size_full()
-                .overflow_hidden()
-                .child(inner)
-                .into_any_element()
-        });
+                .track_scroll(&scroll_handle)
+                .on_scroll_wheel(cx.listener(
+                    |this, event: &ScrollWheelEvent, window, cx| {
+                        let delta = event.delta.pixel_delta(window.line_height()).y;
+                        let offset = this.log_scroll.offset().y;
+                        let max = this.log_scroll.max_offset().y;
+                        let can_scroll = if delta > px(0.0) {
+                            offset < px(0.0)
+                        } else if delta < px(0.0) {
+                            offset > -max
+                        } else {
+                            true
+                        };
+                        // 用户往回翻就停止跟随，翻回底部自动恢复。
+                        this.sync_log_follow();
+                        if can_scroll {
+                            cx.stop_propagation();
+                        }
+                    },
+                ))
+                .child(inner),
+        );
 
     div()
         .w_full()

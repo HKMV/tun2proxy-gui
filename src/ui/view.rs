@@ -25,7 +25,10 @@ impl Render for App {
         let theme = cx.theme().clone();
 
         // 日志行数变了才把日志窗格滚到底，否则用户往回翻会被拽回最新一行。
-        self.follow_logs(snapshot.logs.len());
+        //
+        // 用累计条数而不是 `logs.len()`：后者到 200 行上限就不再变化，日志框
+        // 会停在半途，看起来就是「日志滚不动」。
+        self.follow_logs(snapshot.log_total);
 
         div()
             .flex()

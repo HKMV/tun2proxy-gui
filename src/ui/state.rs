@@ -469,6 +469,8 @@ pub struct Snapshot {
     pub update: Update,
     pub version: Option<String>,
     pub logs: Vec<String>,
+    /// 累计写入过多少行日志（不受 [`Snapshot::logs`] 的条数上限影响）。
+    pub log_total: u64,
     /// 最近一分钟的流量采样（旧→新），空表示还没开始采。
     pub traffic: Vec<TrafficSample>,
     /// 最新一次采样的瞬时速率。
@@ -515,10 +517,15 @@ pub struct App {
     pub close_dialog: Option<Entity<DialogState>>,
     /// 日志窗格的滚动位置（跟随最新一行）。
     pub log_scroll: ScrollHandle,
+    /// 日志窗格是否贴住最新一行。
+    ///
+    /// 用户往回翻就置 false，翻回底部再置 true。没有它的话「每来一行就滚到
+    /// 底」会让往回翻变得没意义——整机流量下每秒几百行，翻上去立刻被拽回来。
+    pub log_follow: bool,
     /// 每页各自的滚动位置。
     pub page_scroll: [ScrollHandle; 4],
-    /// 上一次渲染时的日志行数：变了才把日志滚到底，否则用户往回翻会被拽回去。
-    last_log_len: usize,
+    /// 上一次渲染时的日志累计行数：变了才把日志滚到底，否则每帧都在动。
+    last_log_len: u64,
     /// 输入框 / 对话框的订阅，随实体一起活着。
     _subscriptions: Vec<Subscription>,
 }
@@ -598,6 +605,7 @@ impl App {
             selects,
             close_dialog: None,
             log_scroll: ScrollHandle::default(),
+            log_follow: true,
             page_scroll: std::array::from_fn(|_| ScrollHandle::default()),
             last_log_len: 0,
             _subscriptions: subscriptions,
@@ -674,6 +682,7 @@ impl App {
             update: shared.update.clone(),
             version: shared.version.clone(),
             logs: shared.log_tail(LOG_VIEW_LINES),
+            log_total: shared.log_total,
             traffic: shared.traffic.iter().copied().collect(),
             rate: shared.rate,
             probe: shared.probe.clone(),
@@ -758,9 +767,29 @@ impl App {
     }
 
     /// 日志行数变了就滚到底（贴住最新一行）。
-    pub fn follow_logs(&mut self, lines: usize) {
-        if self.last_log_len != lines {
-            self.last_log_len = lines;
+    ///
+    /// `total` 是累计条数，不是当前窗口里的条数——后者到上限就不动了。
+    /// 用户往回翻过（[`App::log_follow`] 为 false）就不动，否则每来一行都会
+    /// 把人拽回底部。
+    pub fn follow_logs(&mut self, total: u64) {
+        if self.last_log_len != total {
+            self.last_log_len = total;
+            self.sync_log_follow();
+        }
+    }
+
+    /// 让「是否贴底」与滚动位置对齐，然后决定要不要滚到底。
+    ///
+    /// 由渲染前和滚轮处理共用：滚轮动过之后来新行，判断依据必须是用户最后
+    /// 停下的位置。
+    pub fn sync_log_follow(&mut self) {
+        let offset = self.log_scroll.offset().y;
+        let max = self.log_scroll.max_offset().y;
+        // 偏移是 `[-max, 0]`：底部是 -max。`max + offset` 就是「离底部还有
+        // 多远」，差一行以内算贴底——滚轮一行一行走，正好停在底线时会有
+        // 不到 1px 的浮点残差。
+        self.log_follow = max + offset <= px(16.0);
+        if self.log_follow {
             self.log_scroll.scroll_to_bottom();
         }
     }

@@ -104,6 +104,18 @@ pub struct Shared {
     /// 一条错误横幅显示，直到下一次启动尝试把它清掉。放在共享状态里
     /// 而不是 `App::error`：写它的是后台线程，拿不到界面状态。
     pub start_blocked: Option<String>,
+    /// 子进程最后一条 ERROR 级别的输出。
+    ///
+    /// 单独存一份而不只是留在 `logs` 里：进程退出时状态机要拿它当「为什么
+    /// 停了」的答案。tun2proxy 的致命错误都打在自己的 stderr 上（比如
+    /// `Forced exit due to max sessions reached (200/200)`），只报退出码等于
+    /// 什么也没说。
+    pub last_error: Option<String>,
+    /// 累计写入过多少行日志（不随 [`Shared::logs`] 的裁剪回退）。
+    ///
+    /// 界面靠它判断「有没有新行」：`logs.len()` 涨到上限就不再变，用它的话
+    /// 日志框会停在半路再也不跟新，看起来就是「日志不滚」。
+    pub log_total: u64,
     /// 重绘回调：后台线程改完状态后调用它，让界面重建一次。
     ///
     /// 用裸回调而不是直接存 GUI 句柄，是为了让 core 不依赖任何界面框架。
@@ -111,6 +123,18 @@ pub struct Shared {
 }
 
 impl Shared {
+    /// 追加一行日志并维持长度上限。
+    ///
+    /// 直接用 `logs.push_back` 会漏掉 [`Shared::log_total`]，界面就不知道
+    /// 又来了新行，所以三条写入路径都走这里。
+    pub fn push_log(&mut self, line: impl Into<String>) {
+        self.logs.push_back(line.into());
+        self.log_total += 1;
+        while self.logs.len() > MAX_LOGS {
+            self.logs.pop_front();
+        }
+    }
+
     /// 取最后 `count` 行日志（给界面用）。
     pub fn log_tail(&self, count: usize) -> Vec<String> {
         let skip = self.logs.len().saturating_sub(count);
@@ -148,6 +172,8 @@ impl Engine {
             rate: TrafficSample::default(),
             probe: None,
             start_blocked: None,
+            last_error: None,
+            log_total: 0,
             rebuild: None,
         }));
         let dirty = Arc::new(AtomicBool::new(false));
@@ -257,10 +283,7 @@ impl Engine {
         let line = line.into();
         eprintln!("{line}");
         if let Ok(mut shared) = self.shared.lock() {
-            shared.logs.push_back(line);
-            while shared.logs.len() > MAX_LOGS {
-                shared.logs.pop_front();
-            }
+            shared.push_log(line);
         }
         self.touch();
     }
@@ -406,6 +429,11 @@ impl Engine {
         }
 
         let args = profile.cli_args();
+        // 上一次运行的报错不能留到这一次：状态机拿它解释「为什么停了」，
+        // 留着的话新一次失败会报出旧原因。
+        if let Ok(mut shared) = self.shared.lock() {
+            shared.last_error = None;
+        }
         self.log_line(tr_format!(
             "启动：{} {}",
             "Starting: {} {}",
@@ -539,16 +567,22 @@ impl Engine {
                         if let Ok(mut guard) = child.lock() {
                             *guard = None;
                         }
+                        // 读在写状态之前：解释失败原因要用它，而写状态时又
+                        // 会拿同一把锁。
+                        let reason = shared
+                            .lock()
+                            .ok()
+                            .and_then(|shared| shared.last_error.clone());
                         let status = match result {
                             Ok(status) if was_stopping || status.success() => Status::Stopped,
-                            Ok(status) => Status::Failed(tr_format!(
-                                "tun2proxy 已退出（{}）",
-                                "tun2proxy exited ({})",
-                                describe_exit(&status)
+                            Ok(status) => Status::Failed(explain_exit(
+                                &describe_exit(&status),
+                                reason.as_deref(),
                             )),
                             Err(err) => Status::Failed(tr_format!(
-                                "无法获取进程状态：{err}",
-                                "Cannot read the process status: {err}"
+                                "无法获取进程状态：{}",
+                                "Cannot read the process status: {}",
+                                err
                             )),
                         };
                         if let Ok(mut shared) = shared.lock() {
@@ -736,10 +770,15 @@ fn spawn_reader(
                 if line.trim().is_empty() {
                     continue;
                 }
+                // tun2proxy 的报错两种写法都出现过：log crate 的
+                // `[ts ERROR module] ...`，以及 `main` 直接返回的 `Error: ...`。
+                // 后者才是「进程要退出了」的那一条，所以两种都收，后到的覆盖
+                // 先到的——最后一条才是死因。
+                let is_error = line.contains(" ERROR ") || line.trim_start().starts_with("Error:");
                 if let Ok(mut shared) = shared.lock() {
-                    shared.logs.push_back(line);
-                    while shared.logs.len() > MAX_LOGS {
-                        shared.logs.pop_front();
+                    shared.push_log(line.clone());
+                    if is_error {
+                        shared.last_error = Some(line);
                     }
                 }
                 dirty.store(true, Ordering::Relaxed);
@@ -750,8 +789,25 @@ fn spawn_reader(
 
 fn describe_exit(status: &std::process::ExitStatus) -> String {
     match status.code() {
-        Some(code) => tr_format!("退出码 {code}", "Exit code {code}"),
+        Some(code) => tr_format!("退出码 {}", "Exit code {}", code),
         None => format!("{status}"),
+    }
+}
+
+/// 把「怎么退的」和子进程最后一条报错拼成一句话。
+///
+/// 会话上限是最常见的死因，而且它根本不是「程序坏了」：并发连接数到了，
+/// 而 `--exit-on-fatal-error` 让它选择退出而不是丢新连接。这时候直接告诉
+/// 用户去调哪一项，比原样贴一句英文报错有用。
+fn explain_exit(code: &str, reason: Option<&str>) -> String {
+    match reason {
+        Some(reason) if reason.contains("max sessions reached") => tr_format!(
+            "{}：并发会话数达到上限，隧道按「会话打满时退出」结束了。把「网络与绕过 → 会话上限」调大即可。",
+            "{}: the concurrent session limit was reached and the tunnel exited. Raise the session limit under Network.",
+            code
+        ),
+        Some(reason) => tr_format!("{}：{}", "{}: {}", code, reason),
+        None => code.to_string(),
     }
 }
 
@@ -804,10 +860,7 @@ impl Log for SharedLogger {
     fn log(&self, record: &Record<'_>) {
         let line = format!("{} {:<5} {}", timestamp(), record.level(), record.args());
         if let Ok(mut shared) = self.shared.lock() {
-            shared.logs.push_back(line);
-            while shared.logs.len() > MAX_LOGS {
-                shared.logs.pop_front();
-            }
+            shared.push_log(line);
         }
         self.dirty.store(true, Ordering::Relaxed);
     }
