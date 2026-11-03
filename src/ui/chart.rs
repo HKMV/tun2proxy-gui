@@ -3,6 +3,12 @@
 //! 用 GPUI 的 `canvas` 而不是一排 `div` 画柱状图：折线需要「点与点之间」的
 //! 插值，而布局层只认识矩形。`canvas` 能拿到精确的本地坐标，画出来的才是折线。
 //!
+//! gpuikit 没有图表组件，所以这里不另起一套配色和尺度，而是**全部走它的
+//! token**：高度挂到 `ControlScale`（3 个 Large 控件高），网格线用
+//! `border_subtle()`（比卡片轮廓轻一档，是「卡片内部」的语义色），两条曲线
+//! 用 `accent()` 与 `success()`，图例字号用 12 档、色块尺寸跟着控件圆角走。
+//! 换主题时图表跟着换，不会变成界面里唯一一块「别人家的图」。
+//!
 //! 两条线：下行（强调色）与上行（成功色），下行线下方铺一层很淡的面积色，
 //! 让「量」在余光里也能看出来。纵轴按窗口内的峰值自适应——固定比例尺会让
 //! 低流量永远贴着底边。
@@ -14,16 +20,19 @@ use gpui::{
     AnyElement, Bounds, Hsla, IntoElement, ParentElement, Styled, Window, canvas, div, fill, point,
     px, size,
 };
-use gpuikit::theme::{Theme, Themeable};
+use gpuikit::theme::{ControlSize, Theme, Themeable};
 
 use crate::core::i18n::t;
 use crate::core::TrafficSample;
 
-use super::theme::TEXT_BODY;
+use super::theme::TEXT_SMALL;
 use super::widgets::{hint, SPACE_XS};
 
-/// 折线图高度（逻辑像素）。
-pub const CHART_HEIGHT: f32 = 68.0;
+/// 折线图高度：3 个 `ControlSize::Large` 控件高（24 × 3）。
+///
+/// 和控件同源，旁边按钮的高度改一档时图表跟着改，不会出现「图表比按钮
+/// 矮半头」这种只有肉眼能发现的对不齐。
+pub const CHART_HEIGHT: f32 = 72.0;
 
 /// 画一张流量折线图。
 ///
@@ -31,11 +40,15 @@ pub const CHART_HEIGHT: f32 = 68.0;
 pub fn traffic_chart(samples: &[TrafficSample], width: f32, theme: &Theme) -> AnyElement {
     let width = width.max(24.0);
     // 两条线要能一眼分开。accent 在深色主题里是蓝、上行取 success 的绿，
-    // 色相差得够远；同色系的两档（比如 accent + info 都是蓝）在 68dp 高的
+    // 色相差得够远；同色系的两档（比如 accent + info 都是蓝）在 72dp 高的
     // 缩略图上会糊成一条。
     let accent = theme.accent();
     let upstream = theme.success();
     let border = theme.border();
+    // 参考线取 `surface_tertiary()`：比卡片底亮两档，1dp 画上去刚好看得见，
+    // 又不至于像网格纸。`border_subtle()` 和卡片同色（它就是「卡片内部不画
+    // 线」的语义），`border()` 又只比卡片亮一档，两者画上去都等于没画。
+    let grid = theme.surface_tertiary();
 
     // 还没采到点：画一条基线 + 一句说明。
     //
@@ -64,12 +77,6 @@ pub fn traffic_chart(samples: &[TrafficSample], width: f32, theme: &Theme) -> An
             let height = CHART_HEIGHT;
             let baseline = height - 1.0;
 
-            // 基线：一条发丝线，给折线一个「地面」。
-            window.paint_quad(fill(
-                rect(bounds, 0.0, baseline, width, 1.0),
-                border,
-            ));
-
             let peak = samples
                 .iter()
                 .map(|sample| sample.peak())
@@ -78,6 +85,16 @@ pub fn traffic_chart(samples: &[TrafficSample], width: f32, theme: &Theme) -> An
                 .max(1) as f64;
             // 顶部留 2dp：贴着上边缘的线会被画布裁掉半个像素。
             let usable = (height - 3.0).max(1.0) as f64;
+
+            // 三条水平参考线（25/50/75%）：只看折线能看出「有起伏」，看不出
+            // 「起伏多大」。比外轮廓轻一档，不抢折线。
+            for step in 1..4 {
+                let y = baseline - (usable * step as f64 / 4.0) as f32;
+                window.paint_quad(fill(rect(bounds, 0.0, y, width, 1.0), grid));
+            }
+
+            // 基线：一条发丝线，给折线一个「地面」。
+            window.paint_quad(fill(rect(bounds, 0.0, baseline, width, 1.0), border));
 
             let down: Vec<f32> = samples
                 .iter()
@@ -106,10 +123,11 @@ fn y_for(value: f64, peak: f64, usable: f64, baseline: f32) -> f32 {
     baseline - (ratio * usable) as f32
 }
 
-/// 逐列画折线：每列 1dp 宽、1.5dp 高，相邻两点的纵坐标之间线性插值。
+/// 逐列画折线：每列 1dp 宽，纵向从本列的高度连到下一列的高度。
 ///
 /// Canvas 没有 polyline 图元，但「每列一个 1dp 宽的小矩形」在屏幕上就是一条
-/// 连续的线——而且宽度随画布自适应，不依赖固定的采样点数。
+/// 连续的线——**前提是矩形要连到下一列**。固定 1.5dp 高会在陡坡上断成一串
+/// 虚线：相邻两列的纵坐标差可以远大于 1.5dp。
 fn stroke(
     window: &mut Window,
     bounds: Bounds<gpui::Pixels>,
@@ -117,8 +135,12 @@ fn stroke(
     width: f32,
     color: Hsla,
 ) {
-    for (x, y) in columns(ys, width) {
-        window.paint_quad(fill(rect(bounds, x, y - 0.75, 1.0, 1.5), color));
+    let columns = columns(ys, width);
+    for (index, &(x, y)) in columns.iter().enumerate() {
+        let next = columns.get(index + 1).map(|&(_, y)| y).unwrap_or(y);
+        let top = y.min(next) - 0.75;
+        let height = (y - next).abs() + 1.5;
+        window.paint_quad(fill(rect(bounds, x, top, 1.0, height), color));
     }
 }
 
@@ -183,17 +205,27 @@ fn rect(
     )
 }
 
-/// 图例上的一个小色块 + 名称。
-pub fn legend_swatch(color: Hsla) -> impl IntoElement {
-    div().flex_none().w(px(8.0)).h(px(8.0)).rounded(px(2.0)).bg(color)
+/// 图例上的一个小色块。
+///
+/// 圆角取 `ControlSize::Small` 的 radius：图例是和 12px 文字并排的小记号，
+/// 用 Medium/Large 的圆角会比文字还「重」，在余光里先看到方块而不是数字。
+pub fn legend_swatch(color: Hsla, theme: &Theme) -> impl IntoElement {
+    let radius = theme.control(ControlSize::Small).radius.0;
+    div()
+        .flex_none()
+        .w(px(8.0))
+        .h(px(8.0))
+        .rounded(px(radius))
+        .bg(color)
 }
 
 /// 图例文字（灰字）。
 ///
-/// 字号跟正文一致：图例讲的是「哪条线下行、哪条线上行」，是读的内容，不是脚注。
+/// 字号用 gpuikit 的 12 档：图例是辅助说明，和卡片里的 description 同级；
+/// 用 14 会和正文抢位置。
 pub fn legend_text(text: impl Into<gpui::SharedString>, theme: &Theme) -> impl IntoElement {
     div()
-        .text_size(px(TEXT_BODY))
+        .text_size(px(TEXT_SMALL))
         .text_color(theme.fg_muted())
         .whitespace_nowrap()
         .child(text.into())

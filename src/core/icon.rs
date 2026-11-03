@@ -18,8 +18,8 @@
 //! # 托盘的两档颜色
 //!
 //! 托盘区域只有 16~32px，靠形状分不出「在跑」和「没跑」，所以托盘图标按服务
-//! 状态换色：未运行是灰的，运行中是绿的。做法见 [`Tint`]——在内存里改像素，
-//! 不额外维护两份图片。
+//! 状态换色：未运行是灰的（熄灯），运行中保持原色。做法见 [`Tint`]——熄灯那
+//! 一档在内存里改像素，运行态直接用内嵌的帧，不额外维护两份图片。
 
 /// 内嵌的 ico 字节（9 个尺寸：16/20/24/32/40/48/64/128/256）。
 const ICON: &[u8] = include_bytes!("../../assets/icon.ico");
@@ -66,77 +66,40 @@ fn frames() -> Vec<Frame> {
 #[cfg(windows)]
 pub use windows_icon::hicon_tinted;
 
-/// 托盘图标的两档配色。
+/// 托盘图标的两种状态色。
 ///
 /// 图标本身是「白色拱形 + 蓝色圆角方块」。托盘要回答的是「现在到底跑没跑」，
 /// 而托盘区域只有 16~32px，靠形状区分不开，所以靠颜色：
 ///
-/// | 档位 | 蓝色底 | 白色图案 | 读作 |
-/// |------|--------|----------|------|
-/// | [`Tint::Idle`] | 灰、压暗 | 灰 | 熄灯 |
-/// | [`Tint::Running`] | 绿 | 白 | 在跑 |
+/// | 档位 | 读作 |
+/// |------|------|
+/// | [`Tint::Dimmed`] | 熄灯：整体去饱和并压暗 |
+/// | [`Tint::Original`] | 在跑：保持原色，和任务栏 / 标题栏里那份一致 |
 ///
-/// 不需要维护两份 ico：颜色在运行时从内嵌的那一份算出来。
+/// 只有「熄灯」那一档需要算，另一档就是原图——不额外维护两份 ico。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tint {
     /// 未运行：整体去饱和并压暗。
-    Idle,
-    /// 运行中：底色换成绿色。
-    Running,
+    Dimmed,
+    /// 运行中：原色，不做任何处理。
+    Original,
 }
 
 /// 按档位重排一个像素的颜色。
 ///
-/// 只改**有彩色**的像素（蓝色底）；无彩色的像素（白色图案、深色描边）在
-/// `Running` 下原样保留——否则整个图标会被染色，图案和底色糊成一片。
-/// `Idle` 下连图案一起压暗，整体读作「熄灯」。
+/// `Dimmed` 下只保留亮度：有彩色像素（蓝色底）压暗成灰，无彩色像素（白色
+/// 拱形、深色描边）压得轻一点——托盘在深色任务栏上是 16px 的小图，图案再暗
+/// 就和灰底糊在一起，反而认不出这是哪个程序。
 pub fn recolor_pixel(r: u8, g: u8, b: u8, tint: Tint) -> (u8, u8, u8) {
+    if tint == Tint::Original {
+        return (r, g, b);
+    }
     let max = r.max(g).max(b);
     let min = r.min(g).min(b);
     let saturation = (max - min) as f32 / max.max(1) as f32;
-
-    // 无彩色：白色拱形、抗锯齿边缘、深色描边都走这一支。
-    if saturation < 0.12 {
-        return match tint {
-            Tint::Idle => {
-                // 只压一点点：托盘在深色任务栏上是 16px 的小图，图案再暗就
-                // 和灰底糊在一起，反而认不出这是哪个程序。
-                let v = (max as f32 * 0.92) as u8;
-                (v, v, v)
-            }
-            Tint::Running => (r, g, b),
-        };
-    }
-
-    match tint {
-        Tint::Idle => {
-            let v = (max as f32 * 0.55) as u8;
-            (v, v, v)
-        }
-        // 145° 是绿；亮度取原像素的 max，蓝色渐变的高光/暗部都会保留下来。
-        Tint::Running => hsv_to_rgb(145.0, 0.60, max as f32 / 255.0),
-    }
-}
-
-/// HSV → RGB，输入输出都归一化到 0..1（除返回值是 0..255）。
-fn hsv_to_rgb(hue: f32, saturation: f32, value: f32) -> (u8, u8, u8) {
-    let h = (hue / 60.0).rem_euclid(6.0);
-    let c = value * saturation;
-    let x = c * (1.0 - (h % 2.0 - 1.0).abs());
-    let m = value - c;
-    let (r, g, b) = match h as u32 {
-        0 => (c, x, 0.0),
-        1 => (x, c, 0.0),
-        2 => (0.0, c, x),
-        3 => (0.0, x, c),
-        4 => (x, 0.0, c),
-        _ => (c, 0.0, x),
-    };
-    (
-        ((r + m) * 255.0).round() as u8,
-        ((g + m) * 255.0).round() as u8,
-        ((b + m) * 255.0).round() as u8,
-    )
+    let factor = if saturation < 0.12 { 0.92 } else { 0.55 };
+    let v = (max as f32 * factor) as u8;
+    (v, v, v)
 }
 
 /// 取 ico 里最接近 `size` 的那一帧。
@@ -161,8 +124,9 @@ mod windows_icon {
 
     /// 造一个边长为 `size` 的 `HICON`，颜色换成 `tint` 那一档。
     ///
-    /// ico 里的帧是 PNG，所以要解码 → 改像素 → 编码回去。只在状态变化时
-    /// 做一次（调用方缓存句柄），开销可以忽略。
+    /// `Dimmed` 需要解码 PNG → 改像素 → 编码回去；`Original` 直接用内嵌的
+    /// 那一帧，不解码。都只在状态变化时做一次（调用方缓存句柄），开销可以
+    /// 忽略。
     ///
     /// 着色失败（PNG 解不开、编码器报错）时退回未着色的原图：颜色不对是小事，
     /// 托盘图标整个消失是大事。
@@ -171,6 +135,9 @@ mod windows_icon {
     pub fn hicon_tinted(size: u32, tint: super::Tint) -> Option<HICON> {
         let frame = pick_frame(size)?;
         let bytes = &ICON[frame.offset..frame.offset + frame.length];
+        if tint == super::Tint::Original {
+            return create(bytes, size);
+        }
         match recolor(bytes, tint) {
             Some(recolored) => create(&recolored, size),
             None => create(bytes, size),
@@ -249,22 +216,23 @@ mod tests {
     }
 
     #[test]
-    fn running_tint_turns_the_blue_background_green() {
-        // 图标底色的蓝：色相 ~220°，tint 到 145° 之后绿分量应当最大。
-        let (r, g, b) = recolor_pixel(0x25, 0x63, 0xeb, Tint::Running);
-        assert!(g > r && g > b, "运行中应当是绿的，实际 {r},{g},{b}");
+    fn original_tint_keeps_the_colour() {
+        // 运行中用原色：和任务栏、标题栏里那份一致。
+        assert_eq!(recolor_pixel(0x25, 0x63, 0xeb, Tint::Original), (0x25, 0x63, 0xeb));
     }
 
     #[test]
-    fn idle_tint_flattens_colour_to_grey() {
-        let (r, g, b) = recolor_pixel(0x25, 0x63, 0xeb, Tint::Idle);
+    fn dimmed_tint_flattens_colour_to_grey() {
+        let (r, g, b) = recolor_pixel(0x25, 0x63, 0xeb, Tint::Dimmed);
         assert_eq!((r, g, b), (r, r, r), "未运行应当是灰的");
     }
 
     #[test]
-    fn the_white_motif_is_left_alone_while_running() {
-        // 白色拱形不能跟着染色，否则图案和底色糊成一片。
-        assert_eq!(recolor_pixel(0xff, 0xff, 0xff, Tint::Running), (255, 255, 255));
+    fn the_white_motif_stays_brighter_than_the_grey_background() {
+        // 熄灯态下图案不能和底色糊在一起，否则认不出是哪个程序。
+        let (br, ..) = recolor_pixel(0xff, 0xff, 0xff, Tint::Dimmed);
+        let (gr, ..) = recolor_pixel(0x25, 0x63, 0xeb, Tint::Dimmed);
+        assert!(br > gr + 40, "图案应当明显亮于底色：{br} vs {gr}");
     }
 
     /// 把两档托盘图标导成 PNG，肉眼看一眼颜色对不对。
@@ -277,7 +245,7 @@ mod tests {
     fn dump_tray_previews() {
         let frame = pick_frame(256).expect("ico 里应有 256 帧");
         let bytes = &ICON[frame.offset..frame.offset + frame.length];
-        for (tint, name) in [(Tint::Idle, "idle"), (Tint::Running, "running")] {
+        for (tint, name) in [(Tint::Dimmed, "dimmed"), (Tint::Original, "original")] {
             let png = windows_icon::recolor(bytes, tint).expect("PNG 应当能解码");
             std::fs::write(format!(".tmp/tray-{name}.png"), png).expect("写预览图");
         }

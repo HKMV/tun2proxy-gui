@@ -151,7 +151,7 @@ cargo build --release
 
 ```bash
 # 先把 Cargo.toml 的 version 改好并提交，tag 必须与它一致（CI 会校验）
-git tag v0.2.0 && git push origin v0.2.0
+git tag v0.2.1 && git push origin v0.2.1
 ```
 
 产物：`tun2proxy-gui-<tag>-<target>.zip`（Windows）、`.tar.gz`（Linux /
@@ -256,13 +256,13 @@ set TUN2PROXY_GUI_THEME=gruvbox  # gpuikit 的招牌 Gruvbox 深色
 
 ## 托盘
 
-托盘图标按服务状态换色：**未运行是灰的，运行中是绿的**。托盘区域只有 16~32px，
-靠形状分不出在不在跑，颜色是最快的信号（鼠标悬停的提示文字也带着状态）。
+托盘图标按服务状态换色：**未运行是灰的（熄灯），运行中保持原色**。托盘区域只有
+16~32px，靠形状分不出在不在跑，颜色是最快的信号（鼠标悬停的提示文字也带着状态）。
 
 两档都从 `assets/icon.ico` 那一份算出来，不额外维护图片：ico 里的帧是 PNG，
-运行时解码、把有彩色像素的色相换成绿（未运行时去饱和压暗）、再编码回去造
-`HICON`（`core::icon::recolor_pixel`）。白色图案是无彩色像素，保持不动——否则
-图案和底色会糊成一片。
+运行时解码、把有彩色像素去饱和压暗（未运行时）、再编码回去造 `HICON`
+（`core::icon::recolor_pixel`）；运行态直接用内嵌的那一帧，连解码都省了。
+白色图案是无彩色像素，压得比底色轻——不然 16px 下图案和灰底会糊成一片。
 
 「正在启动」也算「在跑」：用户已经按了启动，图标这时候就该亮，等真正 `Running`
 再变色会慢一拍。着色失败时退回原图，颜色不对是小事，图标消失是大事。

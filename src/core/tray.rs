@@ -397,7 +397,7 @@ mod imp {
     static IDLE_ICON: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
     static RUNNING_ICON: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 
-    /// 图标：未运行是灰的，运行中是绿的，一眼看出服务在不在跑。
+    /// 图标：未运行是灰的，运行中是原色，一眼看出服务在不在跑。
     ///
     /// 两档都从内嵌的那一份 ico 算出来（见 [`crate::core::icon::recolor_pixel`]），
     /// 不额外维护图片文件。
@@ -414,9 +414,9 @@ mod imp {
         // 32px 起步：托盘在 100% 缩放下是 16px，但 150%/200% 下是 24/32px，
         // 给小图会让 Windows 去放大，边缘发虚。
         let tint = if running {
-            crate::core::icon::Tint::Running
+            crate::core::icon::Tint::Original
         } else {
-            crate::core::icon::Tint::Idle
+            crate::core::icon::Tint::Dimmed
         };
         let icon = crate::core::icon::hicon_tinted(32, tint).unwrap_or(std::ptr::null_mut());
         if !icon.is_null() {

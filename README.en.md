@@ -179,7 +179,7 @@ Releases (see `.github/workflows/release.yml`):
 
 ```bash
 # Bump `version` in Cargo.toml, commit it, then tag — CI enforces that they match
-git tag v0.2.0 && git push origin v0.2.0
+git tag v0.2.1 && git push origin v0.2.1
 ```
 
 Artifacts: `tun2proxy-gui-<tag>-<target>.zip` (Windows) and `.tar.gz` (Linux /
@@ -307,16 +307,17 @@ automatically inverted on light ones, with no per-theme branch.
 
 ## Tray
 
-The tray icon changes colour with the service: **grey when stopped, green while
-running**. The tray is 16–32px, so shape cannot express "running or not" and
-colour is the fastest signal (the hover tooltip carries the state too).
+The tray icon changes colour with the service: **grey when stopped (lights out),
+original colour while running**. The tray is 16–32px, so shape cannot express
+"running or not" and colour is the fastest signal (the hover tooltip carries the
+state too).
 
-Both variants are derived from the single `assets/icon.ico`, with no extra image
-files: the frames are PNG, so at runtime the icon is decoded, the saturated
-pixels have their hue moved to green (desaturated and darkened when idle), and
-re-encoded into an `HICON` (`core::icon::recolor_pixel`). The white motif is
-achromatic and left untouched — otherwise the glyph and the background would
-smear together.
+Both variants come from the single `assets/icon.ico`, with no extra image files:
+the frames are PNG, so when stopped the icon is decoded, its saturated pixels are
+desaturated and darkened, and re-encoded into an `HICON`
+(`core::icon::recolor_pixel`); while running the embedded frame is used directly,
+skipping the decode. The white motif is achromatic and only dimmed slightly —
+otherwise the glyph and the grey background would smear together at 16px.
 
 "Starting" counts as running: the user already pressed start, so the icon should
 light up then; waiting for `Running` would feel like a dead click. If tinting

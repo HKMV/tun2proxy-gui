@@ -262,13 +262,13 @@ fn traffic_panel(snap: &Snapshot, theme: &Theme) -> AnyElement {
                 .flex()
                 .items_center()
                 .gap(px(LEGEND_GAP))
-                .child(legend_swatch(theme.accent()))
+                .child(legend_swatch(theme.accent(), theme))
                 .child(legend_text(
                     tf(t("下行 {}", "Down {}"), &[("", &rate(snap.rate.down))]),
                     theme,
                 ))
                 // 上行色块必须和 chart.rs 里那条线取同一个颜色，否则图例在说谎。
-                .child(legend_swatch(theme.success()))
+                .child(legend_swatch(theme.success(), theme))
                 .child(legend_text(
                     tf(t("上行 {}", "Up {}"), &[("", &rate(snap.rate.up))]),
                     theme,

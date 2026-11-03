@@ -36,7 +36,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Windows：zsui 走 Win32，无需额外系统依赖。
+          # Windows：GPUI 走 Win32 + DirectX，无需额外系统依赖。
           - os: windows-latest
             target: x86_64-pc-windows-msvc
           # Linux：用 22.04 编译，glibc 2.35 起步，兼容面最广。
@@ -52,18 +52,19 @@ jobs:
           # 手动触发时 ref 是分支，这里强制检出被发布的那个 tag。
           ref: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
 
-      # zsui 的 linux-direct 后端用 cairo/pango 绘制、winit 开窗口，
-      # 所以除 pkg-config 外还要 X11 / Wayland / xkbcommon 的开发头。
+      # GPUI 在 Linux 上走 Vulkan 渲染、Wayland/X11 开窗、font-kit 找字体，
+      # 所以除 pkg-config 外还要 Vulkan 与 X11 / Wayland / xkbcommon 的开发头。
       - name: Install Linux build deps
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             pkg-config \
-            libcairo2-dev libpango1.0-dev libglib2.0-dev \
+            libvulkan-dev \
             libxkbcommon-dev libxkbcommon-x11-dev \
             libwayland-dev libx11-dev libx11-xcb-dev libxcb1-dev \
-            libxcursor-dev libxrandr-dev libxi-dev
+            libxcursor-dev libxrandr-dev libxi-dev \
+            libfontconfig1-dev libfreetype-dev
 
       - uses: dtolnay/rust-toolchain@stable
         with:
