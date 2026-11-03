@@ -23,10 +23,15 @@ use crate::core::paths;
 use crate::tr_format;
 
 /// DNS 查询处理策略，对应 CLI 的 `--dns <strategy>`。
+///
+/// 默认是 [`DnsMode::Virtual`]：`direct` 要求上游代理能把 UDP 转发出去，
+/// 而 SOCKS5 代理未必支持 UDP ASSOCIATE、HTTP 代理根本不支持 UDP。一旦
+/// 转不出去，每条查询都要等满 `udp_timeout` 才超时，系统随即换服务器重试，
+/// 几秒钟就能攒出上百条会话——日志里全是 `-> x.x.x.x:53 with "timed out"`。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DnsMode {
-    /// 交给隧道转发给 `--dns-addr` 指定的解析器（最省事）。
+    /// 交给隧道转发给 `--dns-addr` 指定的解析器（依赖代理的 UDP 能力）。
     Direct,
     /// Fake-IP：本地直接应答，把域名映射进虚拟地址池。
     Virtual,
@@ -56,12 +61,12 @@ impl DnsMode {
     pub fn hint(self) -> &'static str {
         match self {
             DnsMode::Direct => t(
-                "查询经隧道转发到上面的 DNS 服务器。",
-                "Queries are forwarded through the tunnel to the DNS server above.",
+                "查询经隧道转发给上面的 DNS 服务器（需要代理支持 UDP）。",
+                "Queries go through the tunnel to the DNS server above (the proxy must carry UDP).",
             ),
             DnsMode::Virtual => t(
-                "本地立即应答，域名映射进虚拟池后再交给代理。",
-                "Answered locally; domains map into the virtual pool before reaching the proxy.",
+                "本地立即应答，域名映射进虚拟池后再交给代理（推荐）。",
+                "Answered locally; domains map into the virtual pool before reaching the proxy (recommended).",
             ),
             DnsMode::OverTcp => t(
                 "改用 TCP 转发，可绕过只拦 UDP 53 的网络。",
@@ -118,14 +123,6 @@ impl Verbosity {
 /// 打印机会连不上、NAS 找不到、投屏卡住，而且内网流量绕一圈上游代理再回来，
 /// 既慢又可能被上游直接丢弃。
 ///
-/// 默认的并发会话上限。
-///
-/// tun2proxy 自己的默认值是 200，那是给「单程序走代理」的量级。本应用接管
-/// 整机流量，200 条并发连接在浏览器 + 系统服务 + DNS 查询面前撑不了几秒，
-/// 打满之后 `--exit-on-fatal-error` 会把隧道直接踢掉（用户看到的就是「启动
-/// 几秒就停了」）。2000 给足了余量，同时仍然是个有意义的护栏。
-pub const DEFAULT_MAX_SESSIONS: usize = 2000;
-
 /// 每行一个 CIDR（`--bypass` 逐行透传）。不要在这里写注释：校验会把它当成
 /// 非法地址拒绝。
 pub const DEFAULT_BYPASS: &str = "10.0.0.0/8
@@ -135,6 +132,14 @@ pub const DEFAULT_BYPASS: &str = "10.0.0.0/8
 169.254.0.0/16
 100.64.0.0/10
 224.0.0.0/4";
+
+/// 默认的并发会话上限。
+///
+/// tun2proxy 自己的默认值是 200，那是给「单程序走代理」的量级。本应用接管
+/// 整机流量，200 条并发连接在浏览器 + 系统服务 + DNS 查询面前撑不了几秒，
+/// 打满之后 `--exit-on-fatal-error` 会把隧道直接踢掉（用户看到的就是「启动
+/// 几秒就停了」）。2000 给足了余量，同时仍然是个有意义的护栏。
+pub const DEFAULT_MAX_SESSIONS: usize = 2000;
 
 /// 一套代理配置。
 ///
@@ -183,7 +188,7 @@ impl Default for Profile {
         Self {
             name: t("默认配置", "Default profile").to_string(),
             proxy_url: "socks5://127.0.0.1:1080".to_string(),
-            dns: DnsMode::Direct,
+            dns: DnsMode::Virtual,
             dns_addr: "8.8.8.8".to_string(),
             virtual_dns_pool: "198.18.0.0/15".to_string(),
             bypass: DEFAULT_BYPASS.to_string(),
@@ -438,8 +443,9 @@ fn missing_config_version() -> u32 {
 /// * 1 —— 初始格式；
 /// * 2 —— `exit_on_fatal` 默认改为开（v3 已撤回）；
 /// * 3 —— `max_sessions` 默认从 200 抬到 [`DEFAULT_MAX_SESSIONS`]，
-///   `exit_on_fatal` 默认改回关。
-const CONFIG_VERSION: u32 = 3;
+///   `exit_on_fatal` 默认改回关；
+/// * 4 —— DNS 策略默认从 `direct` 改成 `virtual`。
+const CONFIG_VERSION: u32 = 4;
 
 impl Default for Config {
     fn default() -> Self {
@@ -547,6 +553,18 @@ impl Config {
                     profile.max_sessions = DEFAULT_MAX_SESSIONS;
                 }
                 profile.exit_on_fatal = false;
+            }
+        }
+        if self.config_version < 4 {
+            // `direct` 是 v3 及更早的默认值，它要求上游代理能把 UDP 转发出去。
+            // SOCKS5 未必支持 UDP ASSOCIATE、HTTP 代理根本不支持，转不出去时
+            // 每条查询都要等满 `udp_timeout` 才超时，系统随即换服务器重试——
+            // 日志里全是 `-> x.x.x.x:53 with "timed out"`，会话表几秒就满。
+            // 只改还停在旧默认值的配置：用户主动选过「走 TCP」的保持原样。
+            for profile in &mut self.profiles {
+                if profile.dns == DnsMode::Direct {
+                    profile.dns = DnsMode::Virtual;
+                }
             }
         }
         self.config_version = CONFIG_VERSION;
@@ -742,6 +760,36 @@ mod tests {
         let mut reloaded: Config = serde_json::from_str(&saved).unwrap();
         assert!(!reloaded.migrate());
         assert_eq!(reloaded.profiles[0].max_sessions, 200);
+    }
+
+    #[test]
+    fn old_config_files_switch_dns_to_virtual() {
+        // `direct` 要求上游代理能转发 UDP：转不出去时每条查询都要等满
+        // `udp_timeout`，系统再换服务器重试，会话表几秒就满。旧文件跟着
+        // 新默认值一起改成 virtual；用户自己选过「走 TCP」的不许动。
+        let old = r#"{
+            "profiles": [
+                { "name": "旧", "proxy_url": "socks5://127.0.0.1:1080", "dns": "direct" },
+                { "name": "自己选过", "proxy_url": "socks5://127.0.0.1:1080", "dns": "over-tcp" }
+            ],
+            "active": 0,
+            "config_version": 3
+        }"#;
+        let mut config: Config = serde_json::from_str(old).expect("v3 config must still parse");
+        assert!(config.migrate());
+        assert_eq!(config.profiles[0].dns, DnsMode::Virtual);
+        assert_eq!(
+            config.profiles[1].dns,
+            DnsMode::OverTcp,
+            "用户自己选的策略不许被迁移改掉"
+        );
+
+        // 之后再手动选回直连也不许被改回来：迁移只按版本号跑一次。
+        config.profiles[0].dns = DnsMode::Direct;
+        let saved = serde_json::to_string(&config).unwrap();
+        let mut reloaded: Config = serde_json::from_str(&saved).unwrap();
+        assert!(!reloaded.migrate());
+        assert_eq!(reloaded.profiles[0].dns, DnsMode::Direct);
     }
 
     #[test]

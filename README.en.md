@@ -30,9 +30,9 @@ current profile, runtime options and live log on the right.*
   its SHA-256 and unpacks it into its own data directory. Later you can "Check
   for updates" and swap it in place — no need to ship a new GUI release.
 - **Full option coverage**: upstream proxy (`socks5://` / `socks4://` /
-  `http://`), DNS strategy (direct / virtual IP / over TCP), DNS servers,
-  virtual address pool, bypass ranges, TUN name, MTU, TCP/UDP timeouts, max
-  sessions, IPv6, auto route setup, UDPGW and log level.
+  `http://`), DNS strategy (direct / virtual IP / over TCP, virtual IP by
+  default), DNS servers, virtual address pool, bypass ranges, TUN name, MTU,
+  TCP/UDP timeouts, max sessions, IPv6, auto route setup, UDPGW and log level.
 - **Live log**: the child process's stdout/stderr is streamed straight into the
   window, and can be cleared with one click.
 - **Proxy reachability check**: fill in the upstream URL, hit "Test", and the
@@ -179,7 +179,7 @@ Releases (see `.github/workflows/release.yml`):
 
 ```bash
 # Bump `version` in Cargo.toml, commit it, then tag — CI enforces that they match
-git tag v0.3.3 && git push origin v0.3.3
+git tag v0.3.4 && git push origin v0.3.4
 ```
 
 Artifacts: `tun2proxy-gui-<tag>-<target>.zip` (Windows) and `.tar.gz` (Linux /

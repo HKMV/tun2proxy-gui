@@ -23,8 +23,8 @@ UI 框架）和 gpuikit（shadcn 风格的 GPUI 组件库），不依赖 WebView
   下载对应平台的官方二进制、校验 SHA-256、解压到自己的数据目录；之后可随时
   「检查更新」并原地替换（不必重新发布本程序）。
 - **完整参数覆盖**：上游代理（`socks5://` / `socks4://` / `http://`）、DNS 策略
-  （直连 / 虚拟 IP / 走 TCP）、DNS 服务器、虚拟地址池、绕过网段、TUN 名称、
-  MTU、TCP/UDP 超时、最大会话数、IPv6、自动配置路由、UDPGW、日志级别。
+  （直连 / 虚拟 IP / 走 TCP，默认虚拟 IP）、DNS 服务器、虚拟地址池、绕过网段、
+  TUN 名称、MTU、TCP/UDP 超时、最大会话数、IPv6、自动配置路由、UDPGW、日志级别。
 - **实时日志**：子进程的 stdout/stderr 直接显示在界面里，可一键清空。
 - **代理连通性检测**：填完上游地址点一下「检测」，程序自己建立 TCP 连接并按
   协议走一次握手（SOCKS5 问候 / HTTP `CONNECT`），把「端口没在监听」「代理
@@ -153,7 +153,7 @@ cargo build --release
 
 ```bash
 # 先把 Cargo.toml 的 version 改好并提交，tag 必须与它一致（CI 会校验）
-git tag v0.3.3 && git push origin v0.3.3
+git tag v0.3.4 && git push origin v0.3.4
 ```
 
 产物：`tun2proxy-gui-<tag>-<target>.zip`（Windows）、`.tar.gz`（Linux /
