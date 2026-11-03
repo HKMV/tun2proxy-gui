@@ -53,9 +53,13 @@ const LOG_PREVIEW_HEIGHT: f32 = 200.0;
 const CHART_WIDTH: f32 = 208.0;
 
 /// 状态文字 + 颜色，供侧边栏与首屏卡片共用。
+///
+/// 「未运行」用正文色而不是 `fg_muted()`：它是**当前状态**，不是说明文字。
+/// muted 在 Catppuccin 的两套色板上都只有约 3:1，压在白卡或 `surface` 上
+/// 那颗状态点和那行字几乎读不出来——而这恰恰是用户第一眼要找的东西。
 pub fn status_label(status: &Status, theme: &Theme) -> (String, Hsla) {
     match status {
-        Status::Stopped => (t("未运行", "Not running").to_string(), theme.fg_muted()),
+        Status::Stopped => (t("未运行", "Not running").to_string(), theme.fg()),
         Status::Starting => (t("正在启动…", "Starting…").to_string(), theme.warning()),
         Status::Running => (t("运行中", "Running").to_string(), theme.success()),
         Status::Stopping => (t("正在停止…", "Stopping…").to_string(), theme.warning()),

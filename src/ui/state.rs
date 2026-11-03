@@ -123,9 +123,12 @@ pub enum Msg {
     ProfileEditStart(usize),
     /// 从详情返回配置列表。
     ProfileEditDone,
-    /// 删除第 N 套配置。
+    /// 确认删除第 N 套配置（由「删除这套配置？」弹窗的确认按钮发出）。
+    ///
+    /// 直接删会丢掉整套参数且没有撤销，所以界面上先走
+    /// [`App::ask_remove_profile`] 弹一句确认，只有确认后才到这个分支。
     ProfileRemovedAt(usize),
-    /// 新增一套配置（复制当前设置）。
+    /// 新增一套配置（默认值起步）。
     ProfileAdded,
     /// 复制当前配置。
     ProfileDuplicated,
@@ -531,6 +534,11 @@ pub struct App {
     /// 「最小化到托盘？」对话框。按需创建：正文随服务状态变，建一次就只能
     /// 显示一种说法。
     pub close_dialog: Option<Entity<DialogState>>,
+    /// 「删除这套配置？」对话框。
+    ///
+    /// 和关窗弹窗分开两个字段：两者可能同时存在（关窗时正好挂着删除确认），
+    /// 共用一个字段会让先弹出来的那个被悄悄替换掉。
+    pub remove_dialog: Option<Entity<DialogState>>,
     /// 日志窗格的滚动位置（跟随最新一行）。
     pub log_scroll: ScrollHandle,
     /// 日志窗格是否贴住最新一行。
@@ -621,6 +629,7 @@ impl App {
             inputs,
             selects,
             close_dialog: None,
+            remove_dialog: None,
             log_scroll: ScrollHandle::default(),
             log_follow: true,
             page_scroll: std::array::from_fn(|_| ScrollHandle::default()),

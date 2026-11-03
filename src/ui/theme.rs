@@ -212,7 +212,10 @@ fn tune(theme: &mut Theme) {
                 0xff_ffff, // 纯白卡片
                 0xe6_e9ef, // mantle
                 0xdc_e0e8, // crust
-                0xcc_d0da, // surface0
+                // surface1 而不是 surface0：1dp 的 #ccd0da 压在白卡上只有
+                // 约 1.3:1，勾选框那圈描边、行分隔线和卡片轮廓全都糊成一片。
+                // 深一档之后三样东西同时立起来，卡片也不至于显得厚重。
+                0xbc_c0cc,
                 0xdc_e0e8,
                 0xe6_e9ef,
                 0xdc_e0e8,

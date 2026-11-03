@@ -41,6 +41,9 @@ pub fn update(app: &mut App, msg: Msg, cx: &mut Context<App>) {
         // —— 配置切换 ——
         Msg::ProfileSelected(index) => {
             app.select_profile(index);
+            // 切完立刻落盘。只改内存的话，关掉程序再打开会回到上一套，
+            // 而界面上没有任何「未保存」提示——用户会以为切换没生效。
+            persist_active(app);
             // 运行中切换配置不会影响已启动的进程，只提示下次启动生效。
             if app.engine.is_active() {
                 app.flash_notice(
@@ -57,6 +60,7 @@ pub fn update(app: &mut App, msg: Msg, cx: &mut Context<App>) {
         }
         Msg::ProfileEditStart(index) => {
             app.select_profile(index);
+            persist_active(app);
             app.profile_editing = true;
             // 从仪表盘点铅笔进来的：要真把人送到配置页，否则「编辑」只改了
             // 一个不可见的布尔值，界面停在原地什么也没发生。
@@ -74,6 +78,7 @@ pub fn update(app: &mut App, msg: Msg, cx: &mut Context<App>) {
                 // 下拉框的选项是建实体时定死的，配置少了必须整组重建。
                 app.rebuild_selects(cx);
                 app.sync_inputs(cx);
+                persist_active(app);
             } else {
                 app.flash_notice(t("至少要保留一套配置", "Keep at least one profile"), cx);
             }
@@ -83,12 +88,14 @@ pub fn update(app: &mut App, msg: Msg, cx: &mut Context<App>) {
             app.after_profile_created();
             app.rebuild_selects(cx);
             app.sync_inputs(cx);
+            persist_active(app);
         }
         Msg::ProfileDuplicated => {
             app.config.duplicate_active();
             app.after_profile_created();
             app.rebuild_selects(cx);
             app.sync_inputs(cx);
+            persist_active(app);
         }
         Msg::ProfileRenamed(name) => app.profile_mut().name = name,
 
@@ -262,6 +269,69 @@ impl App {
         update(self, msg, cx);
     }
 
+    /// 请求删除某套配置：先弹一句确认，确认后才真的删。
+    ///
+    /// 垃圾桶按钮就在行尾、和「编辑」的铅笔只隔 12dp，而删除会丢掉整套参数
+    /// 且没有撤销——误点一次就得从头再填一遍代理地址、DNS、绕过列表。所以
+    /// 这一步不能省。
+    ///
+    /// 需要 `window`（对话框要拿焦点），所以和 [`App::on_close_requested`]
+    /// 一样走实体方法而不是 `Msg`。
+    pub fn ask_remove_profile(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let _guard = watchdog::enter(watchdog::MSG_REMOVE_PROFILE);
+
+        if self.config.profiles.len() <= 1 {
+            self.flash_notice(t("至少要保留一套配置", "Keep at least one profile"), cx);
+            return;
+        }
+        let Some(name) = self
+            .config
+            .profiles
+            .get(index)
+            .map(|profile| profile.name.trim().to_string())
+        else {
+            return;
+        };
+
+        let state = cx.new(|_| {
+            DialogState::new(
+                dialog("remove-profile")
+                    .confirm(
+                        tf(
+                            t("删除「{name}」？", "Delete “{name}”?"),
+                            &[("name", &name)],
+                        ),
+                        t(
+                            "这套配置的参数会一起删掉，没有撤销。",
+                            "Every setting in this profile is deleted, with no undo.",
+                        ),
+                    )
+                    .control_size(ControlSize::Large)
+                    // 这次是真删数据，用危险色：和关窗那句「都不破坏数据」
+                    // 正好相反。
+                    .destructive(true)
+                    .confirm_label(t("删除", "Delete"))
+                    .cancel_label(t("取消", "Cancel"))
+                    .on_confirm(move |_window, cx| {
+                        super::state::with_app(cx, |app, cx| {
+                            let _guard = watchdog::enter(watchdog::MSG_REMOVE_PROFILE);
+                            app.remove_dialog = None;
+                            app.handle(Msg::ProfileRemovedAt(index), cx);
+                        });
+                    })
+                    .on_cancel(|_window, cx| {
+                        super::state::with_app(cx, |app, _cx| app.remove_dialog = None);
+                    })
+                    // 点外面 / Esc 只是「不删」，不是「取消并退出」。
+                    .on_dismiss(|_window, cx| {
+                        super::state::with_app(cx, |app, _cx| app.remove_dialog = None);
+                    }),
+            )
+        });
+        state.update(cx, |state, cx| state.open(window, cx));
+        self.remove_dialog = Some(state);
+    }
+
     /// 窗口的叉被按下时调用：决定「真的关」还是「藏进托盘」。
     ///
     /// 返回 `true` 表示放行关闭。三种情况：
@@ -356,6 +426,17 @@ impl App {
         } else {
             cx.quit();
         }
+    }
+}
+
+/// 切完配置立刻把「当前用的是哪一套」写回磁盘。
+///
+/// 只改内存的话，关掉程序再打开会回到上一套，而界面上没有任何「未保存」
+/// 提示——用户会以为切换没生效。写盘失败只影响下次启动，不该拦住这次切换，
+/// 所以只报错、不回滚。
+fn persist_active(app: &mut App) {
+    if let Err(err) = app.config.save() {
+        app.error = Some(err);
     }
 }
 

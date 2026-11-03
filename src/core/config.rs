@@ -637,13 +637,18 @@ impl Config {
         }
     }
 
-    /// 新增一套配置（复制当前选中项的设置，名字自动编号），返回新下标。
+    /// 新增一套配置（默认值起步，名字自动编号），返回新下标。
+    ///
+    /// 从 [`Profile::default`] 起步而不是克隆当前项：这样「新建」和「复制
+    /// 当前」才是两件不同的事——新建给你一套能直接跑的默认参数，复制以
+    /// 当前这套为模板。两者都克隆的话，界面上两个按钮行为完全一样，用户
+    /// 只能靠试。
     ///
     /// 绕过列表为空时补上默认值：一套没有绕过规则的配置，开起来会把内网
     /// 流量也塞进上游代理（打印机、NAS、投屏全断），而这恰好是新手第一次
     /// 点「新建」时最可能撞上的状态。
     pub fn add_profile(&mut self) -> usize {
-        let mut profile = self.active_profile().clone();
+        let mut profile = Profile::default();
         profile.name = self.next_name();
         profile.fill_bypass_defaults();
         self.profiles.push(profile);
@@ -803,18 +808,22 @@ mod tests {
     }
 
     #[test]
-    fn a_new_profile_gets_default_bypass_when_the_source_has_none() {
+    fn a_new_profile_starts_from_defaults_not_from_the_active_one() {
         let mut config = Config::default();
-        // 用户把当前配置的绕过列表清空后，再点「新建」：新配置不能是空的，
-        // 否则新建完直接启动就会把内网流量也塞进上游代理。
+        // 用户把当前配置改得面目全非之后点「新建」：新配置应该是一张白纸，
+        // 而不是当前那套的克隆——想克隆有「复制」。
         config.active_profile_mut().bypass.clear();
-        let index = config.add_profile();
-        assert_eq!(config.profiles[index].bypass, DEFAULT_BYPASS);
+        config.active_profile_mut().proxy_url = "socks5://10.0.0.1:1210".to_string();
+        config.active_profile_mut().dns = DnsMode::Virtual;
 
-        // 已经填过的不能被覆盖。
-        config.profiles[index].bypass = "10.9.0.0/16".to_string();
         let index = config.add_profile();
-        assert_eq!(config.profiles[index].bypass, "10.9.0.0/16");
+        let fresh = &config.profiles[index];
+        assert_eq!(fresh.proxy_url, Profile::default().proxy_url);
+        assert_eq!(fresh.dns, Profile::default().dns);
+        // 绕过列表也不能是空的，否则新建完直接启动会把内网流量也塞进上游代理。
+        assert_eq!(fresh.bypass, DEFAULT_BYPASS);
+        // 当前那套原样保留。
+        assert!(config.profiles[0].bypass.is_empty());
     }
 
     #[test]

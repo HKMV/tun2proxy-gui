@@ -37,6 +37,7 @@ const SECTIONS: &[&str] = &[
     "snapshot",
     "update",
     "other",
+    "Msg::RemoveProfile",
 ];
 
 /// 一个可被观察的段落。
@@ -66,6 +67,7 @@ pub const MSG_CLOSE_DIALOG: Section = Section::at(9);
 pub const MSG_MINIMIZE_TO_TRAY: Section = Section::at(10);
 pub const VIEW: Section = Section::at(11);
 pub const OTHER: Section = Section::at(14);
+pub const MSG_REMOVE_PROFILE: Section = Section::at(15);
 
 /// 当前正在执行的段落编号。0 表示空闲。
 static CURRENT: AtomicU64 = AtomicU64::new(0);

@@ -39,6 +39,9 @@ impl Render for App {
             .child(sidebar::sidebar(self, &snapshot, &theme, cx))
             .child(pages::content(self, &snapshot, &theme, cx))
             .children(self.close_dialog.clone())
+            // 删除确认与关窗确认各占一个字段：两者可能同时挂着（关窗时正好
+            // 弹着删除确认），共用的话先弹出来的那个会被悄悄换掉。
+            .children(self.remove_dialog.clone())
     }
 }
 
