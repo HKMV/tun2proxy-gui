@@ -190,10 +190,10 @@ Releases (see `.github/workflows/release.yml`):
 ```bash
 # Bump `version` in Cargo.toml, commit it, then tag — CI enforces that they match
 # Use an annotated tag (-a): its message becomes the release notes verbatim
-git tag -a v0.3.8 -m "v0.3.8
+git tag -a v0.3.9 -m "v0.3.9
 
 - First change
-- Second change" && git push origin v0.3.8
+- Second change" && git push origin v0.3.9
 ```
 
 Artifacts: `tun2proxy-gui-<tag>-<target>.zip` (Windows) and `.tar.gz` (Linux /
