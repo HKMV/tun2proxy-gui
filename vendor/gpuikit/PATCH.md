@@ -1,4 +1,4 @@
-# gpuikit 0.9.0（本地副本 + 两处补丁）
+# gpuikit 0.9.0（本地副本 + 三处补丁）
 
 这里是 `gpuikit` 0.9.0 的源码副本，来自 crates.io，通过 `Cargo.toml` 末尾的
 `[patch.crates-io]` 指向本目录。除了下面列的补丁，其余文件与上游完全一致；
@@ -52,9 +52,25 @@
 11. 标题栏 ✕ 的 `icon_button` 补 `.control_size(size)` —— 页脚按钮会跟随
     `ControlSize`，标题栏那颗原来是写死的 Medium，32dp 的界面上像缩水一圈。
 
+## 第三处补丁：多行输入框的滚动量对外开放
+
+gpui 的 `text_area` 只滚不画条，gpuikit 的 `Textarea` 也没有留画条的位置，
+应用侧只能自己叠一条。但 `InputState` 把三个数都藏成了 `pub(crate)`：
+可见高度、内容高度、偏移只能读不能写，画不出滑块、也拖不动。
+
+`src/input/state.rs`
+
+12. `content_height()` —— 公开 `total_content_height()`；
+13. `visible_height()` —— 公开上次布局的 `available_height`；
+14. `set_scroll_offset(offset, cx)` —— 夹到 `[0, 内容高 - 可见高]` 后写入并
+    `notify`；滚轮与「跟随光标」那两处仍直接写字段（它们自己已经夹过了）。
+
+应用侧的使用见 `src/ui/widgets.rs` 的 `input_scroll_bar`（绕过列表）。
+
 ## 升级时怎么做
 
 1. 把新版本源码拷到本目录（`src/`、`assets/`、`Cargo.toml`、两个 LICENSE）；
-2. 按上面 11 条重新打一遍（`git diff` 对着看最快）；
-3. 如果新版上游已经给了 `Select::popup_width` 和 `Dialog::on_dismiss`，直接
-   删掉本目录和 `Cargo.toml` 里的 `[patch.crates-io]` 段，把依赖换回 crates.io。
+2. 按上面 14 条重新打一遍（`git diff` 对着看最快）；
+3. 如果新版上游已经给了 `Select::popup_width`、`Dialog::on_dismiss` 和这三个
+   滚动量接口，直接删掉本目录和 `Cargo.toml` 里的 `[patch.crates-io]` 段，
+   把依赖换回 crates.io。

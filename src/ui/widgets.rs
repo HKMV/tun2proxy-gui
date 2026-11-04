@@ -15,13 +15,14 @@
 //! **强调色实心主按钮**、**图标 + 文字的行内动作**、**设置分组卡片**。
 
 use gpui::{
-    AnyElement, App, BorderStyle, Bounds, ClickEvent, DispatchPhase, Div, ElementId, Hsla,
-    IntoElement, MouseButton, MouseMoveEvent, ScrollHandle, SharedString, Stateful, Svg, Window,
-    canvas, div, point, px, prelude::*, quad, rems, size, transparent_black,
+    AnyElement, App, BorderStyle, Bounds, ClickEvent, DispatchPhase, Div, ElementId, Entity, Hsla,
+    IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, ScrollHandle, SharedString, Stateful,
+    Svg, Window, canvas, div, point, px, prelude::*, quad, rems, size, transparent_black,
 };
 use gpuikit::elements::checkbox::{CheckState, checkbox_box};
 use gpuikit::elements::icon_button::icon_button;
 use gpuikit::elements::tooltip::tooltip;
+use gpuikit::input::InputState;
 use gpuikit::theme::{ControlSize, Theme, Themeable};
 use gpuikit::traits::control_sized::ControlSized;
 use std::cell::Cell;
@@ -43,12 +44,27 @@ pub const LOG_PANE_HEIGHT: f32 = 220.0;
 /// 会被抗锯齿吃掉半个像素，看起来像一条脏线，而且几乎点不中。
 pub const SCROLL_BAR_WIDTH: f32 = 8.0;
 
-/// 正在被拖动的滚动条：按下那一刻的（指针 y、滚动偏移）。
+/// 滚动条属于哪一个滚动区域。
+///
+/// 所有滚动条共用 `App` 上的一份拖动状态（见 [`ScrollDrag`]），按下时必须
+/// 记住「是谁按下的」：否则拖着日志条往下走时，页面那条也会认为自己在被
+/// 拖，把整页滚到日志的偏移量上——看起来就是「拖日志，页面自己跟着跑」。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ScrollBarKey {
+    /// 某一页的页面滚动（下标与 `App::page_scroll` 对齐）。
+    Page(usize),
+    /// 仪表盘 / 程序页的日志窗格。
+    Log,
+    /// 多行输入框（绕过列表）。`&'static str` 是输入框的名字。
+    Input(&'static str),
+}
+
+/// 正在被拖动的滚动条：属于哪一条、按下那一刻的指针 y 与滚动偏移。
 ///
 /// 这份状态必须活在 `App` 上。渲染函数每帧都会重新调一次 [`scroll_bar`]，
 /// 把 `Rc<Cell>` 建在函数体里的话，`on_mouse_down` 写进去的那份和下一帧
 /// `canvas` 里读到的根本不是同一个——按下有反应，拖动永远没反应。
-pub type ScrollDrag = Rc<Cell<Option<(f32, f32)>>>;
+pub type ScrollDrag = Rc<Cell<Option<(ScrollBarKey, f32, f32)>>>;
 
 /// 最小间距：图标与文字、开关与说明之间。
 pub const SPACE_XS: f32 = 4.0;
@@ -187,6 +203,7 @@ pub fn row_value(text: impl Into<SharedString>, theme: &Theme) -> Div {
 /// 内容没超出视口时什么也不画（判断放在绘制阶段，见函数体里的注释）。
 pub fn scroll_bar(
     id: impl Into<ElementId>,
+    key: ScrollBarKey,
     handle: &ScrollHandle,
     theme: &Theme,
     drag: &ScrollDrag,
@@ -227,7 +244,7 @@ pub fn scroll_bar(
                 window.refresh();
                 offset
             };
-            press_drag.set(Some((event.position.y.as_f32(), offset)));
+            press_drag.set(Some((key, event.position.y.as_f32(), offset)));
         })
         .child(
             canvas(|_, _, _| (), move |bounds: Bounds<_>, _, window, _| {
@@ -258,9 +275,14 @@ pub fn scroll_bar(
                     if phase != DispatchPhase::Bubble {
                         return;
                     }
-                    let Some((start_y, start_offset)) = drag.get() else {
+                    let Some((start_key, start_y, start_offset)) = drag.get() else {
                         return;
                     };
+                    // 同一时刻只有一条滚动条在拖：别的那几条也有监听器，
+                    // 不认领就直接退出。
+                    if start_key != key {
+                        return;
+                    }
                     // 抬起没被这条滚动条收到时（指针跑出窗口），
                     // `dragging()` 会变假，顺手结束这次拖拽。
                     if !event.dragging() {
@@ -307,6 +329,159 @@ fn progress(handle: &ScrollHandle) -> f32 {
         return 0.0;
     }
     (-handle.offset().y.as_f32() / max).clamp(0.0, 1.0)
+}
+
+/// 多行输入框的滚动条。
+///
+/// gpui 的 `text_area` 和滚动容器一样只滚不画，而 gpuikit 的 `Textarea`
+/// 没有留出画条的位置。这里把条叠在输入框的**内边距**上：`inset` 是内容区
+/// 相对外框的上下内缩（内边距 + 1dp 描边），条因此正好贴住文字的视口，
+/// 不会跑进圆角；横向落在右边距里，按上来不会被 `Input` 当成「点到文字」，
+/// 不会顺手把光标挪走。
+///
+/// 滚动量由 [`InputState`] 自己持有，所以几何每帧现读：视口高度、内容高度
+/// 和偏移都从实体里取，`App` 不必再存一份，也不会和输入框的真实布局对不上。
+///
+/// 拖动状态与 [`scroll_bar`] 共用一份，靠 [`ScrollBarKey`] 认领。
+pub fn input_scroll_bar(
+    id: impl Into<ElementId>,
+    key: ScrollBarKey,
+    state: &Entity<InputState>,
+    inset: f32,
+    theme: &Theme,
+    drag: &ScrollDrag,
+) -> AnyElement {
+    let thumb_color = theme.fg_muted().opacity(0.55);
+    let lane = theme.fg_muted().opacity(0.12);
+
+    let press_state = state.clone();
+    let press_drag = drag.clone();
+    let paint_state = state.clone();
+    let move_state = state.clone();
+    let move_drag = drag.clone();
+
+    div()
+        .id(id)
+        .absolute()
+        .top(px(inset))
+        .bottom(px(inset))
+        .right(px(2.0))
+        .w(px(SCROLL_BAR_WIDTH))
+        .cursor_pointer()
+        .hover(move |style| style.bg(lane))
+        .child(
+            canvas(|_, _, _| (), move |bounds: Bounds<_>, _, window, cx| {
+                let (viewport, content, offset) = input_metrics(&paint_state, cx);
+                let max = (content - viewport).max(0.0);
+                // 和 `scroll_bar` 一样在绘制阶段判断：render 阶段读到的布局
+                // 是上一帧的，切换页面时会漏画一帧滚动条。
+                if max > 0.5 && viewport > 0.5 {
+                    let (_, thumb, travel) = thumb_geometry(viewport, content);
+                    let top = (offset / max).clamp(0.0, 1.0) * travel;
+                    let bar = Bounds::new(
+                        point(bounds.origin.x, bounds.origin.y + px(top)),
+                        size(bounds.size.width, px(thumb)),
+                    );
+                    window.paint_quad(quad(
+                        bar,
+                        gpui::Corners::all(px(bounds.size.width.as_f32() * 0.5)),
+                        thumb_color,
+                        gpui::Edges::all(px(0.0)),
+                        transparent_black(),
+                        BorderStyle::default(),
+                    ));
+                }
+
+                // 按下：点在轨道空白处，滑块中心先过来；点在滑块上就只接着拖。
+                let press = press_state.clone();
+                let press_drag = press_drag.clone();
+                window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
+                    if phase != DispatchPhase::Bubble
+                        || event.button != MouseButton::Left
+                        || !bounds.contains(&event.position)
+                    {
+                        return;
+                    }
+                    let (viewport, content, offset) = input_metrics(&press, cx);
+                    let max = (content - viewport).max(0.0);
+                    if max <= 0.5 || viewport <= 0.5 {
+                        return;
+                    }
+                    let (_, thumb, travel) = thumb_geometry(viewport, content);
+                    let local = (event.position.y.as_f32() - bounds.origin.y.as_f32())
+                        .clamp(0.0, viewport);
+                    let thumb_top = (offset / max).clamp(0.0, 1.0) * travel;
+                    let start = if local >= thumb_top && local <= thumb_top + thumb {
+                        offset
+                    } else {
+                        let target = ((local - thumb * 0.5) / travel.max(1.0)).clamp(0.0, 1.0);
+                        let next = target * max;
+                        press.update(cx, |input, cx| {
+                            input.set_scroll_offset(px(next), cx);
+                        });
+                        next
+                    };
+                    press_drag.set(Some((key, event.position.y.as_f32(), start)));
+                    window.refresh();
+                });
+
+                // 拖动：和 `scroll_bar` 一样挂窗口级监听，指针出了窄条也不断。
+                let mover = move_state.clone();
+                let move_drag = move_drag.clone();
+                window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                    if phase != DispatchPhase::Bubble {
+                        return;
+                    }
+                    let Some((start_key, start_y, start_offset)) = move_drag.get() else {
+                        return;
+                    };
+                    if start_key != key {
+                        return;
+                    }
+                    if !event.dragging() {
+                        move_drag.set(None);
+                        return;
+                    }
+                    let (viewport, content, _) = input_metrics(&mover, cx);
+                    let max = (content - viewport).max(0.0);
+                    if max <= 0.5 || viewport <= 0.5 {
+                        return;
+                    }
+                    let (_, _, travel) = thumb_geometry(viewport, content);
+                    // 偏移是 `[0, max]`（顶部 0、底部 max）：指针往下走，内容
+                    // 跟着往上推，偏移变大——方向和 `scroll_bar` 相反。
+                    let moved = event.position.y.as_f32() - start_y;
+                    let next = (start_offset + moved * (max / travel.max(1.0))).clamp(0.0, max);
+                    mover.update(cx, |input, cx| {
+                        input.set_scroll_offset(px(next), cx);
+                    });
+                    window.refresh();
+                });
+            })
+            .absolute()
+            .size_full(),
+        )
+        .into_any_element()
+}
+
+/// 多行输入框的（可见高度、内容高度、离顶部多远）。
+fn input_metrics(state: &Entity<InputState>, cx: &App) -> (f32, f32, f32) {
+    let input = state.read(cx);
+    (
+        input.visible_height().as_f32(),
+        input.content_height().as_f32(),
+        input.distance_from_top().as_f32(),
+    )
+}
+
+/// 视口高度、滑块高度、滑块可走的距离。
+fn thumb_geometry(viewport: f32, content: f32) -> (f32, f32, f32) {
+    let viewport = viewport.max(1.0);
+    // 内容越长滑块越短，但不短于 32dp：再短就点不中也看不见。
+    let thumb = (viewport * viewport / content.max(1.0))
+        .max(32.0)
+        .min(viewport);
+    (viewport, thumb, (viewport - thumb).max(0.0))
 }
 
 /// 1dp 发丝线：分隔顶栏与内容区、卡片内的分区。

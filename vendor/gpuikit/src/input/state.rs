@@ -1553,6 +1553,34 @@ impl InputState {
         self.scroll_offset + visible_height >= content_height
     }
 
+    /// The laid-out content height in pixels (multiline: every visual line).
+    ///
+    /// Exposed for the scrollbar a caller draws over a multiline input: the
+    /// thumb's length is `visible_height / content_height`, which the public
+    /// helpers above cannot give.
+    pub fn content_height(&self) -> Pixels {
+        self.total_content_height()
+    }
+
+    /// The height of the visible text area in pixels, as of the last layout.
+    pub fn visible_height(&self) -> Pixels {
+        self.available_height
+    }
+
+    /// Moves the vertical scroll offset, clamped to the scrollable range.
+    ///
+    /// A scrollbar drag needs to write the offset from outside; the wheel and
+    /// the cursor-following code set the field directly because they already
+    /// clamp it themselves.
+    pub fn set_scroll_offset(&mut self, offset: Pixels, cx: &mut Context<Self>) {
+        let max = (self.total_content_height() - self.available_height).max(px(0.));
+        let next = offset.clamp(px(0.), max);
+        if next != self.scroll_offset {
+            self.scroll_offset = next;
+            cx.notify();
+        }
+    }
+
     /// Returns the scroll progress as a value from 0.0 (top) to 1.0 (bottom).
     pub fn scroll_progress(&self) -> f32 {
         let content_height = self.total_content_height();

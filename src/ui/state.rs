@@ -548,10 +548,13 @@ pub struct App {
     pub log_follow: bool,
     /// 每页各自的滚动位置。
     pub page_scroll: [ScrollHandle; 4],
-    /// 正在被拖动的滚动条（按下时的指针 y 与滚动偏移）。
+    /// 正在被拖动的滚动条（哪一条、按下时的指针 y 与滚动偏移）。
     ///
     /// 挂在 `App` 上而不是渲染函数里：滚动条每帧重新构造，局部状态活不过一帧，
-    /// 按下时写进去的值下一帧就没了，拖动会彻底失灵。
+    /// 按下时写进去的值下一帧就没了，拖动会彻底失灵。里面的 [`ScrollBarKey`]
+    /// 让每条滚动条只认领自己那一次拖动。
+    ///
+    /// [`ScrollBarKey`]: crate::ui::widgets::ScrollBarKey
     pub scroll_drag: crate::ui::widgets::ScrollDrag,
     /// 上一次渲染时的日志累计行数：变了才把日志滚到底，否则每帧都在动。
     last_log_len: u64,

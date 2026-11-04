@@ -24,7 +24,7 @@ use gpuikit::elements::text_field::text_field;
 use gpuikit::elements::textarea::textarea;
 use gpuikit::elements::tooltip::tooltip;
 use gpuikit::input::InputState;
-use gpuikit::theme::{Theme, Themeable};
+use gpuikit::theme::{ControlSize, Theme, Themeable};
 use gpuikit::traits::control_sized::ControlSized;
 use gpuikit::DefaultIcons;
 
@@ -1017,6 +1017,9 @@ pub fn network_group(app: &App, theme: &Theme, cx: &mut Context<App>) -> AnyElem
 /// （详情）。绕过地址本来就是每套配置自己的字段，在详情页里也能改。
 pub fn bypass_group(app: &App, theme: &Theme, cx: &mut Context<App>) -> AnyElement {
     let bypass = app.inputs.get(Field::Bypass);
+    // 滚动条叠在输入框的内边距里：上下各让出「内边距 + 1dp 描边」，条就正好
+    // 贴住文字的视口，不会跑进圆角。`.large()` 的内边距是 0.75rem。
+    let text_inset = theme.control(ControlSize::Large).padding_x.0 * 16.0 + 1.0;
     let rows = vec![
         setting_row(
             Some(row_icon(DefaultIcons::sewing_pin(), theme).into_any_element()),
@@ -1050,8 +1053,19 @@ pub fn bypass_group(app: &App, theme: &Theme, cx: &mut Context<App>) -> AnyEleme
                 .to_string(),
             ),
             div()
+                .relative()
                 .w_full()
-                .child(textarea(&bypass, cx).rows(6).max_height(px(150.0)).large()),
+                .child(textarea(&bypass, cx).rows(6).max_height(px(150.0)).large())
+                // 输入框自己只滚不画条（gpui 的 `text_area` 就这样），
+                // 条由应用补上，样式与页面 / 日志那两条一致。
+                .child(super::widgets::input_scroll_bar(
+                    "bypass-scroll-bar",
+                    super::widgets::ScrollBarKey::Input("bypass"),
+                    &bypass,
+                    text_inset,
+                    theme,
+                    &app.scroll_drag,
+                )),
             theme,
         )
         .into_any_element(),
@@ -1650,6 +1664,7 @@ fn log_pane(
         // 滚动条自己画：gpui 的滚动容器不画条，没有它就看不出「这里还能滚」。
         .child(super::widgets::scroll_bar(
             "log-scroll-bar",
+            super::widgets::ScrollBarKey::Log,
             &scroll_handle,
             theme,
             &app.scroll_drag,

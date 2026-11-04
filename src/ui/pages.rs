@@ -28,8 +28,8 @@ use super::cards::{
 use super::state::{App, Msg, Snapshot};
 use super::theme::TEXT_BODY;
 use super::widgets::{
-    CONTENT_PADDING, SPACE_M, SPACE_S, SPACE_XL, caption_nowrap, hairline, icon, icon_action,
-    page_title, primary_button, scroll_bar,
+    CONTENT_PADDING, SPACE_M, SPACE_S, SPACE_XL, ScrollBarKey, caption_nowrap, hairline, icon,
+    icon_action, page_title, primary_button, scroll_bar,
 };
 
 /// 右侧内容区：细顶栏 + 提示条 + 可滚动的卡片列表。
@@ -221,6 +221,7 @@ fn page_scroll_area(app: &App, snap: &Snapshot, theme: &Theme, cx: &mut Context<
         )
         .child(scroll_bar(
             ("page-scroll-bar", slot),
+            ScrollBarKey::Page(slot),
             &handle,
             theme,
             &app.scroll_drag,
