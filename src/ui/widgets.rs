@@ -44,6 +44,14 @@ pub const LOG_PANE_HEIGHT: f32 = 220.0;
 /// 会被抗锯齿吃掉半个像素，看起来像一条脏线，而且几乎点不中。
 pub const SCROLL_BAR_WIDTH: f32 = 8.0;
 
+/// 滚动条滑块的不透明度（静止态）。
+///
+/// 0.75：`fg_muted` 按 55% 压到输入框底色上时，深色只有约 3.4:1、浅色约
+/// 2.0:1——8dp 的细条在满屏卡片里像一条脏线，不凑近看不出「这里还能滚」。
+/// 提到 75% 后深色约 5.2:1、浅色约 2.7:1，两套主题下都能一眼看见，又还没到
+/// 抢正文的地步。页面条、日志条、输入框条共用这一个数。
+pub const SCROLL_THUMB_OPACITY: f32 = 0.75;
+
 /// 滚动条属于哪一个滚动区域。
 ///
 /// 所有滚动条共用 `App` 上的一份拖动状态（见 [`ScrollDrag`]），按下时必须
@@ -186,7 +194,8 @@ pub fn row_value(text: impl Into<SharedString>, theme: &Theme) -> Div {
 ///
 /// 视觉取 gpuikit 的「滑块」语义而不是系统滚动条：没有凹槽、没有箭头，
 /// 只有一颗 8dp 的圆头滑块贴着视口右边缘（`right: 2dp`），静止时是
-/// `fg_muted` 的 55%——两套主题下都能看见，又不会在满屏卡片里多出一条竖线。
+/// `fg_muted` 的 [`SCROLL_THUMB_OPACITY`]——两套主题下都能一眼看见，又不会
+/// 在满屏卡片里多出一条竖线。
 ///
 /// 交互是浏览器那套：轨道（整条 8dp 竖列）上按下，滑块中心先跳到指针处，
 /// 接着按住拖就跟手走。轨道本身透明，指针压上来才浮出一层 12% 的底，
@@ -208,7 +217,7 @@ pub fn scroll_bar(
     theme: &Theme,
     drag: &ScrollDrag,
 ) -> AnyElement {
-    let thumb_color = theme.fg_muted().opacity(0.55);
+    let thumb_color = theme.fg_muted().opacity(SCROLL_THUMB_OPACITY);
     let lane = theme.fg_muted().opacity(0.12);
 
     let press_handle = handle.clone();
@@ -351,7 +360,7 @@ pub fn input_scroll_bar(
     theme: &Theme,
     drag: &ScrollDrag,
 ) -> AnyElement {
-    let thumb_color = theme.fg_muted().opacity(0.55);
+    let thumb_color = theme.fg_muted().opacity(SCROLL_THUMB_OPACITY);
     let lane = theme.fg_muted().opacity(0.12);
 
     let press_state = state.clone();
