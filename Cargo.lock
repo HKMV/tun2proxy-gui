@@ -6413,7 +6413,7 @@ dependencies = [
 
 [[package]]
 name = "tun2proxy-gui"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "embed-resource",
  "gpui-platform-gpui-unofficial",

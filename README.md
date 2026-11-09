@@ -161,10 +161,10 @@ cargo build --release
 ```bash
 # 先把 Cargo.toml 的 version 改好并提交，tag 必须与它一致（CI 会校验）
 # 用 annotated tag（-a），正文会原样变成 Release 的发布说明
-git tag -a v0.3.10 -m "v0.3.10
+git tag -a v0.3.11 -m "v0.3.11
 
 - 第一条改动
-- 第二条改动" && git push origin v0.3.10
+- 第二条改动" && git push origin v0.3.11
 ```
 
 产物：`tun2proxy-gui-<tag>-<target>.zip`（Windows）、`.tar.gz`（Linux /
