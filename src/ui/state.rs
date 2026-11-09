@@ -361,15 +361,32 @@ impl Selects {
             theme: cx.new(|_| SelectState::new(theme_select(config))),
         }
     }
+
+    /// 只重建「配置文件」这一个下拉框。
+    ///
+    /// 它的选项文字来自配置名，而 [`SelectState`] 把选项存在实体里、建好之后
+    /// 再没有改的入口（选项字段是私有的，改选中的 `set_selected` 也不动它）。
+    /// 所以名字一变，唯一的办法是换一个新实体。
+    ///
+    /// 为什么不顺手整组重建（见 [`App::rebuild_selects`]）：名字是逐个字符
+    /// 打进去的，每一击都重建五个下拉框会把 DNS / 日志级别的选中状态一起推倒
+    /// 重来，没必要。
+    fn rebuild_profile(&mut self, config: &Config, cx: &mut Context<App>) {
+        self.profile = cx.new(|_| SelectState::new(profile_select(config)));
+    }
 }
 
 /// 「当前配置」下拉框。
+///
+/// 选项文字是**配置名**：改了名字就得重建这个实体（见
+/// [`Selects::rebuild_profile`]），否则下拉框里还是旧名字——选项是建实体时
+/// 拷进 [`SelectState`] 的，之后再没有改的入口。
 fn profile_select(config: &Config) -> gpuikit::elements::select::Select<usize> {
     let options: Vec<(usize, String)> = config
         .profiles
         .iter()
         .enumerate()
-        .map(|(index, profile)| (index, profile.name.trim().to_string()))
+        .map(|(index, profile)| (index, profile.display_name()))
         .collect();
     select("profile-select", t("配置文件", "Profile"), options)
         .large()
@@ -785,6 +802,18 @@ impl App {
     /// 配置列表或语言变了：下拉框的选项是建实体时定死的，只能整组重建。
     pub fn rebuild_selects(&mut self, cx: &mut Context<Self>) {
         self.selects = Selects::new(&self.config, cx);
+    }
+
+    /// 配置**名字**变了：只换「配置文件」这一个下拉框。
+    ///
+    /// 名字是下拉框的选项文字，而选项在实体创建时就固化了，所以改完名字必须
+    /// 换一个新实体；否则仪表盘上那个下拉框会一直显示旧名字，直到下次新建 /
+    /// 删除 / 换语言才跟着变——用户看到的就是「改了名字没生效」。
+    ///
+    /// 这里不整组重建：改名是逐字符进行的，DNS / 日志级别这些下拉框的选项与
+    /// 名字无关，跟着重建只会白白丢掉它们的选中状态。
+    pub fn refresh_profile_select(&mut self, cx: &mut Context<Self>) {
+        self.selects.rebuild_profile(&self.config, cx);
     }
 
     /// 让下拉框显示「现在真正的值」。

@@ -210,6 +210,21 @@ impl Default for Profile {
 }
 
 impl Profile {
+    /// 界面上显示的名字。
+    ///
+    /// 和 [`Profile::name`] 的区别只有一处：名字是空的时候（用户正在清空
+    /// 输入框，或者手改配置文件写了个空白）不能把空字符串摆到下拉框和列表里
+    /// ——那看起来像控件坏了。真正落盘前 `normalize()` 会把空名字补成
+    /// 「配置 N」，这里只是不给用户看那一瞬间的空白。
+    pub fn display_name(&self) -> String {
+        let name = self.name.trim();
+        if name.is_empty() {
+            t("未命名配置", "Untitled profile").to_string()
+        } else {
+            name.to_string()
+        }
+    }
+
     /// 列表里显示的一行摘要（代理地址 + DNS 策略）。
     pub fn summary(&self) -> String {
         let proxy = if self.proxy_url.trim().is_empty() {
@@ -824,6 +839,21 @@ mod tests {
         assert_eq!(fresh.bypass, DEFAULT_BYPASS);
         // 当前那套原样保留。
         assert!(config.profiles[0].bypass.is_empty());
+    }
+
+    #[test]
+    fn an_empty_name_never_reaches_the_ui_as_blank() {
+        // 名字被清空（用户正在删、或者手改配置文件）时，下拉框和列表里不能
+        // 出现一格空白——那看起来像控件坏了。
+        let mut profile = Profile::default();
+        assert_eq!(profile.display_name(), profile.name.trim());
+
+        profile.name = "   ".to_string();
+        assert!(!profile.display_name().trim().is_empty());
+
+        // 有名字时原样显示，只去掉首尾空白。
+        profile.name = "  家里  ".to_string();
+        assert_eq!(profile.display_name(), "家里");
     }
 
     #[test]

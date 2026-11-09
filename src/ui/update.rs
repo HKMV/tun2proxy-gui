@@ -97,7 +97,13 @@ pub fn update(app: &mut App, msg: Msg, cx: &mut Context<App>) {
             app.sync_inputs(cx);
             persist_active(app);
         }
-        Msg::ProfileRenamed(name) => app.profile_mut().name = name,
+        // 名字是「配置文件」下拉框的选项文字，改一个字下拉框就得换一个实体
+        // （见 `App::refresh_profile_select`）。这条消息来自名称输入框，不是
+        // 下拉框自己发出来的，所以可以在这里直接重建。
+        Msg::ProfileRenamed(name) => {
+            app.profile_mut().name = name;
+            app.refresh_profile_select(cx);
+        }
 
         // —— 代理设置 ——
         Msg::ProxyUrl(value) => app.profile_mut().proxy_url = value,
@@ -133,6 +139,8 @@ pub fn update(app: &mut App, msg: Msg, cx: &mut Context<App>) {
             app.error = None;
             // 先补上名字（用户可能清空了输入框），再校验并启动。
             app.config.normalize();
+            // `normalize()` 补名字时下拉框的选项文字也跟着变（空名字 → 「配置 N」）。
+            app.refresh_profile_select(cx);
             // 启动前先探上游代理：连不通就不启动（tun2proxy 起来后会接管
             // 路由，上游写错等于把网切断了）。检测在后台线程跑，结论由
             // 引擎写进共享状态，界面读 `snapshot.blocked`。
@@ -155,6 +163,8 @@ pub fn update(app: &mut App, msg: Msg, cx: &mut Context<App>) {
         Msg::SaveConfig => {
             app.error = None;
             app.config.normalize();
+            // 同上：保存时补上的名字也要出现在下拉框里。
+            app.refresh_profile_select(cx);
             match app.apply_draft().and_then(|()| app.config.save()) {
                 Ok(_) => {
                     // 只报结果，不报路径：写去哪儿是程序自己的事，把一整条
@@ -288,7 +298,7 @@ impl App {
             .config
             .profiles
             .get(index)
-            .map(|profile| profile.name.trim().to_string())
+            .map(|profile| profile.display_name())
         else {
             return;
         };

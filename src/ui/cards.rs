@@ -568,7 +568,7 @@ pub fn profile_list_group(app: &App, theme: &Theme, cx: &mut Context<App>) -> An
                         .child(radio_dot(active, theme))
                         .into_any_element(),
                 ),
-                profile.name.trim(),
+                profile.display_name(),
                 Some(profile.summary()),
                 None,
                 Some(
@@ -696,9 +696,11 @@ pub fn profile_edit_group(app: &App, theme: &Theme, cx: &mut Context<App>) -> An
                 Some(row_icon(DefaultIcons::pencil_1(), theme).into_any_element()),
                 t("配置名称", "Profile name"),
                 Some(
+                    // 名字出现在两处：配置列表的每一行，以及仪表盘上的「配置文件」
+                    // 下拉框。别写成「侧边栏」——侧边栏显示的是程序名和运行状态。
                     t(
-                        "侧边栏与下拉框里显示的名字",
-                        "Shown in the sidebar and the picker",
+                        "配置列表与仪表盘下拉框里显示的名字",
+                        "Shown in the profile list and the dashboard picker",
                     )
                     .to_string(),
                 ),
