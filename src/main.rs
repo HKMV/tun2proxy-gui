@@ -122,15 +122,28 @@ fn main() {
 
             let engine = window_engine.clone();
             let shared = shared.clone();
-            cx.open_window(options, move |window, cx| {
-                // 窗口标题由 `titlebar.title` 决定（Windows 上 gpui 直接把它
-                // 作为 `CreateWindowExW` 的窗口名），托盘「显示窗口」全指着它。
-                let app = cx.new(|cx| ui::App::new(config, engine, shared, window, cx));
-                // 全局句柄 + 关窗拦截（拦截里要判断托盘「退出」是否已确认）。
-                ui::view::install_window_hooks(app.clone(), window, cx);
-                app
-            })
-            .expect("failed to open the main window");
+            let window = cx
+                .open_window(options, move |window, cx| {
+                    // 窗口标题由 `titlebar.title` 决定（Windows 上 gpui 直接把它
+                    // 作为 `CreateWindowExW` 的窗口名），托盘「显示窗口」全指着它。
+                    let app = cx.new(|cx| ui::App::new(config, engine, shared, window, cx));
+                    // 全局句柄 + 关窗拦截（拦截里要判断托盘「退出」是否已确认）。
+                    ui::view::install_window_hooks(app.clone(), window, cx);
+                    app
+                })
+                .expect("failed to open the main window");
+
+            // 把窗口置到最前。
+            //
+            // 只靠下面那句 `cx.activate(true)` 是不够的：gpui 的**应用级**
+            // activate 在 Windows 上是空实现（`gpui-windows` 的
+            // `Platform::activate` 什么都不做），真正干活的是窗口级的
+            // `Window::activate_window()`。少了这一步，用户点开程序后窗口可能
+            // 落在别的窗口后面（尤其从终端 / 提权链路上启动时，新进程拿不到
+            // 前台权限），看起来就是「程序起来了但没到前面来」。
+            window
+                .update(cx, |_, window, _| window.activate_window())
+                .ok();
 
             cx.activate(true);
         });
