@@ -42,7 +42,11 @@ jobs:
           # Linux：用 22.04 编译，glibc 2.35 起步，兼容面最广。
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-          - os: macos-14
+          # macOS：`macos-15` 是 arm64、`macos-15-intel` 是 x64，两个标签都指向
+          # macOS 15。原来 arm64 用 `macos-14`，而 GitHub 已在 2026-11-02 下线
+          # 全部 macOS 14 镜像——那条 job 从此拿不到 runner，一排队就被取消，
+          # 整条 Release 跟着 cancelled（0.3.11 第一次发布就是这么挂的）。
+          - os: macos-15
             target: aarch64-apple-darwin
           - os: macos-15-intel
             target: x86_64-apple-darwin
