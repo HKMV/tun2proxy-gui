@@ -2,6 +2,23 @@ name: Release
 
 # 打 tag（v*）即自动编译三平台产物并发布到 GitHub Release。
 # 也可以在 Actions 页面手动 Run workflow，填一个已存在的 tag 重跑发布。
+#
+# 打 tag 的标准写法（-F 后面跟一个写好说明的文本文件）：
+#
+#   git tag -a v0.4.1 -F notes.txt --cleanup=verbatim
+#   git push origin v0.4.1
+#
+# 两个已经踩过的坑，别再踩：
+#
+# 1. **说明里的 Markdown 标题会被 `git tag -F` 当注释剥掉**。不加
+#    `--cleanup=verbatim` 时 git 按「剥注释」处理，以 `#` 开头的行（`## 新功能`
+#    这种）整行消失，Release 页面只剩一串没有分段的 bullet。v0.4.0 第一次发布
+#    就是这样，只能重建 tag 重推。
+# 2. **macOS 的构建最容易在 Build 一步挂（exit 101），而且只有 macOS 挂**。
+#    v0.4.0 第一次发布就是：直连出口绑网卡用的 `socket2::Socket::bind_device`
+#    只对 android / fuchsia / linux 编译，代码里却写成了 `#[cfg(unix)]`，macOS
+#    也是 unix，于是报「没有这个方法」。改平台相关的 cfg 时记得三个目标都要
+#    过一遍（本机 `cargo check` 只能验 Windows）。
 on:
   push:
     tags:
@@ -98,6 +115,11 @@ jobs:
           grep -E '^(FILEVERSION|PRODUCTVERSION)|VALUE "(File|Product)Version"' app.rc
 
       # Cargo.toml 里 rust-version = "1.95"，stable 已满足。
+      #
+      # 三个目标共用一份源码，平台相关的 cfg 写错时**通常只有 macOS 这一条挂**
+      # （`cfg(unix)` 会把 macOS 也算进去，Linux 专属 API 一用就报错）。本地
+      # `cargo check` 只验得了 Windows，改这类代码时把 `#[cfg(...)]` 的条件写窄
+      # 到具体系统，别用 `unix` 图省事。
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
 
@@ -227,6 +249,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # 说明取自 tag 正文。注意打 tag 时必须带 `--cleanup=verbatim`，否则
+          # git 会把 `## 标题` 这种以 `#` 开头的行当注释剥掉，这里读到的正文就
+          # 只剩一串没有分段的 bullet（v0.4.0 第一次发布踩过）。
           notes="$(git tag -l --format='%(contents:body)' "$TAG")"
           if [ -z "$(printf '%s' "$notes" | tr -d '[:space:]')" ]; then
             notes="$(git log -1 --pretty=%b HEAD)"
