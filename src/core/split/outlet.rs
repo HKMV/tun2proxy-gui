@@ -232,13 +232,18 @@ extern "system" {
     ) -> i32;
 }
 
-/// Linux / macOS 直接用 `SO_BINDTODEVICE`。
-#[cfg(unix)]
+/// Linux / Android 直接用 `SO_BINDTODEVICE`。
+///
+/// 只能写这两个系统：`socket2` 的 `bind_device` 只对 android / fuchsia / linux
+/// 编译，`#[cfg(unix)]` 会把 macOS 也带上，编译直接报「没有这个方法」。
+#[cfg(any(target_os = "linux", target_os = "android"))]
 fn bind_to_interface(socket: &Socket, outlet: &Outlet, _ipv4: bool) -> io::Result<()> {
     socket.bind_device(Some(outlet.label.as_bytes()))
 }
 
-#[cfg(not(any(windows, unix)))]
+/// macOS 等系统没有按名字绑网卡的等价选项（要用 `IP_BOUND_IF` 且只认索引），
+/// 分流器的直连出口本来也只在 Windows 与 Linux 上实现，这里直接报不支持。
+#[cfg(not(any(windows, target_os = "linux", target_os = "android")))]
 fn bind_to_interface(_socket: &Socket, _outlet: &Outlet, _ipv4: bool) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
