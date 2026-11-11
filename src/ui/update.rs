@@ -262,8 +262,14 @@ pub fn update(app: &mut App, msg: Msg, cx: &mut Context<App>) {
             super::theme::reinstall(cx, value);
             if let Err(err) = app.config.save() {
                 app.error = Some(err);
-            }
-        }
+            }            // 这条消息可能来自设置页的下拉框，也可能来自侧栏底部那一行。
+            // 下拉框的选中态是它自己的状态，不跟着改就一直是旧值——推到本次
+            // 事件处理完再同步：如果消息正是那个下拉框发出来的，在它的回调里
+            // 动它自己的选中态并不合适。
+            cx.defer(|cx| {
+                super::state::with_app(cx, |app, cx| app.sync_theme_select(cx));
+            });        }
+
     }
 
     // 状态改完了，让根视图重画一帧。

@@ -54,6 +54,22 @@ const LOG_PREVIEW_HEIGHT: f32 = 200.0;
 /// 同样一分钟的流量会被拉成两条平线，看不出峰谷。
 const CHART_WIDTH: f32 = 208.0;
 
+/// 状态灯（侧栏那颗 8dp 小圆点）的颜色。
+///
+/// 和托盘的图标同一套口径：未运行是灰的（熄灭）、运行中是绿的、过渡是黄的、
+/// 失败是红的——一眼看出服务在不在跑。
+///
+/// 只给圆点用，文字仍旧走 [`status_label`]：圆点是图形元素，非文本对比度够
+/// 3:1 就能看清；而整行文字也压成 muted，才是上面说的「几乎读不出来」。
+/// 正文色的圆点则相反——它和文字同色，看着像句首的圆点符号，不像状态灯。
+pub fn status_dot_color(status: &Status, theme: &Theme) -> Hsla {
+    match status {
+        Status::Stopped => theme.fg_muted(),
+        Status::Starting | Status::Stopping => theme.warning(),
+        Status::Running => theme.success(),
+        Status::Failed(_) => theme.danger(),
+    }
+}
 /// 状态文字 + 颜色，供侧边栏与首屏卡片共用。
 ///
 /// 「未运行」用正文色而不是 `fg_muted()`：它是**当前状态**，不是说明文字。

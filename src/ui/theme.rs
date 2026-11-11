@@ -115,16 +115,23 @@ fn resolve(setting: ThemeSetting) -> Theme {
     theme
 }
 
+/// 环境变量里指定的主题名（已去空白、转小写）；没设或写空时 `None`。
+///
+/// 单独暴露出来，是因为侧栏的「一键换外观」要知道**松手后画面上到底会不会
+/// 变**：环境变量在场时 [`reinstall`] 一律返回环境变量指定的主题，点了没有
+/// 任何反应——那是排障/截图用的强制值，按钮该是灰的，并且说清楚为什么。
+pub fn env_override() -> Option<String> {
+    let raw = std::env::var("TUN2PROXY_GUI_THEME").ok()?;
+    let name = raw.trim().to_ascii_lowercase();
+    if name.is_empty() { None } else { Some(name) }
+}
+
 /// 环境变量指定的主题；没设或认不出来时返回 `None` 交给设置项决定。
 ///
 /// 认不出来的名字回落到 Catppuccin Mocha 而不是「没设」：用户明确写了
 /// 一个名字，就该看到某个主题，而不是悄悄变回「跟随系统」。
 fn from_env() -> Option<Theme> {
-    let raw = std::env::var("TUN2PROXY_GUI_THEME").ok()?;
-    let name = raw.trim().to_ascii_lowercase();
-    if name.is_empty() {
-        return None;
-    }
+    let name = env_override()?;
     let mut theme = match name.as_str() {
         "light" | "latte" | "catppuccin-latte" | "catppuccin_latte" => Theme::catppuccin_latte(),
         "frappe" | "catppuccin-frappe" | "catppuccin_frappe" => Theme::catppuccin_frappe(),

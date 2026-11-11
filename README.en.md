@@ -43,8 +43,9 @@ current profile, runtime options and live log on the right.*
 - **Pre-flight before start**: pressing "Start" runs the same handshake probe
   first. If the proxy is unreachable the app explains why in a dialog and does
   **not** launch the core, instead of spawning a tun2proxy that is bound to fail.
-- **Chinese and English UI**: pick "Follow system / 中文 / English" in Settings,
-  applied immediately. Every string lives in code as
+- **Chinese and English UI**: pick "Follow system / 中文 / English" in Settings —
+  or click the "Language" cell at the bottom of the sidebar — applied immediately.
+  Every string lives in code as
   `t("中文", "English")`, so there is no separate translation file to maintain.
 - **Live traffic chart**: the dashboard hero card shows downstream/upstream
   throughput for the last minute.
@@ -79,7 +80,7 @@ src/
    ├─ state.rs     App state, message enum, numeric input drafts
    ├─ view.rs      Root view: sidebar + content area
    ├─ theme.rs     Installs the gpuikit theme (swappable) and font-size constants
-   ├─ sidebar.rs   Sidebar (title, service state, navigation, start/stop)
+   ├─ sidebar.rs   Sidebar (title, service state, navigation, theme, language, start/stop)
    ├─ pages.rs     Content area: thin top bar + the grouped composition of each page
    ├─ cards.rs     Groups and rows for each page
    ├─ widgets.rs   Reusable text styles and widgets (hero card, group, setting row, pill)
@@ -284,8 +285,10 @@ keys you care about.
 ## Language
 
 Settings offers "Follow system / 中文 / English"; the choice applies immediately
-and is persisted (the `language` field). Strings live in code
-(`t("中文", "English")`) — there is no separate translation resource file.
+and is persisted (the `language` field). The "Language" row at the bottom of the
+sidebar cycles System → 中文 → English in one click, with the same immediate
+effect and persistence, and the dropdown in Settings follows. Strings live in
+code (`t("中文", "English")`) — there is no separate translation resource file.
 
 ## Theme
 
@@ -294,10 +297,23 @@ colours and `ControlScale`; this app does no colouring of its own. Light/dark is
 decided in three places, highest priority first:
 
 1. **The `TUN2PROXY_GUI_THEME` environment variable** (for debugging and
-   screenshots — it pins light/dark regardless of everything else);
+   screenshots — it pins light/dark regardless of everything else; when it is set,
+   the sidebar "Theme" cell greys out and says so, since clicking changes nothing);
 2. **Settings → "Program & logs" → "Appearance" → "Theme"** (System / Light /
-   Dark, applied immediately and saved);
+   Dark, applied immediately and saved), or **the "Theme" cell at the bottom of the
+   sidebar** (clicking cycles Light → Dark → System; from System it jumps to the
+   opposite of what you see now, so a click always changes something, and the
+   dropdown follows);
 3. **System** reads Windows' `AppsUseLightTheme` registry value.
+
+The bottom of the sidebar is **one cell per setting, side by side**: **Theme** on
+the left, **Language** on the right, each cell holding only an icon plus the
+current value (the name lives in the tooltip), with the value at 12dp — side by
+side leaves 78dp per cell and 58dp for text, where the Chinese label 「跟随系统」
+is already 56dp at 14dp, so any font fallback would ellipsize it.
+
+Each cell centres "icon + value", draws no divider (only a 4dp gap), and keeps
+its own hover background, so only the cell under the pointer lights up.
 
 ```powershell
 set TUN2PROXY_GUI_THEME=light    # Catppuccin Latte (light)
@@ -338,7 +354,10 @@ automatically inverted on light ones, with no per-theme branch.
 The tray icon changes colour with the service: **grey when stopped (lights out),
 original colour while running**. The tray is 16–32px, so shape cannot express
 "running or not" and colour is the fastest signal (the hover tooltip carries the
-state too).
+state too). The 8dp status dot in the sidebar follows the same rule — grey when
+stopped, green while running, amber in between, red on failure
+(`status_dot_color`) — while its text stays in the foreground colour: a dot is a
+graphic, 3:1 is enough, and greying the whole row is what actually hurts.
 
 Both variants come from the single `assets/icon.ico`, with no extra image files:
 the frames are PNG, so when stopped the icon is decoded, its saturated pixels are

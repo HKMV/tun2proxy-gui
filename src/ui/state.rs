@@ -816,6 +816,20 @@ impl App {
         self.selects.rebuild_profile(&self.config, cx);
     }
 
+    /// 让「界面主题」下拉框显示现在真正的值。
+    ///
+    /// 主题有两个入口：设置页的下拉框，和侧栏底部那一行。下拉框的选中态是
+    /// 它自己的实体状态，侧栏改了 `config.theme` 不会自动跟过来——不同步的话，
+    /// 从侧栏切完再进设置页，看到的还是旧值（用户会以为侧栏那下没生效）。
+    pub fn sync_theme_select(&mut self, cx: &mut Context<Self>) {
+        let theme = ThemeSetting::ALL
+            .iter()
+            .position(|setting| *setting == self.config.theme)
+            .unwrap_or(0);
+        self.selects
+            .theme
+            .update(cx, |state, cx| state.set_selected(Some(theme), cx));
+    }
     /// 让下拉框显示「现在真正的值」。
     pub fn sync_selects(&mut self, cx: &mut Context<Self>) {
         let profile = self.config.active;
