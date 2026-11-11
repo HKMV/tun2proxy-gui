@@ -297,7 +297,7 @@ mod imp {
             engine.log_line(t("托盘：没有可用的配置", "Tray: no profile available").to_string());
             return;
         };
-        match engine.start(profile) {
+        match engine.start(profile, &config.split) {
             Ok(()) => engine.log_line(
                 t(
                     "托盘：已请求启动 tun2proxy",

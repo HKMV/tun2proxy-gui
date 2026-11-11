@@ -34,6 +34,14 @@ use crate::core::i18n;
 use crate::core::i18n::t;
 use crate::core::paths;
 use crate::core::probe::{self, ProbeReport};
+use crate::core::split::ipset::Cidr;
+use crate::core::split::library::Library;
+use crate::core::split::rules::RuleSet;
+use crate::core::split::service::{
+    CounterSnapshot, Decision, SplitService, SplitSink, StartPlan, TrendBucket,
+};
+use crate::core::split::settings::SplitSettings;
+use crate::core::split::upstream::Upstream;
 use crate::core::traffic::{self, TrafficMeter, TrafficSample};
 use crate::tr_format;
 
@@ -122,6 +130,10 @@ pub struct Shared {
     ///
     /// 用裸回调而不是直接存 GUI 句柄，是为了让 core 不依赖任何界面框架。
     pub rebuild: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// 分流器的运行情况（每秒同步一次）。
+    pub split: SplitRuntime,
+    /// 清单在线更新的进度。
+    pub split_update: SplitUpdate,
 }
 
 impl Shared {
@@ -153,6 +165,85 @@ pub enum ProbeState {
     Done(ProbeReport),
 }
 
+/// 分流器当前的运行情况（给界面读的那一份）。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SplitRuntime {
+    pub running: bool,
+    pub addr: Option<std::net::SocketAddr>,
+    pub rules: usize,
+    pub direct: u64,
+    pub proxy: u64,
+    pub failed: u64,
+    pub sessions: u64,
+    /// 最近的判定，**新的在前**（界面上的「最近判定」列表直接按顺序画）。
+    pub decisions: Vec<Decision>,
+    /// 分流去向的时序，**旧 → 新**，最后一格是「现在」。
+    ///
+    /// 长度固定（[`crate::core::split::TREND_BUCKETS`]）：界面画折线时按位置
+    /// 摊开，不用再自己补零或对齐时间轴。
+    pub trend: Vec<TrendBucket>,
+}
+
+/// 界面上一屏能看到多少条判定：再多就要往回滚，滚动条自己会长出来。
+pub const SPLIT_DECISIONS_SHOWN: usize = 20;
+
+impl SplitRuntime {
+    fn from_service(service: &SplitService) -> Self {
+        let counters: CounterSnapshot = service.counters();
+        Self {
+            running: service.is_running(),
+            addr: service.address(),
+            rules: service.rule_count(),
+            direct: counters.direct,
+            proxy: counters.proxy,
+            failed: counters.failed,
+            sessions: counters.sessions,
+            decisions: service.recent_decisions(SPLIT_DECISIONS_SHOWN),
+            trend: service.trend(),
+        }
+    }
+}
+
+/// 清单在线更新的进度（给界面的「立即更新」按钮用）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SplitUpdate {
+    Idle,
+    Working(String),
+    Done(String),
+    Failed(String),
+}
+
+impl SplitUpdate {
+    pub fn is_busy(&self) -> bool {
+        matches!(self, SplitUpdate::Working(_))
+    }
+
+    /// 界面上那一行状态文字。
+    pub fn text(&self) -> Option<&str> {
+        match self {
+            SplitUpdate::Idle => None,
+            SplitUpdate::Working(text) | SplitUpdate::Done(text) | SplitUpdate::Failed(text) => {
+                Some(text)
+            }
+        }
+    }
+}
+
+/// 把分流器的日志与状态接到引擎的共享状态上。
+struct EngineSink {
+    shared: Arc<Mutex<Shared>>,
+    dirty: Arc<AtomicBool>,
+}
+
+impl SplitSink for EngineSink {
+    fn log(&self, line: String) {
+        if let Ok(mut shared) = self.shared.lock() {
+            shared.push_log(line);
+        }
+        self.dirty.store(true, Ordering::Relaxed);
+    }
+}
+
 /// 引擎句柄。内部全是 `Arc`，可以随意 clone 后丢给后台线程。
 #[derive(Clone)]
 pub struct Engine {
@@ -160,6 +251,7 @@ pub struct Engine {
     dirty: Arc<AtomicBool>,
     child: Arc<Mutex<Option<Child>>>,
     stopping: Arc<AtomicBool>,
+    split: SplitService,
 }
 
 impl Engine {
@@ -177,6 +269,8 @@ impl Engine {
             last_error: None,
             log_total: 0,
             rebuild: None,
+            split: SplitRuntime::default(),
+            split_update: SplitUpdate::Idle,
         }));
         let dirty = Arc::new(AtomicBool::new(false));
         install_logger(shared.clone(), dirty.clone());
@@ -186,14 +280,38 @@ impl Engine {
             dirty,
             child: Arc::new(Mutex::new(None)),
             stopping: Arc::new(AtomicBool::new(false)),
+            split: SplitService::new(),
         };
         engine.spawn_notifier();
+        engine.spawn_split_watcher();
         engine.log_line(tr_format!(
             "配置目录 {}",
             "Config directory {}",
             paths::app_dir().display()
         ));
         engine
+    }
+
+    /// 每秒把分流器的状态抄进共享状态：界面每帧都读同一份快照，
+    /// 不让它直接去锁分流器的内部结构。
+    fn spawn_split_watcher(&self) {
+        let shared = self.shared.clone();
+        let dirty = self.dirty.clone();
+        let service = self.split.clone();
+        std::thread::Builder::new()
+            .name("split-watcher".to_string())
+            .spawn(move || loop {
+                std::thread::sleep(Duration::from_secs(1));
+                let next = SplitRuntime::from_service(&service);
+                if let Ok(mut shared) = shared.lock() {
+                    if shared.split != next {
+                        shared.split = next;
+                        drop(shared);
+                        dirty.store(true, Ordering::Relaxed);
+                    }
+                }
+            })
+            .ok();
     }
 
     pub fn shared(&self) -> Arc<Mutex<Shared>> {
@@ -354,7 +472,11 @@ impl Engine {
     /// 探针在后台线程跑（`connect_timeout` 最长 3 秒，同步跑会冻住界面）：
     /// 通过就接着 [`Engine::start`]，不通过就把原因写进 `Shared::start_blocked`
     /// 交给界面显示。返回值只表示「本地校验过了、检测已经开始」。
-    pub fn start_with_precheck(&self, profile: &Profile) -> Result<(), String> {
+    pub fn start_with_precheck(
+        &self,
+        profile: &Profile,
+        settings: &SplitSettings,
+    ) -> Result<(), String> {
         if self.is_active() {
             return Err(i18n::t(
                 t("服务已经在运行", "The service is already running"),
@@ -373,9 +495,15 @@ impl Engine {
             )
             .to_string());
         }
+        // 分流开着但设置不合法（直连 DNS 写错了之类）时，与其起一条半残的隧道，
+        // 不如现在就告诉用户哪里不对。
+        if let Err(err) = settings.validate() {
+            return Err(err);
+        }
 
         let url = profile.proxy_url.clone();
         let profile = profile.clone();
+        let settings = settings.clone();
         if let Ok(mut shared) = self.shared.lock() {
             shared.probe = Some(ProbeState::Running);
             shared.start_blocked = None;
@@ -406,7 +534,7 @@ impl Engine {
                     }
                 }
                 if ok {
-                    if let Err(err) = engine.start(&profile) {
+                    if let Err(err) = engine.start(&profile, &settings) {
                         if let Ok(mut shared) = engine.shared.lock() {
                             shared.start_blocked = Some(err);
                         }
@@ -428,7 +556,12 @@ impl Engine {
     }
 
     /// 按一套代理配置启动 tun2proxy 子进程（不阻塞，失败时返回可读的中文错误）。
-    pub fn start(&self, profile: &Profile) -> Result<(), String> {
+    ///
+    /// 分流开着时，先在本机起 SOCKS5 分流器，再把 `--proxy` 指过去；其它参数
+    /// 一个都不改。分流器起不来（网卡找不到、上游协议不支持…）时**自动回退**：
+    /// 照原样启动 tun2proxy，并把原因写进日志——宁可这一轮没有分流，也不能
+    /// 因为一个附加功能把整条隧道拖下水。
+    pub fn start(&self, profile: &Profile, settings: &SplitSettings) -> Result<(), String> {
         if self.is_active() {
             return Err(t("服务已经在运行", "The service is already running").to_string());
         }
@@ -441,7 +574,43 @@ impl Engine {
             .to_string());
         }
 
-        let args = profile.cli_args();
+        let mut effective = profile.clone();
+        // 网卡名在这里定死：用户填了就用填的，留空就本次随机一个。定下来之后
+        // `cli_args` 传给 tun2proxy 的 `--tun` 和流量采样找网卡用的是同一个字符串。
+        effective.tun_name = match profile.tun_name_configured() {
+            Some(name) => name.to_string(),
+            None => {
+                let name = crate::core::config::random_tun_name();
+                self.log_line(tr_format!(
+                    "隧道网卡：{}（本次启动随机，可在「代理配置」里固定下来）",
+                    "Tunnel adapter: {} (random for this run; pin it under Profiles)",
+                    name
+                ));
+                name
+            }
+        };
+        if settings.enabled {
+            match self.start_split(profile, settings) {
+                Ok(port) => {
+                    effective.proxy_url = format!("socks5://127.0.0.1:{port}");
+                    self.log_line(tr_format!(
+                        "分流已启用：tun2proxy 的上游改为本机 127.0.0.1:{}",
+                        "Split routing enabled: tun2proxy now uses the local proxy at 127.0.0.1:{}",
+                        port
+                    ));
+                }
+                Err(err) => {
+                    self.log_line(tr_format!(
+                        "分流器启动失败，本次启动按原配置走代理：{err}",
+                        "The splitter failed to start; this run uses the proxy as configured: {err}"
+                    ));
+                }
+            }
+        } else {
+            self.split.stop();
+        }
+
+        let args = effective.cli_args();
         // 上一次运行的报错不能留到这一次：状态机拿它解释「为什么停了」，
         // 留着的话新一次失败会报出旧原因。
         if let Ok(mut shared) = self.shared.lock() {
@@ -485,12 +654,153 @@ impl Engine {
             .map_err(|_| t("状态锁损坏", "The state lock is poisoned").to_string())? = Some(child);
         self.stopping.store(false, Ordering::Relaxed);
         self.set_status(Status::Starting);
-        self.spawn_supervisor();
+        // 流量采样要按网卡名找 TUN：名字就是上面 `cli_args` 里传给 `--tun` 的
+        // 那个（留空时已经换成随机名），两边取的是同一个字段。
+        self.spawn_supervisor(effective.tun_name.clone());
         Ok(())
+    }
+
+    /// 起本机分流器，返回它监听的端口。
+    fn start_split(&self, profile: &Profile, settings: &SplitSettings) -> Result<u16, String> {
+        let library = Library::load();
+        let rules = library.direct_rules(settings)?;
+        let rule_count = rules.len();
+        if rule_count == 0 {
+            return Err(t(
+                "分流规则是空的：请至少打开一组清单，或写一条自定义规则",
+                "The split rule set is empty: enable a list or add a custom rule",
+            )
+            .to_string());
+        }
+        let upstream = Upstream::parse(&profile.proxy_url)?;
+        let direct_dns = settings.direct_dns_addr().ok_or_else(|| {
+            t(
+                "直连 DNS 需要填一个 IP 地址，例如 223.5.5.5",
+                "The direct DNS must be an IP address, e.g. 223.5.5.5",
+            )
+            .to_string()
+        })?;
+        let fake_pool = Cidr::parse(profile.virtual_dns_pool.trim()).ok();
+        self.log_line(tr_format!(
+            "分流清单：{}（{}），规则 {} 条",
+            "Split lists: {} ({}), {} rules",
+            library.origin.label(),
+            library.date,
+            rule_count
+        ));
+
+        let plan = StartPlan {
+            // 端口交给系统分配：固定端口会和用户机器上别的代理撞车。
+            listen: "127.0.0.1:0".parse().expect("常量地址"),
+            upstream,
+            rules: RuleSet::build(&rules).0,
+            rule_count,
+            direct_dns,
+            outlet_hint: settings.direct_interface.clone(),
+            fake_pool,
+        };
+        let sink: Arc<dyn SplitSink> = Arc::new(EngineSink {
+            shared: self.shared.clone(),
+            dirty: self.dirty.clone(),
+        });
+        let addr = self.split.start(plan, sink)?;
+        Ok(addr.port())
+    }
+
+    /// 规则变了（开关某一行、改了自定义规则）时热更新，不重启隧道。
+    pub fn reload_split(&self, settings: &SplitSettings) -> Result<usize, String> {
+        if !self.split.is_running() {
+            return Ok(0);
+        }
+        let library = Library::load();
+        let rules = library.direct_rules(settings)?;
+        let count = rules.len();
+        self.split.reload(RuleSet::build(&rules).0, count)?;
+        Ok(count)
+    }
+
+    pub fn split_update(&self) -> SplitUpdate {
+        self.shared
+            .lock()
+            .map(|shared| shared.split_update.clone())
+            .unwrap_or(SplitUpdate::Idle)
+    }
+
+    /// 后台下载并替换清单；成功后立刻把新规则灌进正在跑的隧道。
+    pub fn update_split_lists(&self, settings: SplitSettings) {
+        if self.split_update().is_busy() {
+            return;
+        }
+        let engine = self.clone();
+        engine.set_split_update(SplitUpdate::Working(
+            t("准备下载…", "Preparing to download…").to_string(),
+        ));
+        let spawned = std::thread::Builder::new()
+            .name("split-update".to_string())
+            .spawn(move || {
+                let progress_engine = engine.clone();
+                let progress = move |message: String| {
+                    progress_engine.set_split_update(SplitUpdate::Working(message));
+                };
+                match crate::core::split::update::run(&progress) {
+                    Ok(outcome) => {
+                        let note = tr_format!(
+                            "已更新 · {} · IPv4 {} 条 / IPv6 {} 条 / 域名 {} 条（{:.1} 秒）",
+                            "Updated · {} · {} IPv4 / {} IPv6 / {} domain rules ({:.1}s)",
+                            outcome.date,
+                            outcome.ipv4,
+                            outcome.ipv6,
+                            outcome.domain,
+                            outcome.seconds
+                        );
+                        engine.log_line(note.clone());
+                        match engine.reload_split(&settings) {
+                            Ok(count) if count > 0 => engine.log_line(tr_format!(
+                                "分流规则已热更新：{} 条",
+                                "Split rules hot-reloaded: {}",
+                                count
+                            )),
+                            Ok(_) => {}
+                            Err(err) => engine.log_line(tr_format!(
+                                "清单已更新，但热更新失败（隧道需要重启一次）：{err}",
+                                "The lists were updated but the hot reload failed (restart the tunnel once): {err}"
+                            )),
+                        }
+                        engine.set_split_update(SplitUpdate::Done(note));
+                    }
+                    Err(err) => {
+                        engine.log_line(tr_format!(
+                            "清单更新失败：{err}",
+                            "Updating the lists failed: {err}"
+                        ));
+                        // 失败不等于没有规则：内置快照一直可用，这句话必须跟着
+                        // 错误一起出现，否则用户会以为分流现在没规则了。
+                        engine.set_split_update(SplitUpdate::Failed(tr_format!(
+                            "{err}（内置清单仍在生效，可以稍后重试）",
+                            "{err} (the built-in lists are still in effect; retry later)"
+                        )));
+                    }
+                }
+            });
+        if spawned.is_err() {
+            self.set_split_update(SplitUpdate::Failed(
+                t("无法启动下载线程", "Cannot spawn the download thread").to_string(),
+            ));
+        }
+    }
+
+    fn set_split_update(&self, update: SplitUpdate) {
+        if let Ok(mut shared) = self.shared.lock() {
+            shared.split_update = update;
+        }
+        self.touch();
+        self.request_rebuild();
     }
 
     /// 请求子进程退出：先发中断信号让它自己清理路由，6 秒后仍未退出则强杀。
     pub fn stop(&self) {
+        // 先关分流器：tun2proxy 一停，它那个上游就没人连了。
+        self.split.stop();
         let mut guard = match self.child.lock() {
             Ok(guard) => guard,
             Err(_) => return,
@@ -544,7 +854,7 @@ impl Engine {
         }
     }
 
-    fn spawn_supervisor(&self) {
+    fn spawn_supervisor(&self, tun_name: String) {
         let shared = self.shared.clone();
         let child = self.child.clone();
         let stopping = self.stopping.clone();
@@ -555,7 +865,7 @@ impl Engine {
             .spawn(move || {
                 let mut ticks = 0u32;
                 let mut announced = false;
-                let mut meter = TrafficMeter::new();
+                let mut meter = TrafficMeter::new(&tun_name);
                 loop {
                     std::thread::sleep(Duration::from_millis(250));
                     ticks += 1;
@@ -610,16 +920,17 @@ impl Engine {
 
                     // 每 4 个 tick（约 1 秒）采一次流量。
                     //
-                    // 采样失败（进程刚起、读不到计数器）就跳过这一拍：折线图
-                    // 少一个点比画一个假的尖峰好。
+                    // 采样失败（网卡还没建出来、读不到计数器）就跳过这一拍：
+                    // 折线图少一个点比画一个假的尖峰好。
                     if ticks.is_multiple_of(4) {
                         let sample = {
-                            let mut guard = match child.lock() {
+                            let guard = match child.lock() {
                                 Ok(guard) => guard,
                                 Err(_) => return,
                             };
-                            match guard.as_mut() {
-                                Some(process) => meter.sample(process),
+                            match guard.as_ref() {
+                                // 子进程还在才采：网卡是它建的，它没了网卡也就没了。
+                                Some(process) => meter.sample(Some(process)),
                                 None => None,
                             }
                         };

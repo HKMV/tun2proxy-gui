@@ -631,11 +631,13 @@ fn rail_item(
 ///
 /// 图标要能一眼看出「这页管什么」：
 /// 仪表盘 = 总览（dashboard），代理配置 = 参数（齿轮），
-/// 网络与绕过 = 分流地址（图钉），程序与日志 = 时间线输出（逆时针时钟）。
+/// 分流规则 = 双向分流（水平混合器），网络与绕过 = 分流地址（图钉），
+/// 程序与日志 = 时间线输出（逆时针时钟）。
 pub fn page_icon(page: Page) -> Svg {
     match page {
         Page::Dashboard => DefaultIcons::dashboard(),
         Page::Profiles => DefaultIcons::gear(),
+        Page::Split => DefaultIcons::mixer_horizontal(),
         Page::Network => DefaultIcons::sewing_pin(),
         Page::Program => DefaultIcons::counter_clockwise_clock(),
     }

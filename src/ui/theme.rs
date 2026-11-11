@@ -52,8 +52,6 @@ pub const TEXT_SMALL: f32 = 12.0;
 pub const TEXT_GROUP: f32 = 14.0;
 /// 页面标题。
 pub const TEXT_TITLE: f32 = 20.0;
-/// 首屏大标题。
-pub const TEXT_HERO: f32 = 24.0;
 /// 等宽日志。
 pub const TEXT_MONO: f32 = 12.5;
 

@@ -49,6 +49,8 @@ pub enum Page {
     Dashboard,
     /// 多套代理配置的列表与代理 / DNS 参数。
     Profiles,
+    /// 分流规则：国内 IP / 域名直连。
+    Split,
     /// 网络参数、UDP 转发与路由绕过规则。
     Network,
     /// tun2proxy 二进制的下载 / 更新、运行方式与运行日志。
@@ -57,9 +59,10 @@ pub enum Page {
 
 impl Page {
     /// 侧边栏里的顺序。
-    pub const ALL: [Page; 4] = [
+    pub const ALL: [Page; 5] = [
         Page::Dashboard,
         Page::Profiles,
+        Page::Split,
         Page::Network,
         Page::Program,
     ];
@@ -69,6 +72,7 @@ impl Page {
         match self {
             Page::Dashboard => t("仪表盘", "Dashboard"),
             Page::Profiles => t("代理配置", "Profiles"),
+            Page::Split => t("分流规则", "Split routing"),
             Page::Network => t("网络与绕过", "Network"),
             Page::Program => t("程序与日志", "Program"),
         }
@@ -84,6 +88,10 @@ impl Page {
             Page::Profiles => t(
                 "维护多套代理配置，随时切换要用的那套。",
                 "Keep several profiles and switch between them.",
+            ),
+            Page::Split => t(
+                "国内 IP 与域名直连，其余流量照常走代理。",
+                "China IPs and domains go direct; everything else uses the proxy.",
             ),
             Page::Network => t(
                 "TUN 网卡、UDP 转发与绕过规则。",
@@ -176,6 +184,28 @@ pub enum Msg {
     CheckUpdate,
     InstallUpdate,
 
+    // —— 分流规则 ——
+    /// 分流总开关（关掉时完全不起分流器）。
+    SetSplitEnabled(bool),
+    /// 打开 / 关掉某一组内置清单。
+    SetSplitGroup(crate::core::split::SplitGroup, bool),
+    /// 自定义规则文本变了（还没生效，等「应用规则」）。
+    SplitCustomChanged(String),
+    /// 翻转某一行的开关（`suffix:qq.com` 这种键）。
+    SplitRowToggled(String),
+    /// 直连 DNS。
+    SplitDns(String),
+    /// 直连出口网卡。
+    SplitInterface(String),
+    /// 把自定义规则灌进规则集并热更新。
+    SplitApply,
+    /// 立刻下载并替换清单。
+    SplitUpdate,
+    /// 把下载下来的清单换回内置快照。
+    SplitReset,
+    /// 规则明细的筛选框（只影响显示）。
+    SplitFilter(String),
+
     // —— 窗口与托盘 ——
     /// 修改「关闭窗口时询问」这个开关。
     SetConfirmCloseToTray(bool),
@@ -230,11 +260,15 @@ pub enum Field {
     UdpTimeout,
     MaxSessions,
     UdpgwConnections,
+    SplitCustom,
+    SplitDns,
+    SplitInterface,
+    SplitFilter,
 }
 
 impl Field {
     /// 建实体时的顺序（也决定订阅的建立顺序）。
-    pub const ALL: [Field; 12] = [
+    pub const ALL: [Field; 16] = [
         Field::Name,
         Field::ProxyUrl,
         Field::DnsAddr,
@@ -247,11 +281,15 @@ impl Field {
         Field::UdpTimeout,
         Field::MaxSessions,
         Field::UdpgwConnections,
+        Field::SplitCustom,
+        Field::SplitDns,
+        Field::SplitInterface,
+        Field::SplitFilter,
     ];
 
-    /// 是不是多行（只有绕过列表是）。
+    /// 是不是多行（绕过列表与自定义规则）。
     pub fn multiline(self) -> bool {
-        matches!(self, Field::Bypass)
+        matches!(self, Field::Bypass | Field::SplitCustom)
     }
 
     /// 占位文字。
@@ -263,12 +301,19 @@ impl Field {
             Field::VirtualPool => "198.18.0.0/15",
             Field::Bypass => t("每行一个 IP 或 CIDR", "One IP or CIDR per line"),
             Field::Udpgw => t("留空则不转发 UDP", "Leave empty to drop UDP"),
-            Field::TunName => t("自动生成", "Auto-generated"),
+            Field::TunName => t("每次启动随机", "Random each start"),
             Field::Mtu => "",
             Field::TcpTimeout => "",
             Field::UdpTimeout => "",
             Field::MaxSessions => t("默认", "Default"),
             Field::UdpgwConnections => "",
+            Field::SplitCustom => t(
+                "每行一条：qq.com 或 suffix:qq.com 或 proxy:example.org",
+                "One per line: qq.com, suffix:qq.com or proxy:example.org",
+            ),
+            Field::SplitDns => crate::core::split::settings::DEFAULT_DIRECT_DNS,
+            Field::SplitInterface => t("留空自动判断", "Auto-detect"),
+            Field::SplitFilter => t("筛选域名或地址", "Filter domains or addresses"),
         }
     }
 
@@ -287,6 +332,10 @@ impl Field {
             Field::UdpTimeout => Msg::UdpTimeout(value),
             Field::MaxSessions => Msg::MaxSessions(value),
             Field::UdpgwConnections => Msg::UdpgwConnections(value),
+            Field::SplitCustom => Msg::SplitCustomChanged(value),
+            Field::SplitDns => Msg::SplitDns(value),
+            Field::SplitInterface => Msg::SplitInterface(value),
+            Field::SplitFilter => Msg::SplitFilter(value),
         }
     }
 }
@@ -510,6 +559,10 @@ pub struct Snapshot {
     pub probe: Option<ProbeState>,
     /// 启动被拦下的原因（上游代理连不通等），由后台线程写入。
     pub blocked: Option<String>,
+    /// 分流器的运行情况（是否在跑、直连 / 代理各多少条）。
+    pub split: crate::core::engine::SplitRuntime,
+    /// 清单在线更新的进度。
+    pub split_update: crate::core::engine::SplitUpdate,
 }
 
 /// 应用根状态，同时也是 GPUI 的根视图实体。
@@ -564,7 +617,7 @@ pub struct App {
     /// 底」会让往回翻变得没意义——整机流量下每秒几百行，翻上去立刻被拽回来。
     pub log_follow: bool,
     /// 每页各自的滚动位置。
-    pub page_scroll: [ScrollHandle; 4],
+    pub page_scroll: [ScrollHandle; 5],
     /// 正在被拖动的滚动条（哪一条、按下时的指针 y 与滚动偏移）。
     ///
     /// 挂在 `App` 上而不是渲染函数里：滚动条每帧重新构造，局部状态活不过一帧，
@@ -573,8 +626,19 @@ pub struct App {
     ///
     /// [`ScrollBarKey`]: crate::ui::widgets::ScrollBarKey
     pub scroll_drag: crate::ui::widgets::ScrollDrag,
-    /// 上一次渲染时的日志累计行数：变了才把日志滚到底，否则每帧都在动。
+    /// 上次渲染时的日志行数：变了才把日志滚到底，否则每帧都在动。
     last_log_len: u64,
+    /// 分流规则的清单（内核已经解析好，界面只读）。
+    ///
+    /// 放在界面层而不是共享状态里：它有 1.6 万条规则、约 1 MB，每秒抄一份
+    /// 到共享状态纯属浪费；只有「更新清单」之后需要显式重建一次。
+    pub split_library: crate::core::split::Library,
+    /// 规则明细的筛选文字（只影响显示，不落盘）。
+    pub split_filter: String,
+    /// 规则明细那个定高列表的滚动位置。
+    pub split_rules_scroll: ScrollHandle,
+    /// 「最近判定」那个定高列表的滚动位置。
+    pub split_decisions_scroll: ScrollHandle,
     /// 输入框 / 对话框的订阅，随实体一起活着。
     _subscriptions: Vec<Subscription>,
 }
@@ -588,7 +652,7 @@ impl App {
         cx: &mut Context<Self>,
     ) -> Self {
         let draft = Draft::from_profile(config.active_profile());
-        let inputs = Inputs::new(&field_values(&config, &draft), cx);
+        let inputs = Inputs::new(&field_values(&config, &draft, ""), cx);
         let selects = Selects::new(&config, cx);
 
         // 用户打字 → 一条 Msg。
@@ -660,6 +724,10 @@ impl App {
             page_scroll: std::array::from_fn(|_| ScrollHandle::default()),
             scroll_drag: Default::default(),
             last_log_len: 0,
+            split_library: crate::core::split::Library::load(),
+            split_filter: String::new(),
+            split_rules_scroll: ScrollHandle::default(),
+            split_decisions_scroll: ScrollHandle::default(),
             _subscriptions: subscriptions,
         }
     }
@@ -762,6 +830,8 @@ impl App {
             rate: shared.rate,
             probe: shared.probe.clone(),
             blocked: shared.start_blocked.clone(),
+            split: shared.split.clone(),
+            split_update: shared.split_update.clone(),
         }
     }
 
@@ -770,7 +840,7 @@ impl App {
     /// 只在「程序改的值」之后调用（切配置、填默认值、增删配置、换语言）：
     /// 用户打字时不能回写，否则每敲一个字都会把光标打回开头。
     pub fn sync_inputs(&mut self, cx: &mut Context<Self>) {
-        for (field, value) in field_values(&self.config, &self.draft) {
+        for (field, value) in field_values(&self.config, &self.draft, &self.split_filter) {
             let entity = self.inputs.get(field);
             let current = entity.read(cx).content().to_string();
             if current != value {
@@ -781,7 +851,7 @@ impl App {
 
     /// 语言变了：占位文字跟着换，输入框重建一次（值不变）。
     pub fn rebuild_inputs(&mut self, cx: &mut Context<Self>) {
-        let values = field_values(&self.config, &self.draft);
+        let values = field_values(&self.config, &self.draft, &self.split_filter);
         self.inputs = Inputs::new(&values, cx);
         let mut subscriptions = Vec::new();
         for (field, entity) in self.inputs.iter() {
@@ -830,6 +900,7 @@ impl App {
             .theme
             .update(cx, |state, cx| state.set_selected(Some(theme), cx));
     }
+
     /// 让下拉框显示「现在真正的值」。
     pub fn sync_selects(&mut self, cx: &mut Context<Self>) {
         let profile = self.config.active;
@@ -897,7 +968,7 @@ impl App {
 }
 
 /// 配置里每个字段现在的文本值。
-fn field_values(config: &Config, draft: &Draft) -> Vec<(Field, String)> {
+fn field_values(config: &Config, draft: &Draft, split_filter: &str) -> Vec<(Field, String)> {
     let profile = config.active_profile();
     Field::ALL
         .into_iter()
@@ -915,6 +986,11 @@ fn field_values(config: &Config, draft: &Draft) -> Vec<(Field, String)> {
                 Field::UdpTimeout => draft.udp_timeout.clone(),
                 Field::MaxSessions => draft.max_sessions.clone(),
                 Field::UdpgwConnections => draft.udpgw_connections.clone(),
+                Field::SplitCustom => config.split.custom.clone(),
+                Field::SplitDns => config.split.direct_dns.clone(),
+                Field::SplitInterface => config.split.direct_interface.clone(),
+                // 筛选框是纯显示状态，不落盘：内容单独存在 `App::split_filter`。
+                Field::SplitFilter => split_filter.to_string(),
             };
             (field, value)
         })

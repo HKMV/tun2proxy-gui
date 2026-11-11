@@ -144,9 +144,10 @@ pub fn update(app: &mut App, msg: Msg, cx: &mut Context<App>) {
             // 启动前先探上游代理：连不通就不启动（tun2proxy 起来后会接管
             // 路由，上游写错等于把网切断了）。检测在后台线程跑，结论由
             // 引擎写进共享状态，界面读 `snapshot.blocked`。
-            let result = app
-                .apply_draft()
-                .and_then(|()| app.engine.start_with_precheck(app.config.active_profile()));
+            let result = app.apply_draft().and_then(|()| {
+                app.engine
+                    .start_with_precheck(app.config.active_profile(), &app.config.split)
+            });
             match result {
                 Ok(()) => {
                     let _ = app.config.save();
@@ -228,6 +229,85 @@ pub fn update(app: &mut App, msg: Msg, cx: &mut Context<App>) {
         Msg::CheckUpdate => app.engine.check_update(app.config.release_repo.clone()),
         Msg::InstallUpdate => app.engine.install_update(app.config.release_repo.clone()),
 
+        // —— 分流规则 ——
+        //
+        // 这一组都是「改完立刻落盘」：分流开关和规则的意图非常直接（勾上就该
+        // 生效），再多要求一次「保存」只会让用户以为没点上。规则本身在隧道
+        // 运行中热更新，总开关的改动要重启隧道才生效（引擎只在启动时决定
+        // `--proxy` 指向哪里）。
+        Msg::SetSplitEnabled(value) => {
+            app.config.split.enabled = value;
+            persist_active(app);
+            app.flash_notice(
+                if value {
+                    t(
+                        "分流已开启，重启服务后生效",
+                        "Split routing enabled; restart the service to apply it",
+                    )
+                } else {
+                    t(
+                        "分流已关闭，重启服务后生效",
+                        "Split routing disabled; restart the service to apply it",
+                    )
+                },
+                cx,
+            );
+        }
+        Msg::SetSplitGroup(group, value) => {
+            app.config.split.set_group(group, value);
+            reload_split(app, cx);
+        }
+        Msg::SplitCustomChanged(value) => app.config.split.custom = value,
+        Msg::SplitRowToggled(key) => {
+            app.config.split.toggle_row(&key);
+            reload_split(app, cx);
+        }
+        Msg::SplitDns(value) => app.config.split.direct_dns = value,
+        Msg::SplitInterface(value) => app.config.split.direct_interface = value,
+        Msg::SplitApply => reload_split(app, cx),
+        Msg::SplitUpdate => {
+            app.engine.update_split_lists(app.config.split.clone());
+            // 下载在后台线程跑；这里只等它出结果，然后把清单重新读一遍，
+            // 让界面上的条数和日期立刻变成新的。
+            let engine = app.engine.clone();
+            cx.spawn(async move |this, cx| loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(400))
+                    .await;
+                if engine.split_update().is_busy() {
+                    continue;
+                }
+                let _ = this.update(cx, |app, cx| {
+                    app.split_library = crate::core::split::Library::load();
+                    cx.notify();
+                });
+                break;
+            })
+            .detach();
+        }
+        Msg::SplitReset => {
+            match crate::core::split::update::reset() {
+                Ok(()) => {
+                    app.split_library = crate::core::split::Library::load();
+                    app.flash_notice(
+                        t(
+                            "已换回内置清单",
+                            "Reverted to the built-in lists",
+                        ),
+                        cx,
+                    );
+                    reload_split(app, cx);
+                }
+                Err(err) => app.error = Some(err),
+            }
+        }
+        Msg::SplitFilter(text) => {
+            // 纯显示状态：不进配置，也不用落盘，但要重画一帧，否则明细列表
+            // 要等到下一次别的状态变化才跟着筛。
+            app.split_filter = text;
+            cx.notify();
+        }
+
         // —— 窗口与托盘 ——
         Msg::SetConfirmCloseToTray(value) => {
             app.config.confirm_close_to_tray = value;
@@ -262,14 +342,15 @@ pub fn update(app: &mut App, msg: Msg, cx: &mut Context<App>) {
             super::theme::reinstall(cx, value);
             if let Err(err) = app.config.save() {
                 app.error = Some(err);
-            }            // 这条消息可能来自设置页的下拉框，也可能来自侧栏底部那一行。
+            }
+            // 这条消息可能来自设置页的下拉框，也可能来自侧栏底部那一行。
             // 下拉框的选中态是它自己的状态，不跟着改就一直是旧值——推到本次
             // 事件处理完再同步：如果消息正是那个下拉框发出来的，在它的回调里
             // 动它自己的选中态并不合适。
             cx.defer(|cx| {
                 super::state::with_app(cx, |app, cx| app.sync_theme_select(cx));
-            });        }
-
+            });
+        }
     }
 
     // 状态改完了，让根视图重画一帧。
@@ -453,6 +534,45 @@ impl App {
 fn persist_active(app: &mut App) {
     if let Err(err) = app.config.save() {
         app.error = Some(err);
+    }
+}
+
+/// 规则变了：校验 → 落盘 → 热更新分流器（隧道没跑时只有前两步）。
+///
+/// 规则的改动**不**要求重启隧道：分流器本来就是按连接查表的，换一套规则
+/// 只要把表换掉，已有连接不受影响。只有总开关（`enabled`）要重启，因为
+/// 它决定 tun2proxy 的 `--proxy` 指向哪里——那在进程启动时就固定了。
+fn reload_split(app: &mut App, cx: &mut Context<App>) {
+    if let Err(err) = app.config.split.validate() {
+        app.error = Some(err);
+        cx.notify();
+        return;
+    }
+    if let Err(err) = app.config.save() {
+        app.error = Some(err);
+        cx.notify();
+        return;
+    }
+    match app.engine.reload_split(&app.config.split) {
+        // 0 条 = 分流器没在跑：改动已经写进配置，启动隧道时才生效。
+        Ok(0) => app.flash_notice(
+            t(
+                "规则已保存，隧道启动后生效",
+                "Rules saved; they apply once the tunnel starts",
+            ),
+            cx,
+        ),
+        Ok(count) => {
+            let text = count.to_string();
+            app.flash_notice(
+                tf(
+                    t("规则已生效：{count} 条", "Rules applied: {count}"),
+                    &[("count", &text)],
+                ),
+                cx,
+            );
+        }
+        Err(err) => app.error = Some(err),
     }
 }
 

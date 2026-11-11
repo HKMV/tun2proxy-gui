@@ -33,6 +33,11 @@ sha2 = "0.10"
 zip = { version = "9", default-features = false, features = ["deflate"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "io-util", "sync"] }
 tokio-util = "0.7"
+# 分流器的直连出口要「按出接口选路」：Windows 上是 IP_UNICAST_IF，Linux 上是
+# SO_BINDTODEVICE。std 的 TcpStream 没有这个能力，这里用 socket2 建 socket 并
+# 拿到原始句柄自己 setsockopt。它在依赖树里本来就存在（tokio 间接依赖），不增
+# 加下载量。
+socket2 = "0.6"
 # 只用到 IpCidr / IpCidrSet，关掉默认特性避免拖进整个 tproxy 运行时。
 tproxy-config = { version = "7.0.9", default-features = false }
 
@@ -71,6 +76,10 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_WindowsAndMessaging",
     # 「跟随系统」主题要读 AppsUseLightTheme 这个注册表值。
     "Win32_System_Registry",
+    # GetIfTable2：按名字找 TUN 网卡，读它的收发字节数（流量折线图）。
+    # MIB_IF_ROW2 的 OperStatus 类型在 Ndis 特性后面，所以两个都要开。
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
 ] }
 # 托盘图标按状态着色：ico 里的帧是 PNG，要解码改像素再编码回去。
 # 纯 Rust、无系统依赖，只在 Windows 上编进来。

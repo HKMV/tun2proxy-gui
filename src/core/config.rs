@@ -19,6 +19,7 @@ use super::i18n::LangSetting;
 use tproxy_config::IpCidr;
 
 use super::i18n::t;
+use super::split::settings::SplitSettings;
 use crate::core::paths;
 use crate::tr_format;
 
@@ -141,6 +142,44 @@ pub const DEFAULT_BYPASS: &str = "10.0.0.0/8
 /// 几秒就停了」）。2000 给足了余量，同时仍然是个有意义的护栏。
 pub const DEFAULT_MAX_SESSIONS: usize = 2000;
 
+/// 隧道网卡名的前缀。配置里留空时，每次启动随机生成一个（见
+/// [`random_tun_name`]）。
+///
+/// 为什么随机：名字得是我们自己定死的那个，仪表盘的流量折线图才能按名字找到
+/// 隧道网卡读收发计数；但定成一个固定常量又会和用户机器上自己跑的 tun2proxy、
+/// 或别的 VPN 撞名。随机生成两头都占：名字确定，又不会撞。带前缀是为了在
+/// 「网络连接」里一眼看出这张网卡是本程序建的（进程被强杀时它会残留下来）。
+pub const TUN_NAME_PREFIX: &str = "t2p";
+
+/// 生成一个本次启动专用的隧道网卡名，例如 `t2p3f9c1a04`。
+///
+/// 不引入 `rand`：`RandomState` 每个实例的种子都由标准库从系统随机取，再掺上
+/// 时间与进程号，连续两次调用不会重复。长度固定 11 个字符，也在 Linux 的
+/// `IFNAMSIZ`（15）之内。
+pub fn random_tun_name() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or_default();
+    hasher.write_u128(nanos);
+    hasher.write_u32(std::process::id());
+    format!("{TUN_NAME_PREFIX}{:08x}", hasher.finish() as u32)
+}
+
+/// 网卡名的长度上限。
+///
+/// Windows 的 Wintun 适配器名可以长一些（128 是它的实际上限），Linux 的接口名
+/// 受 `IFNAMSIZ` 限制只有 15 个字符——超了 tun2proxy 会报一个跟名字无关的错，
+/// 不如在配置校验里直接拦住。
+#[cfg(target_os = "linux")]
+pub const TUN_NAME_MAX: usize = 15;
+#[cfg(not(target_os = "linux"))]
+pub const TUN_NAME_MAX: usize = 128;
+
 /// 一套代理配置。
 ///
 /// 字段默认值与 tun2proxy CLI 的默认值保持一致；反序列化时容忍缺字段
@@ -156,6 +195,10 @@ pub struct Profile {
     pub virtual_dns_pool: String,
     /// 绕过地址，多行文本，每行一个 IP 或 CIDR。
     pub bypass: String,
+    /// 隧道网卡名，对应 `--tun`。留空时每次启动随机生成一个（[`random_tun_name`]）。
+    ///
+    /// 这个名字不只是给用户看的：流量折线图按它找网卡，所以启动时**总是**显式
+    /// 传给 tun2proxy，不留空让它自己起名。
     pub tun_name: String,
     pub mtu: u16,
     pub tcp_timeout: u64,
@@ -171,6 +214,11 @@ pub struct Profile {
     pub udpgw_server: String,
     pub udpgw_connections: usize,
     pub udpgw_keepalive: u64,
+    /// 是否转发 IPv6（对应 `--ipv6-enabled`）。默认开。
+    ///
+    /// 关掉之后隧道只转 IPv4：客户端按 Happy Eyeballs 先试 IPv6，包进了隧道
+    /// 被当成「不支持的协议」丢掉，只能干等超时才回落——实测一次
+    /// `https://www.jd.com/` 要卡满 15 秒才出结果。
     pub ipv6: bool,
     pub setup: bool,
     pub unshare: bool,
@@ -201,7 +249,7 @@ impl Default for Profile {
             udpgw_server: String::new(),
             udpgw_connections: 5,
             udpgw_keepalive: 30,
-            ipv6: false,
+            ipv6: true,
             setup: true,
             unshare: false,
             exit_on_fatal: false,
@@ -222,6 +270,16 @@ impl Profile {
             t("未命名配置", "Untitled profile").to_string()
         } else {
             name.to_string()
+        }
+    }
+
+    /// 用户填的网卡名；留空返回 `None`（启动时再随机生成）。
+    ///
+    /// 界面拿它区分「用户指定」和「本次随机」，引擎拿它决定要不要生成新名字。
+    pub fn tun_name_configured(&self) -> Option<&str> {
+        match self.tun_name.trim() {
+            "" => None,
+            name => Some(name),
         }
     }
 
@@ -292,14 +350,19 @@ impl Profile {
             .to_string());
         }
 
-        #[cfg(target_os = "linux")]
-        {
-            if !self.setup && !self.unshare && self.tun_name.trim().is_empty() {
-                return Err(
-                    t("Linux 上未开启「自动配置路由与系统设置」时必须填写网卡名称，或改用用户命名空间", "On Linux, with automatic route setup off you must name the interface or use user namespaces")
-                        .to_string(),
-                );
-            }
+        let tun = self.tun_name.trim();
+        if tun.chars().count() > TUN_NAME_MAX {
+            return Err(tr_format!(
+                "网卡名称最长 {TUN_NAME_MAX} 个字符",
+                "The adapter name can be at most {TUN_NAME_MAX} characters"
+            ));
+        }
+        if tun.chars().any(|ch| ch.is_control() || ch == '/' || ch == '\\') {
+            return Err(t(
+                "网卡名称里不能有斜杠或控制字符",
+                "The adapter name cannot contain slashes or control characters",
+            )
+            .to_string());
         }
 
         Ok(())
@@ -348,8 +411,10 @@ impl Profile {
             args.push(line.to_string());
         }
 
-        if !self.tun_name.trim().is_empty() {
-            push(&mut args, "--tun", self.tun_name.trim());
+        // 网卡名由引擎在启动前定好（用户填的，或本次随机生成的），这里只负责传下去：
+        // 流量采样要按同一个名字找网卡。
+        if let Some(tun) = self.tun_name_configured() {
+            push(&mut args, "--tun", tun);
         }
         if self.ipv6 {
             args.push("--ipv6-enabled".to_string());
@@ -439,6 +504,11 @@ pub struct Config {
     /// 默认开：tun2proxy 是常驻服务，误关窗口会把正在跑的隧道一起停掉。
     /// 关掉之后就按「关窗即最小化到托盘」处理，退出走托盘菜单。
     pub confirm_close_to_tray: bool,
+    /// 分流设置：国内 IP / 域名直连。
+    ///
+    /// 和 [`Profile`] 平级：分流规则描述的是「哪些站点不该走代理」，
+    /// 与用哪套代理无关，换代理不该让用户重新勾一遍清单。
+    pub split: SplitSettings,
     /// 配置文件格式版本，用来做一次性迁移（见 [`Config::migrate`]）。
     ///
     /// 注意 `#[serde(default = ...)]` 而不是跟着容器走：容器级的
@@ -459,8 +529,9 @@ fn missing_config_version() -> u32 {
 /// * 2 —— `exit_on_fatal` 默认改为开（v3 已撤回）；
 /// * 3 —— `max_sessions` 默认从 200 抬到 [`DEFAULT_MAX_SESSIONS`]，
 ///   `exit_on_fatal` 默认改回关；
-/// * 4 —— DNS 策略默认从 `direct` 改成 `virtual`。
-const CONFIG_VERSION: u32 = 4;
+/// * 4 —— DNS 策略默认从 `direct` 改成 `virtual`；
+/// * 5 —— `ipv6` 默认从关改成开。
+const CONFIG_VERSION: u32 = 5;
 
 impl Default for Config {
     fn default() -> Self {
@@ -472,6 +543,7 @@ impl Default for Config {
             language: LangSetting::Auto,
             theme: ThemeSetting::Auto,
             confirm_close_to_tray: true,
+            split: SplitSettings::default(),
             config_version: CONFIG_VERSION,
         }
     }
@@ -580,6 +652,16 @@ impl Config {
                 if profile.dns == DnsMode::Direct {
                     profile.dns = DnsMode::Virtual;
                 }
+            }
+        }
+        if self.config_version < 5 {
+            // 关掉 IPv6 时隧道只转 IPv4，而客户端（curl、浏览器、各种 SDK）
+            // 默认按 Happy Eyeballs 先试 IPv6：包进了隧道被当成「不支持的
+            // 协议」丢掉，只能干等超时才回落到 IPv4——实测 jd/baidu/zhihu
+            // 全部卡满 15 秒。v4 及更早的默认值就是关，用户没得选，所以这里
+            // 一律打开；确实想只走 IPv4 的人，在新版里再关一次就行。
+            for profile in &mut self.profiles {
+                profile.ipv6 = true;
             }
         }
         self.config_version = CONFIG_VERSION;
@@ -813,6 +895,29 @@ mod tests {
     }
 
     #[test]
+    fn old_config_files_enable_ipv6() {
+        // 关着 IPv6 时隧道只转 IPv4，客户端先试 IPv6 的包会被丢掉，只能等
+        // 超时才回落（实测每个站点卡 15 秒）。旧文件的默认值是关，跟着改开。
+        let old = r#"{
+            "profiles": [
+                { "name": "旧", "proxy_url": "socks5://127.0.0.1:1080", "ipv6": false }
+            ],
+            "active": 0,
+            "config_version": 4
+        }"#;
+        let mut config: Config = serde_json::from_str(old).expect("v4 config must still parse");
+        assert!(config.migrate());
+        assert!(config.profiles[0].ipv6);
+
+        // 之后再手动关掉也不许被改回来：迁移只按版本号跑一次。
+        config.profiles[0].ipv6 = false;
+        let saved = serde_json::to_string(&config).unwrap();
+        let mut reloaded: Config = serde_json::from_str(&saved).unwrap();
+        assert!(!reloaded.migrate());
+        assert!(!reloaded.profiles[0].ipv6);
+    }
+
+    #[test]
     fn normalize_fills_an_empty_bypass_list() {
         // 旧版本存下来的配置里 bypass 是空字符串；读盘后应该补上默认段，
         // 否则界面上的多行框一直是空的，而空列表意味着内网也走代理。
@@ -869,6 +974,45 @@ mod tests {
         assert_eq!(args[1], "http://127.0.0.1:7890");
         assert!(args.windows(2).any(|w| w == ["--dns", "virtual"]));
         assert_eq!(args.iter().filter(|a| *a == "--bypass").count(), 2);
+    }
+
+    #[test]
+    fn cli_args_pass_the_configured_tun_name() {
+        // 留空时不塞 `--tun`：名字由引擎在启动前定下来（每次随机），这里要是
+        // 自己编一个，两边名字不一致，流量采样就永远找不到网卡。
+        let profile = Profile::default();
+        assert!(!profile.cli_args().iter().any(|arg| arg == "--tun"));
+
+        let named = Profile {
+            tun_name: "  home-tun  ".to_string(),
+            ..Profile::default()
+        };
+        assert!(
+            named.cli_args().windows(2).any(|w| w == ["--tun", "home-tun"]),
+            "用户填的名字要去掉首尾空白后原样传下去"
+        );
+    }
+
+    #[test]
+    fn an_unusable_adapter_name_is_rejected_up_front() {
+        // 名字超长或带斜杠时 tun2proxy 报的错跟名字完全无关，不如在这里拦住。
+        let longest = Profile {
+            tun_name: "a".repeat(TUN_NAME_MAX),
+            ..Profile::default()
+        };
+        assert!(longest.validate().is_ok());
+
+        let too_long = Profile {
+            tun_name: "a".repeat(TUN_NAME_MAX + 1),
+            ..Profile::default()
+        };
+        assert!(too_long.validate().is_err());
+
+        let slash = Profile {
+            tun_name: "a/b".to_string(),
+            ..Profile::default()
+        };
+        assert!(slash.validate().is_err());
     }
 
     #[test]

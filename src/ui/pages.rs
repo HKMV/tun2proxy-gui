@@ -21,9 +21,11 @@ use gpuikit::theme::{Theme, Themeable};
 use crate::core::i18n::t;
 
 use super::cards::{
-    about_group, appearance_group, binary_group, bypass_group, editing_profile, hero_card,
+    about_group, appearance_group, binary_group, bypass_group, editing_profile,
     log_group, log_preview_group, network_group, profile_edit_group, profile_list_group,
-    profile_picker_group, proxy_group, runtime_group, stat_group, udpgw_group, window_group,
+    profile_picker_group, proxy_group, runtime_group, split_custom_group, split_decisions_group,
+    split_detail_group, split_hero_group, split_lists_group, split_outlet_group,
+    split_update_group, stat_group, status_tips, trend_group, udpgw_group, window_group,
 };
 use super::state::{App, Msg, Snapshot};
 use super::theme::TEXT_BODY;
@@ -41,7 +43,7 @@ pub fn content(app: &App, snap: &Snapshot, theme: &Theme, cx: &mut Context<App>)
         .min_w_0()
         .h_full()
         .bg(theme.bg())
-        .child(page_header(app, theme, cx))
+        .child(page_header(app, snap, theme, cx))
         .children(notice_bar(app, snap, theme, cx))
         .child(page_scroll_area(app, snap, theme, cx))
         .into_any_element()
@@ -125,10 +127,15 @@ fn notice_bar(
 
 /// 细顶栏：单行标题 + 右侧说明 + 底部发丝线。
 ///
-/// 首屏卡片（大标题 + 流量图）放在内容流里，不放这里：它自带 24dp 内边距，
-/// 放进顶栏会把顶栏撑到一百多像素，看起来像「第二条标题栏」。顶栏只留一行，
-/// 用发丝线跟内容区分开——分区靠线，不靠厚度。
-fn page_header(app: &App, theme: &Theme, cx: &mut Context<App>) -> AnyElement {
+/// 仪表盘右侧显示的是「隧道开着没有」（状态胶囊 + 一句短语），其余页面显示
+/// 这一页的说明：以前仪表盘用一整张首屏卡讲这件事，占掉半屏还和侧栏底部的
+/// 状态重复；现在压成顶栏上的一行。
+fn page_header(
+    app: &App,
+    snap: &Snapshot,
+    theme: &Theme,
+    cx: &mut Context<App>,
+) -> AnyElement {
     let editing = editing_profile(app);
 
     let mut row = div()
@@ -162,7 +169,7 @@ fn page_header(app: &App, theme: &Theme, cx: &mut Context<App>) -> AnyElement {
     ));
 
     // 右侧：编辑态给「保存到磁盘」（这一页的主操作，固定在右上角就不会随着
-    // 内容滚出屏幕），其余页面给一句说明。
+    // 内容滚出屏幕）；仪表盘给运行状态；其余页面给一句说明。
     row = row.child(div().flex_1());
     row = row.child(if editing {
         primary_button(
@@ -172,6 +179,8 @@ fn page_header(app: &App, theme: &Theme, cx: &mut Context<App>) -> AnyElement {
             cx.listener(|this, _, _, cx| this.handle(Msg::SaveConfig, cx)),
         )
         .into_any_element()
+    } else if matches!(app.page, super::state::Page::Dashboard) {
+        super::cards::status_strip(snap, theme)
     } else {
         caption_nowrap(app.page.subtitle(), theme).into_any_element()
     });
@@ -234,14 +243,20 @@ fn page_scroll_area(app: &App, snap: &Snapshot, theme: &Theme, cx: &mut Context<
 /// 返回的是「按阅读顺序排列的卡片」，横向自适应由父级负责。
 fn page_body(app: &App, snap: &Snapshot, theme: &Theme, cx: &mut Context<App>) -> Vec<AnyElement> {
     match app.page {
-        // 仪表盘：首屏卡片 + 选配置 + 三个关键参数 + 最近日志。
-        // 参数编辑搬到「代理配置」页：仪表盘只回答「现在什么状态、用哪套配置」。
-        super::state::Page::Dashboard => vec![
-            hero_card(snap, theme, cx),
-            profile_picker_group(app, theme, cx),
-            stat_group(app, theme),
-            log_preview_group(app, snap, theme, cx),
-        ],
+        // 仪表盘：状态提示（只在出事时出现）+ 实时流量与连接去向 + 选配置 +
+        // 三个关键参数 + 最近日志。参数编辑搬到「代理配置」页：仪表盘只回答
+        // 「现在什么状态、用哪套配置」。
+        //
+        // 两张折线图放在同一张卡里上下排（流量在上、去向在下）：它们看的是同一段
+        // 时间，分开摆的时候读者得自己在两个位置之间来回对时间轴。
+        super::state::Page::Dashboard => {
+            let mut rows = status_tips(snap, theme, cx);
+            rows.push(trend_group(app, snap, theme, cx));
+            rows.push(profile_picker_group(app, theme, cx));
+            rows.push(stat_group(app, theme));
+            rows.push(log_preview_group(app, snap, theme, cx));
+            rows
+        }
         // 代理：默认是配置列表（选中即切换），点铅笔才进单套配置的详情。
         super::state::Page::Profiles if app.profile_editing => vec![
             profile_edit_group(app, theme, cx),
@@ -249,6 +264,22 @@ fn page_body(app: &App, snap: &Snapshot, theme: &Theme, cx: &mut Context<App>) -
             bypass_group(app, theme, cx),
         ],
         super::state::Page::Profiles => vec![profile_list_group(app, theme, cx)],
+        // 分流：总开关 / 状态 → 清单更新 → 最近判定 → 三组清单 → 自定义规则
+        // → 规则明细 → 出口。
+        //
+        // 「清单更新」紧跟「开关与状态」：开关决定要不要分流，清单决定拿什么
+        // 判断，两者是同一件事的两半——都属于「现在的判定依据对不对」，所以
+        // 排在「最近实际发生了什么」前面。计数与趋势在仪表盘（连接去向卡），
+        // 这一页不再重复摆一遍数字。
+        super::state::Page::Split => vec![
+            split_hero_group(app, snap, theme, cx),
+            split_update_group(app, snap, theme, cx),
+            split_decisions_group(app, snap, theme, cx),
+            split_lists_group(app, theme, cx),
+            split_custom_group(app, theme, cx),
+            split_detail_group(app, theme, cx),
+            split_outlet_group(app, theme, cx),
+        ],
         // 网络：网卡 / 路由参数、UDP 转发与绕过规则。
         super::state::Page::Network => vec![
             network_group(app, theme, cx),

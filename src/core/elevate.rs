@@ -33,6 +33,10 @@ pub fn relaunch_elevated() -> bool {
 }
 
 /// 权限不足时给界面用的一句提示，权限足够时返回 `None`。
+///
+/// 提示必须写**后果**，不能只写「做不了什么」：用户看到「无法创建虚拟网卡」
+/// 并不知道这意味着什么，真正要告诉他的是一句话——隧道起不来，流量照旧直连，
+/// 一个包都不会经过上游代理。
 pub fn privilege_hint() -> Option<String> {
     if is_elevated() {
         return None;
@@ -41,8 +45,8 @@ pub fn privilege_hint() -> Option<String> {
     {
         Some(
             i18n::t(
-                "当前没有管理员权限，无法创建虚拟网卡。",
-                "Administrator rights are missing, so the TUN adapter cannot be created.",
+                "当前没有管理员权限，无法创建虚拟网卡：隧道起不来，系统流量照常直连，不会经过代理。",
+                "Administrator rights are missing, so the TUN adapter cannot be created: the tunnel cannot start and system traffic keeps going out directly, never through the proxy.",
             )
             .to_string(),
         )
@@ -51,8 +55,8 @@ pub fn privilege_hint() -> Option<String> {
     {
         Some(
             i18n::t(
-                "当前不是 root：macOS 上需要 root 才能创建 utun 并修改路由。",
-                "Not running as root: macOS needs root to create a utun device and change routes.",
+                "当前不是 root：macOS 上需要 root 才能创建 utun 并修改路由，隧道起不来，系统流量不会经过代理。",
+                "Not running as root: macOS needs root to create a utun device and change routes, so the tunnel cannot start and traffic never reaches the proxy.",
             )
             .to_string(),
         )
@@ -60,7 +64,7 @@ pub fn privilege_hint() -> Option<String> {
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         Some(
-            "当前不是 root：需要 root，或勾选高级设置里的「用户命名空间（--unshare）」。"
+            "当前不是 root：需要 root，或勾选高级设置里的「用户命名空间（--unshare）」——否则隧道起不来，系统流量不会经过代理。"
                 .to_string(),
         )
     }

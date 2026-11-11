@@ -28,9 +28,7 @@ use gpuikit::traits::control_sized::ControlSized;
 use std::cell::Cell;
 use std::rc::Rc;
 
-use super::theme::{
-    TEXT_BODY, TEXT_GROUP, TEXT_HERO, TEXT_MONO, TEXT_SMALL, TEXT_TITLE, WEIGHT_SEMIBOLD,
-};
+use super::theme::{TEXT_BODY, TEXT_GROUP, TEXT_MONO, TEXT_SMALL, TEXT_TITLE, WEIGHT_SEMIBOLD};
 
 /// 日志区高度（逻辑像素）。
 ///
@@ -63,6 +61,10 @@ pub enum ScrollBarKey {
     Page(usize),
     /// 仪表盘 / 程序页的日志窗格。
     Log,
+    /// 分流规则明细的列表。
+    SplitRules,
+    /// 分流页「最近判定」的列表。
+    SplitDecisions,
     /// 多行输入框（绕过列表）。`&'static str` 是输入框的名字。
     Input(&'static str),
 }
@@ -115,15 +117,6 @@ pub fn page_title(text: impl Into<SharedString>, theme: &Theme) -> Div {
         .font_weight(WEIGHT_SEMIBOLD)
         .text_color(theme.fg())
         .whitespace_nowrap()
-        .child(text.into())
-}
-
-/// 首屏大标题。
-pub fn hero_title(text: impl Into<SharedString>, theme: &Theme) -> Div {
-    div()
-        .text_size(px(TEXT_HERO))
-        .font_weight(WEIGHT_SEMIBOLD)
-        .text_color(theme.fg())
         .child(text.into())
 }
 

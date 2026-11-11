@@ -1,0 +1,10 @@
+[package]
+name = "regen-rules"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "重新生成 assets/rules 下的内置清单，并打印清单规模与匹配自检"
+
+# 这个包不属于主程序的构建：它只通过 `#[path]` 复用 src/core/split 下的源码，
+# 所以不需要任何依赖，也不会被 `cargo build`（仓库根）碰到。
+[dependencies]
