@@ -83,6 +83,10 @@ fn main() {
     let engine = Engine::new();
     let shared = engine.shared();
 
+    // 3.5 上一次被强杀留下的隧道网卡（`t2p` 前缀、当前不在用）：开界面之前先清掉，
+    //     免得「网络连接」里越攒越多。没有管理员权限时什么也不做。
+    engine.clean_stale_adapters();
+
     // 4. 系统托盘：装不上（非 Windows / 资源管理器拒绝）不影响主流程。
     let _ = core::tray::install(engine.clone());
 

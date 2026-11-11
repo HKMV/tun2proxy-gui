@@ -589,6 +589,9 @@ impl Engine {
                 name
             }
         };
+        // 上一次被强杀留下的网卡（`t2p` 前缀、当前不在用）在起新隧道之前再清一次：
+        // 程序启动时已经清过，这里是兜底（比如启动后被别的进程又留下了一张）。
+        self.clean_stale_adapters();
         if settings.enabled {
             match self.start_split(profile, settings) {
                 Ok(port) => {
@@ -658,6 +661,30 @@ impl Engine {
         // 那个（留空时已经换成随机名），两边取的是同一个字段。
         self.spawn_supervisor(effective.tun_name.clone());
         Ok(())
+    }
+
+    /// 清理本程序留下、当前不在用的隧道网卡，把结果写进日志。
+    ///
+    /// 程序启动时和每次启动隧道前各调一次：网卡名是每次随机生成的，进程被强杀时
+    /// 那张 Wintun 适配器会留在系统里。没有管理员权限时 `remove_stale` 直接返回
+    /// 空结果，不会写日志。
+    pub fn clean_stale_adapters(&self) {
+        let stale = crate::core::adapters::remove_stale();
+        if !stale.removed.is_empty() {
+            self.log_line(tr_format!(
+                "已清理残留隧道网卡：{}",
+                "Removed leftover tunnel adapters: {}",
+                stale.removed.join("、")
+            ));
+        }
+        if !stale.failed.is_empty() {
+            self.log_line(tr_format!(
+                "有 {} 张残留隧道网卡删不掉（需要管理员权限）：{}",
+                "Could not remove {} leftover tunnel adapter(s) (administrator rights needed): {}",
+                stale.failed.len(),
+                stale.failed.join("、")
+            ));
+        }
     }
 
     /// 起本机分流器，返回它监听的端口。

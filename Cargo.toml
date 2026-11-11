@@ -80,6 +80,9 @@ windows-sys = { version = "0.59", features = [
     # MIB_IF_ROW2 的 OperStatus 类型在 Ndis 特性后面，所以两个都要开。
     "Win32_NetworkManagement_IpHelper",
     "Win32_NetworkManagement_Ndis",
+    # SetupAPI：启动前删掉本程序留下、当前不在用的隧道网卡
+    # （SetupDiGetClassDevsW / DIF_REMOVE，见 core::adapters）。
+    "Win32_Devices_DeviceAndDriverInstallation",
 ] }
 # 托盘图标按状态着色：ico 里的帧是 PNG，要解码改像素再编码回去。
 # 纯 Rust、无系统依赖，只在 Windows 上编进来。

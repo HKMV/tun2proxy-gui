@@ -151,10 +151,16 @@ pub const DEFAULT_MAX_SESSIONS: usize = 2000;
 /// 「网络连接」里一眼看出这张网卡是本程序建的（进程被强杀时它会残留下来）。
 pub const TUN_NAME_PREFIX: &str = "t2p";
 
-/// 生成一个本次启动专用的隧道网卡名，例如 `t2p3f9c1a04`。
+/// 前缀与随机部分之间的分隔符。
+///
+/// 有下划线之后 `t2p_3f9c1a04` 是「程序前缀 + 随机串」两段，在「网络连接」里
+/// 一眼就能看出来，也不会和用户自己起的名字混在一起。
+pub const TUN_NAME_SEPARATOR: &str = "_";
+
+/// 生成一个本次启动专用的隧道网卡名，例如 `t2p_3f9c1a04`。
 ///
 /// 不引入 `rand`：`RandomState` 每个实例的种子都由标准库从系统随机取，再掺上
-/// 时间与进程号，连续两次调用不会重复。长度固定 11 个字符，也在 Linux 的
+/// 时间与进程号，连续两次调用不会重复。长度固定 12 个字符，也在 Linux 的
 /// `IFNAMSIZ`（15）之内。
 pub fn random_tun_name() -> String {
     use std::hash::{BuildHasher, Hasher};
@@ -167,7 +173,10 @@ pub fn random_tun_name() -> String {
         .unwrap_or_default();
     hasher.write_u128(nanos);
     hasher.write_u32(std::process::id());
-    format!("{TUN_NAME_PREFIX}{:08x}", hasher.finish() as u32)
+    format!(
+        "{TUN_NAME_PREFIX}{TUN_NAME_SEPARATOR}{:08x}",
+        hasher.finish() as u32
+    )
 }
 
 /// 网卡名的长度上限。

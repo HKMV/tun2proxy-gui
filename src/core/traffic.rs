@@ -81,6 +81,17 @@ impl AdapterRow {
     }
 }
 
+/// 这张网卡当前是否在用（`OperStatus == Up`）。系统里没有这张网卡时返回 `None`。
+///
+/// 清理残留网卡时用：正在用的那张不能删，它可能正是当前隧道在用的适配器。
+#[cfg(windows)]
+pub fn adapter_up(name: &str) -> Option<bool> {
+    let rows = windows_adapters()?;
+    rows.iter()
+        .find(|row| row.matches(name))
+        .map(|row| row.up)
+}
+
 /// 从网卡表里挑出隧道网卡。同名多张时优先挑在用的那张。
 pub fn pick_adapter<'a>(rows: &'a [AdapterRow], name: &str) -> Option<&'a AdapterRow> {
     let mut fallback = None;
@@ -299,13 +310,13 @@ mod tests {
     /// 机器上可能躺着别的 Wintun 适配器（掉线残留的），只能按名字挑。
     #[test]
     fn picks_the_adapter_by_name() {
-        let name = "t2p3f9c1a04";
+        let name = crate::core::config::random_tun_name();
         let rows = vec![
             row("stale-tunnel", true, 9_000, 900),
-            row(name, true, 1_000, 200),
+            row(&name, true, 1_000, 200),
             row("本地连接 2", false, 5, 5),
         ];
-        let picked = pick_adapter(&rows, name).expect("应该按名字挑到隧道网卡");
+        let picked = pick_adapter(&rows, &name).expect("应该按名字挑到隧道网卡");
         assert_eq!(picked.in_octets, 1_000);
         assert_eq!(picked.out_octets, 200);
     }
@@ -314,7 +325,7 @@ mod tests {
     #[test]
     fn missing_adapter_is_not_guessed() {
         let rows = vec![row("stale-tunnel", true, 9_000, 900)];
-        assert!(pick_adapter(&rows, "t2p3f9c1a04").is_none());
+        assert!(pick_adapter(&rows, &crate::core::config::random_tun_name()).is_none());
     }
 
     /// 名字大小写不该影响匹配（配置里可能填成 TUN2PROXY）。
@@ -344,9 +355,9 @@ mod tests {
     /// 同名两张时优先在用的那张：掉线残留的旧适配器计数是死的。
     #[test]
     fn prefers_the_adapter_that_is_up() {
-        let name = "t2p3f9c1a04";
-        let rows = vec![row(name, false, 1, 1), row(name, true, 500, 300)];
-        let picked = pick_adapter(&rows, name).expect("挑到在用的那张");
+        let name = crate::core::config::random_tun_name();
+        let rows = vec![row(&name, false, 1, 1), row(&name, true, 500, 300)];
+        let picked = pick_adapter(&rows, &name).expect("挑到在用的那张");
         assert!(picked.up);
         assert_eq!(picked.in_octets, 500);
     }
@@ -362,15 +373,23 @@ mod tests {
         assert_eq!(unique.len(), names.len(), "随机名不该重复：{names:?}");
         for name in &names {
             assert!(name.starts_with(crate::core::config::TUN_NAME_PREFIX));
+            assert!(
+                name.contains(crate::core::config::TUN_NAME_SEPARATOR),
+                "前缀和随机串之间要有分隔符：{name}"
+            );
             assert!(name.chars().count() <= crate::core::config::TUN_NAME_MAX);
-            assert!(name.chars().all(|ch| ch.is_ascii_alphanumeric()));
+            assert!(
+                name.chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '_'),
+                "网卡名只用安全字符：{name}"
+            );
         }
     }
 
     /// 引擎没定名字（理论上不会发生）时，采样器不能拿空名字去匹配整张网卡表。
     #[test]
     fn an_empty_name_never_matches_an_adapter() {
-        let rows = vec![row("t2p3f9c1a04", true, 1, 2)];
+        let rows = vec![row(&crate::core::config::random_tun_name(), true, 1, 2)];
         assert!(pick_adapter(&rows, "").is_none());
     }
 
