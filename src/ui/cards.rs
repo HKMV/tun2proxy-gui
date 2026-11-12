@@ -2574,6 +2574,14 @@ pub fn log_group(
             theme,
         )
         .into_any_element(),
+        // 档位只改「下面这块显示哪些行」：子进程按连接刷屏，分流判定又和它同一
+        // 级别，不摘一层就没法看。
+        compact_row(
+            t("日志过滤", "Log filter"),
+            Some(select_input(app.selects.log_filter.clone(), ROW_CONTROL)),
+            theme,
+        )
+        .into_any_element(),
         compact_row(
             t("实时输出", "Live output"),
             Some(
@@ -2678,14 +2686,35 @@ fn log_pane(
         .into_any_element();
     }
 
-    let tail: Vec<AnyElement> = snap
+    // 先按当前档位筛一遍再截尾：`Rev<Take<_>>` 不是 `DoubleEndedIterator`，
+    // 筛过的迭代器没法直接 `rev().take().rev()` 取最新那几行。
+    let visible: Vec<&crate::core::logs::LogLine> = snap
         .logs
         .iter()
-        .rev()
-        .take(lines)
-        .rev()
-        .map(|line| log_line(line.clone(), theme).into_any_element())
+        .filter(|line| app.log_filter.keeps(line.kind))
         .collect();
+    let tail: Vec<AnyElement> = visible
+        .iter()
+        .skip(visible.len().saturating_sub(lines))
+        .map(|line| log_line(line.text.clone(), theme).into_any_element())
+        .collect();
+
+    if tail.is_empty() {
+        // 有日志、只是这一档没匹配上：别说「暂无日志」，那会让人以为记录停了。
+        return setting_block(
+            t("这一档没有匹配的行", "Nothing in this filter"),
+            Some(
+                t(
+                    "换成「全部输出」就能看到 tun2proxy 自己的输出。",
+                    "Switch to “All output” to see tun2proxy's own output.",
+                )
+                .to_string(),
+            ),
+            div().h(px(0.0)),
+            theme,
+        )
+        .into_any_element();
+    }
 
     let inner = div()
         .id("log-lines")

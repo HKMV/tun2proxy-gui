@@ -177,9 +177,11 @@ pub fn update(app: &mut App, msg: Msg, cx: &mut Context<App>) {
             }
         }
         Msg::ClearLogs => app.engine.clear_logs(),
+        Msg::SetLogFilter(filter) => app.log_filter = filter,
         Msg::CopyLogs => {
             // 复制的是引擎里保留的全部日志（2000 行），不是屏幕上那 200 行：
-            // 用户要贴给别人看时，「为什么停了」多半在更早的位置。
+            // 用户要贴给别人看时，「为什么停了」多半在更早的位置。也不跟
+            // 当前过滤档——贴出去的是完整现场。
             let text = app
                 .shared
                 .lock()
@@ -187,7 +189,7 @@ pub fn update(app: &mut App, msg: Msg, cx: &mut Context<App>) {
                     shared
                         .logs
                         .iter()
-                        .cloned()
+                        .map(|line| line.text.clone())
                         .collect::<Vec<String>>()
                         .join("\r\n")
                 })

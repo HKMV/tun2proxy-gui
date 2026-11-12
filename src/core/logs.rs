@@ -7,21 +7,36 @@
 //! - **界面层**（[`UiLayer`]）：把同一条事件格式化成一行推进
 //!   [`Shared::push_log`]，也就是界面「程序与日志」那一块。
 //!
-//! 两层吃的是同一批事件，所以界面看到的和文件里写的永远对得上；点「清空日志」
-//! 只清界面那一份，文件是事后要查的证据。
+//! 两层吃的是同一批事件，只是文件层会丢掉子进程的 INFO 行（见下）；点「清空
+//! 日志」只清界面那一份，文件是事后要查的证据。
 //!
 //! # 三种来源，三种排版
 //!
 //! | target | 来源 | 界面/文件里的样子 |
 //! |--------|------|------------------|
-//! | [`TARGET_OUTPUT`] | tun2proxy 子进程的 stdout/stderr | **原样**（它自己带 ISO 时间戳和级别） |
+//! | [`TARGET_OUTPUT`] | tun2proxy 子进程的 stdout/stderr | `HH:MM:SS 级别 [tun2proxy] 消息` |
 //! | [`TARGET_APP`] | 本程序的提示（启动、下载、托盘…） | `HH:MM:SS 消息` |
 //! | [`TARGET_SPLIT`] | 分流器每条连接的判定 | `HH:MM:SS 消息` |
 //! | 其它 | `log` / `tracing` 宏（含 gpuikit） | `HH:MM:SS 级别 消息` |
 //!
-//! 子进程那一类必须原样写：tun2proxy 的行本来就是
-//! `2026-11-12T08:03:18.123456Z INFO tun2proxy::...`，再套一层我们的时间戳，
-//! 文件里就成了「两个时间、两个级别」，读的人第一眼就会怀疑是哪一层的。
+//! # 子进程那一层为什么要改写时间
+//!
+//! tun2proxy 的行自带 `2026-11-12T08:03:18.123456Z INFO  tun2proxy: ...`，是
+//! **UTC**；本程序的提示是本地时间。同一份文件里两套差 8 小时的时间，读的人
+//! 第一眼就会怀疑哪条是哪一层写的。所以 [`relocalize`] 把上游那个时间戳换成
+//! 本地时间，级别与目标照抄，行首只剩一套时间，整份日志按时间排得整齐。
+//!
+//! 直接原样写、再套一层我们的时间戳也不行：那是「两个时间、两个级别」。
+//!
+//! # 文件只留 WARN 以上
+//!
+//! 子进程按连接打日志（一次连接 `Beginning` + `Ending` 两行），实测每秒 6 KB，
+//! 一天几百 MB，而事后要查的通常只有报错。所以文件层丢掉子进程的 INFO 及以下
+//! （[`Level::WARN`] 以上照写），界面层照旧全显示——面板是用来盯现场的，文件
+//! 是用来事后翻的，两边要的东西不一样。
+//!
+//! 界面上「仅分流判定」那一档过滤（`ui::state::LogFilter`）解决的是另一个
+//! 问题：分流判定自己也是 INFO，会被子进程的这两行刷走。
 //!
 //! # 第三方库怎么进来
 //!
@@ -36,6 +51,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
+use time::format_description::well_known::Rfc3339;
 use time::format_description::FormatItem;
 use time::OffsetDateTime;
 use time::UtcOffset;
@@ -58,6 +74,38 @@ pub const TARGET_OUTPUT: &str = "tun2proxy";
 pub const TARGET_APP: &str = "app";
 /// 分流器的连接判定。
 pub const TARGET_SPLIT: &str = "split";
+
+/// 一行日志的来源。
+///
+/// 界面要按来源过滤（「仅分流判定」这一档），所以来源必须跟着行走——
+/// 行已经格式化成一整串字符串，事后没法再猜是哪来的。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LogKind {
+    /// 本程序自己的提示。
+    App,
+    /// 分流器每条连接的判定。
+    Split,
+    /// tun2proxy 子进程的输出。
+    Output,
+    /// `log` / `tracing` 宏与第三方库。
+    Other,
+}
+
+/// 一行日志：来源 + 已经排版好的文字。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LogLine {
+    pub kind: LogKind,
+    pub text: String,
+}
+
+fn kind_of(target: &str) -> LogKind {
+    match target {
+        TARGET_OUTPUT => LogKind::Output,
+        TARGET_APP => LogKind::App,
+        TARGET_SPLIT => LogKind::Split,
+        _ => LogKind::Other,
+    }
+}
 
 /// 日志文件名前缀，同时也是 panic 日志的前缀。
 const LOG_PREFIX: &str = "tun2proxy-gui";
@@ -171,9 +219,13 @@ where
 ///
 /// 第三方的 DEBUG 是纯噪声（每一次绘制、每一个字形都可能打一行），它们在界面
 /// 上会直接把用户要看的那几条冲走，所以单独压到 WARN。
+///
+/// 子进程那一类反而放到 DEBUG：级别由它自己行里的级别决定（见
+/// [`upstream_level`]），把门开到 DEBUG 才接得住 `--verbosity debug` 的输出。
 fn targets() -> Targets {
     Targets::new()
         .with_default(DEFAULT_LEVEL)
+        .with_target(TARGET_OUTPUT, Level::DEBUG)
         .with_target("gpui", Level::WARN)
         .with_target("gpui_platform", Level::WARN)
         .with_target("gpuikit", Level::WARN)
@@ -196,7 +248,7 @@ impl<S: Subscriber> Layer<S> for UiLayer {
             if message.contains(SESSIONS_FULL_MARKER) {
                 shared.sessions_full = true;
             }
-            shared.push_log(line);
+            shared.push_log(line.0, line.1);
         }
         self.dirty.store(true, Ordering::Relaxed);
     }
@@ -220,7 +272,12 @@ where
         let mut message = String::new();
         event.record(&mut MessageVisitor(&mut message));
         if is_passthrough(meta.target()) {
-            return writeln!(writer, "{message}");
+            // 子进程的 INFO 及以下不落盘：一次连接两行，一天几百 MB，而事后要
+            // 查的通常只有报错。界面层不受这条限制——面板是用来盯现场的。
+            if *meta.level() > Level::WARN {
+                return Ok(());
+            }
+            return writeln!(writer, "{}", relocalize(&message, FILE_TS));
         }
         writeln!(
             writer,
@@ -251,19 +308,79 @@ fn is_passthrough(target: &str) -> bool {
     target == TARGET_OUTPUT
 }
 
-/// 界面里的一行。
+/// 子进程这一行自己的级别（拿不到就算 INFO）。
+///
+/// 文件层只留 WARN 以上，靠的就是它：读行本身比让调用方传级别可靠——子进程
+/// 的级别只写在行里，`tracing` 那边记录时统一是同一个级别。
+pub fn upstream_level(line: &str) -> Level {
+    let Some((head, _)) = line.strip_prefix('[').and_then(|rest| rest.split_once(']')) else {
+        // `main` 直接返回的 `Error: ...` 没有方括号，但那是「进程要退出了」的
+        // 一条，按 ERROR 记，文件里必须留下。
+        return if line.trim_start().starts_with("Error:") {
+            Level::ERROR
+        } else {
+            Level::INFO
+        };
+    };
+    match head.split_whitespace().nth(1) {
+        Some("ERROR") => Level::ERROR,
+        Some("WARN") => Level::WARN,
+        Some("DEBUG") => Level::DEBUG,
+        Some("TRACE") => Level::TRACE,
+        _ => Level::INFO,
+    }
+}
+
+/// 把子进程那一行改写成「本地时间 + 级别 + 目标」。
+///
+/// 上游的行长这样（UTC、级别和目标挤在方括号里）：
+///
+/// ```text
+/// [2026-11-12T09:55:29Z INFO  tun2proxy] Beginning #1146 TCP 10.0.0.33:1 -> 198.18.0.4:443
+/// ```
+///
+/// 改写成和本程序其它日志同一个样子，行首只剩一套时间：
+///
+/// ```text
+/// 2026-11-12 17:55:29.123 INFO  [tun2proxy] Beginning #1146 TCP 10.0.0.33:1 -> 198.18.0.4:443
+/// ```
+///
+/// 认不出这个形状（上游换了格式、或者压根不是 tracing 输出的裸文本）就只往前
+/// 补一个本地时间，原文一个字不动——宁可多一个时间戳，也不要把它丢掉。
+fn relocalize(line: &str, format: &[FormatItem<'static>]) -> String {
+    let clock = || now().format(format).unwrap_or_default();
+    let Some((head, body)) = line.strip_prefix('[').and_then(|rest| rest.split_once("] ")) else {
+        return format!("{} {line}", clock());
+    };
+    let mut parts = head.split_whitespace();
+    let (Some(stamp), Some(level)) = (parts.next(), parts.next()) else {
+        return format!("{} {line}", clock());
+    };
+    let target = parts.next().unwrap_or(TARGET_OUTPUT);
+    let local = OffsetDateTime::parse(stamp, &Rfc3339)
+        .map(|at| at.to_offset(*LOCAL_OFFSET))
+        .ok()
+        .and_then(|at| at.format(format).ok())
+        .unwrap_or_else(clock);
+    format!("{local} {level:<5} [{target}] {body}")
+}
+
+/// 界面里的一行：来源 + 排版好的文字。
 ///
 /// 三种来源三种排版（见模块文档的表格）：带级别的用 `{level:<5}` 对齐；程序
 /// 自己的提示与分流器判定不带级别——它们本来就是「结果」而不是「事件」。
-fn ui_line(target: &str, level: Level, message: &str) -> String {
-    if is_passthrough(target) {
-        return message.to_string();
+fn ui_line(target: &str, level: Level, message: &str) -> (LogKind, String) {
+    let kind = kind_of(target);
+    if kind == LogKind::Output {
+        // 界面行首只放 `HH:MM:SS`：日期在文件名里已经有，面板又窄。
+        return (kind, relocalize(message, CLOCK_TS));
     }
     let clock = now().format(CLOCK_TS).unwrap_or_default();
-    match target {
-        TARGET_APP | TARGET_SPLIT => format!("{clock} {message}"),
+    let text = match kind {
+        LogKind::App | LogKind::Split => format!("{clock} {message}"),
         _ => format!("{clock} {level:<5} {message}"),
-    }
+    };
+    (kind, text)
 }
 
 /// panic 写进 `tun2proxy-gui.panic.log`。
@@ -291,29 +408,78 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ui_lines_carry_a_clock_except_for_raw_output() {
+    fn ui_lines_carry_a_clock_and_a_kind() {
         // 程序自己的提示：只有时间，没有级别（级别在这一行里没有信息量）。
-        let app = ui_line(TARGET_APP, Level::INFO, "配置目录 C:\\x");
+        let (kind, app) = ui_line(TARGET_APP, Level::INFO, "配置目录 C:\\x");
+        assert_eq!(kind, LogKind::App);
         assert!(app.ends_with(" 配置目录 C:\\x"), "{app:?}");
         assert!(!app.contains("INFO"), "{app:?}");
         assert_eq!(&app[2..3], ":", "{app:?}");
 
         // 分流器同理。
-        assert!(!ui_line(TARGET_SPLIT, Level::INFO, "直连 1.1.1.1").contains("INFO"));
+        let (kind, split) = ui_line(TARGET_SPLIT, Level::INFO, "直连 1.1.1.1");
+        assert_eq!(kind, LogKind::Split);
+        assert!(!split.contains("INFO"));
 
         // 第三方 / log 宏：带上级别。
-        let other = ui_line("gpuikit", Level::ERROR, "保存失败");
+        let (kind, other) = ui_line("gpuikit", Level::ERROR, "保存失败");
+        assert_eq!(kind, LogKind::Other);
         assert!(other.contains("ERROR 保存失败"), "{other:?}");
 
-        // 子进程输出原样，连时间也不加——它自己带。
-        assert_eq!(
-            ui_line(
-                TARGET_OUTPUT,
-                Level::INFO,
-                "2026-11-12T08:00:00Z INFO tun2proxy: hi"
-            ),
-            "2026-11-12T08:00:00Z INFO tun2proxy: hi"
+        // 子进程那一层：时间换成本地时钟，级别与目标照抄。
+        let (kind, output) = ui_line(
+            TARGET_OUTPUT,
+            Level::INFO,
+            "[2026-11-12T08:00:00Z INFO  tun2proxy] Beginning #1",
         );
+        assert_eq!(kind, LogKind::Output);
+        let tail = " INFO  [tun2proxy] Beginning #1";
+        assert!(output.ends_with(tail), "{output:?}");
+        // 前 8 个字符是 `HH:MM:SS`：既不带上游那个 UTC 时间戳，也不重复时间。
+        assert_eq!(output.len() - tail.len(), 8, "{output:?}");
+    }
+
+    #[test]
+    fn upstream_times_are_rewritten_into_local_time() {
+        let text = relocalize(
+            "[2026-11-12T08:00:00Z INFO  tun2proxy] Beginning #1",
+            FILE_TS,
+        );
+        // 同一个瞬间换个时区表示；不写死 +8，测试跟着机器时区走。
+        let expected = OffsetDateTime::parse("2026-11-12T08:00:00Z", &Rfc3339)
+            .unwrap()
+            .to_offset(*LOCAL_OFFSET)
+            .format(FILE_TS)
+            .unwrap();
+        assert_eq!(text, format!("{expected} INFO  [tun2proxy] Beginning #1"));
+    }
+
+    #[test]
+    fn unknown_shapes_keep_their_text_and_still_get_a_clock() {
+        let text = relocalize("Error: bad config", FILE_TS);
+        assert!(text.ends_with(" Error: bad config"), "{text:?}");
+        // 行首是 `YYYY-MM-DD HH:MM:SS.mmm`：第 5 位是 `-`，第 11 位是空格。
+        assert_eq!(&text[4..5], "-", "{text:?}");
+        assert_eq!(&text[10..11], " ", "{text:?}");
+    }
+
+    #[test]
+    fn the_upstream_level_comes_from_the_line_itself() {
+        assert_eq!(
+            upstream_level("[2026-11-12T09:55:29Z INFO  tun2proxy] hi"),
+            Level::INFO
+        );
+        assert_eq!(
+            upstream_level("[2026-11-12T09:55:29Z WARN  tun2proxy] hi"),
+            Level::WARN
+        );
+        assert_eq!(
+            upstream_level("[2026-11-12T09:55:29Z ERROR tun2proxy] hi"),
+            Level::ERROR
+        );
+        // `main` 直接返回的那种没有方括号，但它是死因，必须算 ERROR。
+        assert_eq!(upstream_level("Error: main returned 1"), Level::ERROR);
+        assert_eq!(upstream_level("something odd"), Level::INFO);
     }
 
     #[test]
@@ -331,8 +497,9 @@ mod tests {
     }
 
     #[test]
-    fn the_file_layer_writes_raw_output_verbatim() {
-        // 用内存 writer 走一遍真实的 FormatEvent：子进程的行不许被加上前缀。
+    fn the_file_layer_localises_upstream_lines_and_drops_their_info() {
+        // 用内存 writer 走一遍真实的 FormatEvent：子进程的 INFO 不落盘，
+        // WARN 以上落盘并且换成本地时间。
         #[derive(Clone, Default)]
         struct Buffer(Arc<Mutex<Vec<u8>>>);
         impl Write for Buffer {
@@ -359,16 +526,23 @@ mod tests {
         let subscriber = tracing_subscriber::registry().with(layer);
         tracing::subscriber::with_default(subscriber, || {
             tracing::info!(target: TARGET_APP, "配置目录 D:/x");
-            tracing::info!(target: TARGET_OUTPUT, "2026-11-12T08:00:00Z INFO tun2proxy: hi");
+            tracing::info!(
+                target: TARGET_OUTPUT,
+                "[2026-11-12T08:00:00Z INFO  tun2proxy] Beginning #1"
+            );
+            tracing::warn!(
+                target: TARGET_OUTPUT,
+                "[2026-11-12T08:00:01Z WARN  tun2proxy] Too many sessions that over 200"
+            );
         });
 
         let text = String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap();
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 2, "{text:?}");
         assert!(lines[0].contains("[app] 配置目录 D:/x"), "{text:?}");
-        assert_eq!(
-            lines[1], "2026-11-12T08:00:00Z INFO tun2proxy: hi",
-            "子进程的行要原样落盘：{text:?}"
+        assert!(
+            lines[1].ends_with(" WARN  [tun2proxy] Too many sessions that over 200"),
+            "子进程的 WARN 要落盘，并且换成本地时间：{text:?}"
         );
     }
 }

@@ -24,6 +24,7 @@ use gpuikit::traits::control_sized::ControlSized;
 
 use crate::core::engine::ProbeState;
 use crate::core::i18n::{LangSetting, t, tf};
+use crate::core::logs::{LogKind, LogLine};
 use crate::core::{
     Config, DnsMode, Engine, Profile, Shared, Status, ThemeSetting, TrafficSample, Update,
     Verbosity,
@@ -116,10 +117,50 @@ impl Page {
     }
 }
 
+/// 日志面板的过滤档位（只影响显示，不落盘）。
+///
+/// 子进程按连接打日志（一次连接两行），而分流判定自己也是 INFO，两者很容易
+/// 互相冲掉：想确认「这几条连接走了哪边」时，得能把子进程那一层摘掉。文件里
+/// 不用管这件事——文件层本来就只留 WARN 以上。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LogFilter {
+    /// 全都显示。
+    All,
+    /// 摘掉 tun2proxy 子进程的输出，留下程序提示与分流判定。
+    NoOutput,
+    /// 只看分流判定。
+    SplitOnly,
+}
+
+impl LogFilter {
+    /// 下拉框里的顺序。
+    pub const ALL: [LogFilter; 3] = [
+        LogFilter::All,
+        LogFilter::NoOutput,
+        LogFilter::SplitOnly,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            LogFilter::All => t("全部输出", "All output"),
+            LogFilter::NoOutput => t("隐藏 tun2proxy 输出", "Hide tun2proxy output"),
+            LogFilter::SplitOnly => t("仅分流判定", "Split only"),
+        }
+    }
+
+    /// 这一档要不要留下 `kind` 这种行。
+    pub fn keeps(self, kind: LogKind) -> bool {
+        match self {
+            LogFilter::All => true,
+            LogFilter::NoOutput => kind != LogKind::Output,
+            LogFilter::SplitOnly => kind == LogKind::Split,
+        }
+    }
+}
+
 /// 界面上的每一次交互。
 #[derive(Clone, Debug)]
-pub enum Msg {
-    /// 切换到左侧导航的某一页。
+pub enum Msg {    /// 切换到左侧导航的某一页。
     PageSelected(Page),
     /// 侧边栏在「完整」与「图标栏」之间切换。
     ToggleSidebar,
@@ -173,6 +214,8 @@ pub enum Msg {
     Stop,
     SaveConfig,
     ClearLogs,
+    /// 换一档日志过滤（只改界面显示的那份）。
+    SetLogFilter(LogFilter),
     /// 把整份日志（不只是屏幕上这几百行）复制到剪贴板。
     CopyLogs,
     /// 收起顶部那条提示（保存成功 / 出错）。
@@ -394,18 +437,20 @@ pub struct Selects {
     pub profile: Entity<SelectState<usize>>,
     pub dns: Entity<SelectState<usize>>,
     pub verbosity: Entity<SelectState<usize>>,
+    pub log_filter: Entity<SelectState<usize>>,
     pub language: Entity<SelectState<usize>>,
     pub theme: Entity<SelectState<usize>>,
 }
 
 impl Selects {
-    fn new(config: &Config, cx: &mut Context<App>) -> Self {
+    fn new(config: &Config, log_filter: LogFilter, cx: &mut Context<App>) -> Self {
         Self {
             profile: cx.new(|_| SelectState::new(profile_select(config))),
             dns: cx.new(|_| SelectState::new(dns_select(config.active_profile()))),
             verbosity: cx.new(|_| {
                 SelectState::new(verbosity_select(config.active_profile()))
             }),
+            log_filter: cx.new(|_| SelectState::new(log_filter_select(log_filter))),
             language: cx.new(|_| SelectState::new(language_select(config))),
             theme: cx.new(|_| SelectState::new(theme_select(config))),
         }
@@ -494,6 +539,29 @@ fn verbosity_select(profile: &Profile) -> gpuikit::elements::select::Select<usiz
         })
 }
 
+/// 日志过滤下拉框（只影响界面上显示哪几类行）。
+fn log_filter_select(filter: LogFilter) -> gpuikit::elements::select::Select<usize> {
+    let options: Vec<(usize, String)> = LogFilter::ALL
+        .iter()
+        .enumerate()
+        .map(|(index, one)| (index, one.label().to_string()))
+        .collect();
+    let current = LogFilter::ALL
+        .iter()
+        .position(|one| *one == filter)
+        .unwrap_or(0);
+    select("log-filter-select", t("日志过滤", "Log filter"), options)
+        .large()
+        .selected(current)
+        .full_width(true)
+        // 弹层默认按内容排版，会比 220dp 的触发框窄一截，看着不像同一个控件。
+        .popup_width(px(ROW_CONTROL))
+        .on_change(|index, _window, cx| {
+            let filter = LogFilter::ALL[index.min(LogFilter::ALL.len() - 1)];
+            with_app(cx, |app, cx| app.handle(Msg::SetLogFilter(filter), cx));
+        })
+}
+
 /// 界面语言下拉框。
 fn language_select(config: &Config) -> gpuikit::elements::select::Select<usize> {
     let options: Vec<(usize, String)> = LangSetting::ALL
@@ -548,7 +616,8 @@ pub struct Snapshot {
     pub status: Status,
     pub update: Update,
     pub version: Option<String>,
-    pub logs: Vec<String>,
+    /// 最近的日志行（带来源：界面要按来源过滤）。
+    pub logs: Vec<LogLine>,
     /// 累计写入过多少行日志（不受 [`Snapshot::logs`] 的条数上限影响）。
     pub log_total: u64,
     /// 最近一分钟的流量采样（旧→新），空表示还没开始采。
@@ -621,6 +690,8 @@ pub struct App {
     /// 用户往回翻就置 false，翻回底部再置 true。没有它的话「每来一行就滚到
     /// 底」会让往回翻变得没意义——整机流量下每秒几百行，翻上去立刻被拽回来。
     pub log_follow: bool,
+    /// 日志面板的过滤档位（只影响显示，不落盘）。
+    pub log_filter: LogFilter,
     /// 每页各自的滚动位置。
     pub page_scroll: [ScrollHandle; 5],
     /// 正在被拖动的滚动条（哪一条、按下时的指针 y 与滚动偏移）。
@@ -658,7 +729,7 @@ impl App {
     ) -> Self {
         let draft = Draft::from_profile(config.active_profile());
         let inputs = Inputs::new(&field_values(&config, &draft, ""), cx);
-        let selects = Selects::new(&config, cx);
+        let selects = Selects::new(&config, LogFilter::All, cx);
 
         // 用户打字 → 一条 Msg。
         let mut subscriptions = Vec::new();
@@ -726,6 +797,7 @@ impl App {
             remove_dialog: None,
             log_scroll: ScrollHandle::default(),
             log_follow: true,
+            log_filter: LogFilter::All,
             page_scroll: std::array::from_fn(|_| ScrollHandle::default()),
             scroll_drag: Default::default(),
             last_log_len: 0,
@@ -883,7 +955,7 @@ impl App {
 
     /// 配置列表或语言变了：下拉框的选项是建实体时定死的，只能整组重建。
     pub fn rebuild_selects(&mut self, cx: &mut Context<Self>) {
-        self.selects = Selects::new(&self.config, cx);
+        self.selects = Selects::new(&self.config, self.log_filter, cx);
     }
 
     /// 配置**名字**变了：只换「配置文件」这一个下拉框。
@@ -924,6 +996,10 @@ impl App {
             .iter()
             .position(|level| *level == self.config.active_profile().verbosity)
             .unwrap_or(0);
+        let log_filter = LogFilter::ALL
+            .iter()
+            .position(|one| *one == self.log_filter)
+            .unwrap_or(0);
         let language = LangSetting::ALL
             .iter()
             .position(|setting| *setting == self.config.language)
@@ -942,6 +1018,9 @@ impl App {
         self.selects
             .verbosity
             .update(cx, |state, cx| state.set_selected(Some(verbosity), cx));
+        self.selects
+            .log_filter
+            .update(cx, |state, cx| state.set_selected(Some(log_filter), cx));
         self.selects
             .language
             .update(cx, |state, cx| state.set_selected(Some(language), cx));

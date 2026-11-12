@@ -24,6 +24,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use tracing::Level;
+
 use crate::core::binary;
 use crate::core::config::Profile;
 use crate::core::i18n;
@@ -92,7 +94,8 @@ pub struct Shared {
     pub status: Status,
     pub update: Update,
     pub version: Option<String>,
-    pub logs: VecDeque<String>,
+    /// 最近的日志行（已经排版好，带来源——界面要按来源过滤）。
+    pub logs: VecDeque<logs::LogLine>,
     /// 最近一分钟的流量采样（每秒一个点），给仪表盘的折线图用。
     ///
     /// 放在共享状态里而不是引擎自己算：界面每帧重建，图上的点必须能重复读到
@@ -113,10 +116,10 @@ pub struct Shared {
     pub start_blocked: Option<String>,
     /// 会话名额被打满过（tun2proxy 在日志里报了 `dropping new session`）。
     ///
-    /// 没开 `--exit-on-fatal-error` 时打满并不会让隧道退出，只是新连接被丢：
-    /// 用户看到的现象是「某些网站打不开」，而那条 WARN 夹在几百上千行子进程
-    /// 输出里，没人会翻到。这里只存一个「发生过」的标记，界面用它挂一条提示条
-    /// ——打满正是最需要用户去调大上限的时刻。
+    /// 名额打满不会让隧道退出（本程序从不传 `--exit-on-fatal-error`），只是
+    /// 新连接被丢：用户看到的现象是「某些网站打不开」，而那条 WARN 夹在几百
+    /// 上千行子进程输出里，没人会翻到。这里只存一个「发生过」的标记，界面用
+    /// 它挂一条提示条——打满正是最需要用户去调大上限的时刻。
     ///
     /// 检测点在 [`crate::core::logs`] 的界面层：子进程输出进内存只有那一条路。
     /// 上游那条是 WARN，所以日志级别被调成「错误」时不会产生，检测自然也不
@@ -126,8 +129,7 @@ pub struct Shared {
     ///
     /// 单独存一份而不只是留在 `logs` 里：进程退出时状态机要拿它当「为什么
     /// 停了」的答案。tun2proxy 的致命错误都打在自己的 stderr 上（比如
-    /// `Forced exit due to max sessions reached (200/200)`），只报退出码等于
-    /// 什么也没说。
+    /// `Error: cannot open the tun device`），只报退出码等于什么也没说。
     pub last_error: Option<String>,
     /// 累计写入过多少行日志（不随 [`Shared::logs`] 的裁剪回退）。
     ///
@@ -151,10 +153,14 @@ impl Shared {
     /// 又来了新行，所以三条写入路径（应用提示、分流器、子进程输出）都走这里。
     ///
     /// **只写内存**：落盘由 [`crate::core::logs`] 的格式化层负责，两者吃的是
-    /// 同一批 tracing 事件，所以界面与文件不会对不上。点「清空日志」也只清
-    /// 这里，文件保留——那是事后要查的证据。
-    pub fn push_log(&mut self, line: impl Into<String>) {
-        self.logs.push_back(line.into());
+    /// 同一批 tracing 事件，所以界面与文件不会对不上（唯一的差别是文件层丢掉
+    /// 了子进程的 INFO 行）。点「清空日志」也只清这里，文件保留——那是事后
+    /// 要查的证据。
+    pub fn push_log(&mut self, kind: logs::LogKind, line: impl Into<String>) {
+        self.logs.push_back(logs::LogLine {
+            kind,
+            text: line.into(),
+        });
         self.log_total += 1;
         while self.logs.len() > MAX_LOGS {
             self.logs.pop_front();
@@ -162,7 +168,7 @@ impl Shared {
     }
 
     /// 取最后 `count` 行日志（给界面用）。
-    pub fn log_tail(&self, count: usize) -> Vec<String> {
+    pub fn log_tail(&self, count: usize) -> Vec<logs::LogLine> {
         let skip = self.logs.len().saturating_sub(count);
         self.logs.iter().skip(skip).cloned().collect()
     }
@@ -984,8 +990,8 @@ impl Engine {
                             // 进程没了，速率归零；历史留着，曲线慢慢滑出视野。
                             shared.rate = TrafficSample::default();
                             // 「会话打满」的提示条只对「隧道还在跑、只是丢连接」
-                            // 有意义。真按 `--exit-on-fatal-error` 退出了，
-                            // `Status::Failed` 里已经写着该去调哪一项。
+                            // 有意义。进程已经没了（用户点了停止，或崩了），
+                            // 提示条再挂着就是一句过期的话。
                             shared.sessions_full = false;
                         }
                         meter.reset();
@@ -1174,9 +1180,15 @@ fn spawn_reader(
                 // 后者才是「进程要退出了」的那一条，所以两种都收，后到的覆盖
                 // 先到的——最后一条才是死因。
                 let is_error = line.contains(" ERROR ") || line.trim_start().starts_with("Error:");
-                // 原样交给日志层（target 决定「不加时间戳、不加级别」）：
-                // tun2proxy 自己的行已经带了这两个，界面和文件里都直接照抄。
-                tracing::info!(target: logs::TARGET_OUTPUT, "{}", line);
+                // 按行里自己的级别记录：文件层只留 WARN 以上，判断依据就是这个
+                // 级别（`upstream_level` 从行文本里读），界面层则照单全收。
+                match logs::upstream_level(&line) {
+                    Level::ERROR => tracing::error!(target: logs::TARGET_OUTPUT, "{}", line),
+                    Level::WARN => tracing::warn!(target: logs::TARGET_OUTPUT, "{}", line),
+                    Level::DEBUG => tracing::debug!(target: logs::TARGET_OUTPUT, "{}", line),
+                    Level::TRACE => tracing::trace!(target: logs::TARGET_OUTPUT, "{}", line),
+                    Level::INFO => tracing::info!(target: logs::TARGET_OUTPUT, "{}", line),
+                }
                 if is_error {
                     if let Ok(mut shared) = shared.lock() {
                         shared.last_error = Some(line);
@@ -1197,16 +1209,12 @@ fn describe_exit(status: &std::process::ExitStatus) -> String {
 
 /// 把「怎么退的」和子进程最后一条报错拼成一句话。
 ///
-/// 会话上限是最常见的死因，而且它根本不是「程序坏了」：并发连接数到了，
-/// 而 `--exit-on-fatal-error` 让它选择退出而不是丢新连接。这时候直接告诉
-/// 用户去调哪一项，比原样贴一句英文报错有用。
+/// tun2proxy 的致命错误都打在自己的 stderr 上，只报退出码等于什么也没说。
+/// 曾经这里还专门翻译「会话打满」——那需要传 `--exit-on-fatal-error`，而本
+/// 程序不再传它（见 [`crate::core::config::Profile::cli_args`]），所以名额
+/// 打满时隧道不会退出，这条分支也就没有存在意义了。
 fn explain_exit(code: &str, reason: Option<&str>) -> String {
     match reason {
-        Some(reason) if reason.contains("max sessions reached") => tr_format!(
-            "{}：并发会话数达到上限，隧道按「会话打满时退出」结束了。把「网络与绕过 → 最大会话数」调大即可。",
-            "{}: the concurrent session limit was reached and the tunnel exited. Raise “Max sessions” under Network.",
-            code
-        ),
         Some(reason) => tr_format!("{}：{}", "{}: {}", code, reason),
         None => code.to_string(),
     }
