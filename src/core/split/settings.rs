@@ -184,7 +184,7 @@ impl SplitSettings {
     /// suffix:qq.com       同上
     /// full:www.qq.com     精确匹配
     /// keyword:bilili      包含即命中
-    /// 1.2.3.0/24   网段
+    /// 203.0.113.0/24     网段
     /// proxy:example.org   命中后强制走代理（用来抵消上面清单里的某一条）
     /// # 注释
     /// ```
