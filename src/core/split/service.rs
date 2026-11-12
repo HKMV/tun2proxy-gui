@@ -28,6 +28,7 @@
 //! 拨两次。这里直接给客户端回错误码，由它决定要不要重试。
 
 use std::collections::VecDeque;
+use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -734,22 +735,19 @@ async fn serve(mut client: TcpStream, dispatch: Arc<Dispatch>) {
                     }
                     relay(client, remote_stream).await;
                 }
-                Err(err) => {
+                Err(failure) => {
                     dispatch.count_failed();
-                    dispatch
-                        .sink
-                        .log(tr_format!(
-                            "直连 {} 失败：{err}",
-                            "Direct connection to {} failed: {err}",
-                            target.describe()
-                        ));
-                    dispatch.record(
-                        DecisionRoute::Direct,
-                        false,
-                        &target,
-                        tr_format!("拨号失败：{err}", "dial failed: {err}"),
-                    );
-                    let _ = write_reply(&mut client, 0x05).await;
+                    let message = failure.message;
+                    dispatch.sink.log(tr_format!(
+                        "直连 {} 失败：{}",
+                        "Direct connection to {} failed: {}",
+                        target.describe(),
+                        message
+                    ));
+                    // 不再加「拨号失败：」前缀：`message` 自己已经说清了是
+                    // 哪一步出的错，套两层只会变成「拨号失败：出口拨号失败：…」。
+                    dispatch.record(DecisionRoute::Direct, false, &target, message);
+                    let _ = write_reply(&mut client, failure.reply).await;
                 }
             }
         }
@@ -837,19 +835,45 @@ async fn resolve_target(
     }
 }
 
-async fn dial_direct(outlet: &Outlet, target: SocketAddr) -> Result<TcpStream, String> {
+async fn dial_direct(outlet: &Outlet, target: SocketAddr) -> Result<TcpStream, DialFailure> {
     let outlet = outlet.clone();
     let stream = tokio::task::spawn_blocking(move || outlet.dial(target, DIAL_TIMEOUT))
         .await
-        .map_err(|err| tr_format!("拨号线程异常：{err}", "Dial task failed: {err}"))?;
-    let stream = stream.map_err(|err| {
-        tr_format!(
-            "出口拨号失败：{err}",
-            "The outlet refused the dial: {err}"
-        )
+        .map_err(|err| DialFailure {
+            message: tr_format!("拨号线程异常：{err}", "Dial task failed: {err}"),
+            reply: 0x01,
+        })?;
+    let stream = stream.map_err(|err| DialFailure {
+        message: tr_format!("出口拨号失败：{err}", "The outlet refused the dial: {err}"),
+        reply: reply_code(&err),
     })?;
-    TcpStream::from_std(stream)
-        .map_err(|err| tr_format!("接管连接失败：{err}", "Cannot take over the socket: {err}"))
+    TcpStream::from_std(stream).map_err(|err| DialFailure {
+        message: tr_format!("接管连接失败：{err}", "Cannot take over the socket: {err}"),
+        reply: 0x01,
+    })
+}
+
+/// 直连失败：给界面看的原因 + 回给客户端的 SOCKS5 回复码。
+struct DialFailure {
+    message: String,
+    reply: u8,
+}
+
+/// 把 `io::ErrorKind` 翻成 SOCKS5 的 REP 码。
+///
+/// 以前不管什么失败都回 `0x05`（connection refused），于是 **8 秒超时在
+/// tun2proxy 那边也显示成 `ConnectionRefused`**，日志里看起来像「目标端口关着」，
+/// 实际上根本没人应答——方向完全跑偏，白查半天。细分之后：
+/// 拒绝是真拒绝，超时是真超时。
+fn reply_code(err: &io::Error) -> u8 {
+    match err.kind() {
+        io::ErrorKind::ConnectionRefused => 0x05,
+        io::ErrorKind::TimedOut => 0x06,
+        io::ErrorKind::NetworkUnreachable | io::ErrorKind::HostUnreachable => 0x04,
+        // 其余（权限、地址不可用、socket 建不出来…）没有更贴切的码，
+        // 按 RFC 1928 里的通用失败回 0x01。
+        _ => 0x01,
+    }
 }
 
 /// 双向中继，直到两边都关。
@@ -1117,5 +1141,17 @@ mod tests {
         assert!(!last(&service).is_empty());
         service.trend.clear();
         assert!(service.trend().iter().all(TrendBucket::is_empty));
+    }
+
+    #[test]
+    fn reply_codes_tell_refusal_from_timeout() {
+        // 超时以前和拒绝共用一个 0x05，tun2proxy 侧一律显示 ConnectionRefused，
+        // 排查时最容易把「没人应答」读成「端口关着」。
+        let code = |kind| reply_code(&io::Error::from(kind));
+        assert_eq!(code(io::ErrorKind::ConnectionRefused), 0x05);
+        assert_eq!(code(io::ErrorKind::TimedOut), 0x06);
+        assert_eq!(code(io::ErrorKind::HostUnreachable), 0x04);
+        assert_eq!(code(io::ErrorKind::NetworkUnreachable), 0x04);
+        assert_eq!(code(io::ErrorKind::PermissionDenied), 0x01);
     }
 }

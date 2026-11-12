@@ -12,7 +12,10 @@
 //! 1. `IP_UNICAST_IF`（Windows）/ `SO_BINDTODEVICE`（Linux）：把 socket 绑到物理
 //!    网卡索引上。这是**按出接口选路**，不受目的地址影响，最可靠；
 //! 2. 绑定物理网卡的源 IP：路由仍按目的地址查，只在部分网络环境下有效；
-//! 3. 都不成 → 这条连接**改走代理**并记一条日志，绝不裸连。
+//! 3. 两种绑定都失败 → 这条连接**改走代理**并记一条日志，绝不裸连。
+//!
+//! 注意「兜底」只兜第 1、2 步（怎么绑），不兜「连不上」：目标自己拒绝或超时，
+//! 换一种绑法结果一模一样，重试只会把 8 秒超时变成 16 秒（见 [`Outlet::dial`]）。
 //!
 //! # DNS 也得走同一条出口
 //!
@@ -42,39 +45,68 @@ pub struct Outlet {
     pub local_ip: Option<IpAddr>,
 }
 
+/// 拨号失败发生在哪一步。决定「要不要换个绑法再试一次」。
+enum DialFailure {
+    /// 绑出口失败（选接口 / 绑源 IP）。换个绑法还有救。
+    Bind(io::Error),
+    /// socket 建出来、接口也绑好了，失败在连目标这一侧。
+    Connect(io::Error),
+}
+
+impl DialFailure {
+    /// 只有绑出口失败才值得重试。
+    ///
+    /// 目标拒绝、目标超时、网络不可达，换个绑法一样是这个结果——而重试一次
+    /// 就要再等一个完整的 [`crate::core::split::service`] 拨号超时，
+    /// 日志里那对间隔 8 秒的失败就是这么来的。
+    fn retryable(&self) -> bool {
+        matches!(self, DialFailure::Bind(_))
+    }
+
+    fn into_error(self) -> io::Error {
+        match self {
+            DialFailure::Bind(err) | DialFailure::Connect(err) => err,
+        }
+    }
+}
+
 impl Outlet {
     /// 同步拨号：socket 先绑到物理出口，再连目标。
     ///
     /// 刻意做成阻塞调用：调用方（分流器）把它丢进 `spawn_blocking`，
     /// 这样「绑接口 + 连接」这一整段不会被 async 调度切成几截。
+    ///
+    /// 兜底（改绑源 IP）**只**为「绑接口失败」而设：有些系统上 `IP_UNICAST_IF`
+    /// 对没有该接口的环境会返回 `WSAEINVAL`，换个绑法确实能连上。但如果接口
+    /// 已经绑好、是目标自己拒绝或超时，那再试一遍只是把一次失败拖成两倍时间。
     pub fn dial(&self, target: SocketAddr, timeout: Duration) -> io::Result<TcpStream> {
-        let first = self.dial_bound(target, timeout);
-        match first {
+        match self.dial_bound(target, timeout) {
             Ok(stream) => Ok(stream),
-            Err(bound_err) => {
-                // 兜底：绑接口失败时退回「绑源 IP」。有些系统上
-                // IP_UNICAST_IF 对没有该接口的环境会返回 WSAEINVAL。
-                match self.dial_with_source(target, timeout) {
-                    Ok(stream) => Ok(stream),
-                    Err(_) => Err(bound_err),
-                }
-            }
+            Err(failure) if failure.retryable() => match self.dial_with_source(target, timeout) {
+                Ok(stream) => Ok(stream),
+                // 兜底也失败：报第一次的原因，那才是真正的症结。
+                Err(_) => Err(failure.into_error()),
+            },
+            Err(failure) => Err(failure.into_error()),
         }
     }
 
-    fn dial_bound(&self, target: SocketAddr, timeout: Duration) -> io::Result<TcpStream> {
+    fn dial_bound(&self, target: SocketAddr, timeout: Duration) -> Result<TcpStream, DialFailure> {
         let domain = if target.is_ipv4() {
             Domain::IPV4
         } else {
             Domain::IPV6
         };
-        let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
-        bind_to_interface(&socket, self, target.is_ipv4())?;
+        let socket =
+            Socket::new(domain, Type::STREAM, Some(Protocol::TCP)).map_err(DialFailure::Connect)?;
+        bind_to_interface(&socket, self, target.is_ipv4()).map_err(DialFailure::Bind)?;
         // 必须用 connect_timeout：`set_read_timeout` / `set_write_timeout` 管不到
         // 建连，普通的 `connect()` 会一直等到系统 SYN 重传结束（Windows 约 21 秒、
         // Linux 约 130 秒），直连一个不通的国内地址就会把这条连接卡死。
-        socket.connect_timeout(&target.into(), timeout)?;
-        socket.set_nonblocking(true)?;
+        socket
+            .connect_timeout(&target.into(), timeout)
+            .map_err(DialFailure::Connect)?;
+        socket.set_nonblocking(true).map_err(DialFailure::Connect)?;
         Ok(socket.into())
     }
 
@@ -651,5 +683,18 @@ mod tests {
             elapsed < Duration::from_secs(3),
             "拨号没有遵守超时：等了 {elapsed:?}"
         );
+    }
+
+    #[test]
+    fn only_bind_failures_are_worth_retrying() {
+        // 目标侧失败：换一种绑法结果一样，重试只会把超时拖成两倍。
+        let refused = DialFailure::Connect(io::Error::from(io::ErrorKind::ConnectionRefused));
+        assert!(!refused.retryable());
+        let timed_out = DialFailure::Connect(io::Error::from(io::ErrorKind::TimedOut));
+        assert!(!timed_out.retryable());
+
+        // 绑出口失败：`IP_UNICAST_IF` 在部分环境上不可用，绑源 IP 还有救。
+        let bind = DialFailure::Bind(io::Error::from(io::ErrorKind::PermissionDenied));
+        assert!(bind.retryable());
     }
 }
