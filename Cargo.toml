@@ -46,14 +46,13 @@ tproxy-config = { version = "7.0.9", default-features = false }
 # 非 Windows 平台上它什么也不做（build.rs 里已经用 cfg 圈住了）。
 embed-resource = "3"
 
-[target.'cfg(target_os = "linux")'.dependencies]
-# Linux 上 `--unshare` 可以免 root 运行，所以保留默认特性。
-tun2proxy = "0.8.6"
-libc = "0.2"
-
-[target.'cfg(not(target_os = "linux"))'.dependencies]
-# Windows / macOS 只用到 Args 与 general_run_async，不需要 unshare。
-tun2proxy = { version = "0.8.6", default-features = false, features = ["udpgw"] }
+# 隧道本身是**外部的命令行程序**：本程序只负责下载官方二进制、拼参数、拉起子进程
+# 和收日志（见 core::binary / core::engine），从头到尾没有 `use tun2proxy::...`。
+# 所以这里不依赖 tun2proxy crate——早先为读 `Args` 类型加过，后来改成自己拼
+# 参数列表就没人用了，留着只会让 CI 白编一棵几百个 crate 的依赖树。
+[target.'cfg(unix)'.dependencies]
+# root 检测（geteuid）、停子进程（SIGINT）、日志时间戳转本地时间（localtime_r）。
+# Windows 上这些走 windows-sys，不需要 libc。
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
@@ -88,11 +87,29 @@ windows-sys = { version = "0.59", features = [
 # 纯 Rust、无系统依赖，只在 Windows 上编进来。
 png = "0.17"
 
-# 发布版：去掉符号表，用 thin LTO 平衡编译时间与运行性能。
+# 发布版：一切为了**体积**，编译时间让给 CI。
+#
+# 这个程序编进来的是整套 GPUI（渲染管线 + 文本排版 + 图像解码）与 tokio，
+# 默认 profile 出来 exe 将近 15 MB；下面五项合起来砍到手边大小，代价是
+# 本机全量 release 编译从「几分钟」变成「十几分钟」（增量只重链一次）。
 [profile.release]
+# 按体积优化而不是按速度：这个程序的负载是画两张折线图 + 转发字节，热点
+# 都在 tokio / 系统调用里，`s` 相比 `3` 省下的那部分代码体积换掉的性能
+# 用户感知不到；`z` 会关掉循环向量化，收益只多一点点，不值。
+opt-level = "s"
+# `fat` LTO：跨 crate 内联 + 死代码消除。GPUI 大量泛型与 trait 对象，只有跨
+# crate 优化才可能把没走到的分支摘掉；`thin` 做不到，体积差得很明显。
+lto = "fat"
+# 单一 codegen unit：给 LTO 一张完整的图，别再拆成 16 块各优化各的。
+codegen-units = 1
+# 出错直接 abort：省掉每个函数的 landing pad（栈展开表）。桌面程序不需要
+# 捕获 panic 后继续跑，这几处表纯属占地方。
+#
+# 注意：这条会让 `cargo test --release` 失效（测试框架需要展开）。
+# 单元测试请用默认的 dev 配置跑 `cargo test`，CI 里也只 build 不 test --release。
+panic = "abort"
+# 去掉符号表（Windows 的 exe 里也有一份，不是只有 ELF 才有）。
 strip = "symbols"
-lto = "thin"
-codegen-units = 16
 
 # gpuikit 0.9.0 的本地副本。上游 `Select` 把弹层宽度交给了内容（只有
 # `min_w(120px)`），触发框多宽它都不管，应用侧拿不到任何开关；`Listbox`
