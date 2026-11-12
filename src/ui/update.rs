@@ -207,8 +207,10 @@ pub fn update(app: &mut App, msg: Msg, cx: &mut Context<App>) {
         Msg::DismissNotice => {
             app.notice = None;
             app.error = None;
-            // 「启动被拦下」存在引擎的共享状态里，不清掉下一帧又会冒出来。
+            // 「启动被拦下」和「会话打满」都存在引擎的共享状态里，不清掉下一帧
+            // 又会冒出来。
             app.engine.dismiss_start_blocked();
+            app.engine.dismiss_sessions_full();
         }
         Msg::RelaunchElevated => {
             // 先把内核收掉：否则旧进程退出后，新进程会碰到还在跑的 tun2proxy

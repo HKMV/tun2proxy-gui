@@ -111,6 +111,17 @@ pub struct Shared {
     /// 一条错误横幅显示，直到下一次启动尝试把它清掉。放在共享状态里
     /// 而不是 `App::error`：写它的是后台线程，拿不到界面状态。
     pub start_blocked: Option<String>,
+    /// 会话名额被打满过（tun2proxy 在日志里报了 `dropping new session`）。
+    ///
+    /// 没开 `--exit-on-fatal-error` 时打满并不会让隧道退出，只是新连接被丢：
+    /// 用户看到的现象是「某些网站打不开」，而那条 WARN 夹在几百上千行子进程
+    /// 输出里，没人会翻到。这里只存一个「发生过」的标记，界面用它挂一条提示条
+    /// ——打满正是最需要用户去调大上限的时刻。
+    ///
+    /// 检测点在 [`crate::core::logs`] 的界面层：子进程输出进内存只有那一条路。
+    /// 上游那条是 WARN，所以日志级别被调成「错误」时不会产生，检测自然也不
+    /// 生效——那是用户自己关掉了可见性，不属于这里的漏洞。
+    pub sessions_full: bool,
     /// 子进程最后一条 ERROR 级别的输出。
     ///
     /// 单独存一份而不只是留在 `logs` 里：进程退出时状态机要拿它当「为什么
@@ -267,6 +278,7 @@ impl Engine {
             rate: TrafficSample::default(),
             probe: None,
             start_blocked: None,
+            sessions_full: false,
             last_error: None,
             log_total: 0,
             rebuild: None,
@@ -435,6 +447,17 @@ impl Engine {
     pub fn dismiss_start_blocked(&self) {
         if let Ok(mut shared) = self.shared.lock() {
             shared.start_blocked = None;
+        }
+        self.touch();
+    }
+
+    /// 关掉「会话名额已打满」的提示条。
+    ///
+    /// 和 [`Engine::dismiss_start_blocked`] 一样：标记在共享状态里，不清掉的话
+    /// 下一帧又会从快照里读出来。
+    pub fn dismiss_sessions_full(&self) {
+        if let Ok(mut shared) = self.shared.lock() {
+            shared.sessions_full = false;
         }
         self.touch();
     }
@@ -635,9 +658,11 @@ impl Engine {
 
         let args = effective.cli_args();
         // 上一次运行的报错不能留到这一次：状态机拿它解释「为什么停了」，
-        // 留着的话新一次失败会报出旧原因。
+        // 留着的话新一次失败会报出旧原因。「会话打满」的提示同理，重启之后
+        // 名额是新的，旧提示挂在界面上只会误导。
         if let Ok(mut shared) = self.shared.lock() {
             shared.last_error = None;
+            shared.sessions_full = false;
         }
         self.log_line(tr_format!(
             "启动：{} {}",
@@ -958,6 +983,10 @@ impl Engine {
                             shared.status = status;
                             // 进程没了，速率归零；历史留着，曲线慢慢滑出视野。
                             shared.rate = TrafficSample::default();
+                            // 「会话打满」的提示条只对「隧道还在跑、只是丢连接」
+                            // 有意义。真按 `--exit-on-fatal-error` 退出了，
+                            // `Status::Failed` 里已经写着该去调哪一项。
+                            shared.sessions_full = false;
                         }
                         meter.reset();
                         dirty.store(true, Ordering::Relaxed);
@@ -1174,8 +1203,8 @@ fn describe_exit(status: &std::process::ExitStatus) -> String {
 fn explain_exit(code: &str, reason: Option<&str>) -> String {
     match reason {
         Some(reason) if reason.contains("max sessions reached") => tr_format!(
-            "{}：并发会话数达到上限，隧道按「会话打满时退出」结束了。把「网络与绕过 → 会话上限」调大即可。",
-            "{}: the concurrent session limit was reached and the tunnel exited. Raise the session limit under Network.",
+            "{}：并发会话数达到上限，隧道按「会话打满时退出」结束了。把「网络与绕过 → 最大会话数」调大即可。",
+            "{}: the concurrent session limit was reached and the tunnel exited. Raise “Max sessions” under Network.",
             code
         ),
         Some(reason) => tr_format!("{}：{}", "{}: {}", code, reason),

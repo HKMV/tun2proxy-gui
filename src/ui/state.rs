@@ -559,6 +559,11 @@ pub struct Snapshot {
     pub probe: Option<ProbeState>,
     /// 启动被拦下的原因（上游代理连不通等），由后台线程写入。
     pub blocked: Option<String>,
+    /// 隧道跑着的时候会话名额被打满过（日志里出现过 `dropping new session`）。
+    ///
+    /// 打满只是丢新连接、不会掉线，所以只能靠这条提示告诉用户：界面该显示
+    /// 一个「上限到了，去调大」的提示条，而不是让他对着打不开的网页排查。
+    pub sessions_full: bool,
     /// 分流器的运行情况（是否在跑、直连 / 代理各多少条）。
     pub split: crate::core::engine::SplitRuntime,
     /// 清单在线更新的进度。
@@ -795,12 +800,18 @@ impl App {
             1,
             86_400,
         )?;
-        let sessions = parse_number(
-            &self.draft.max_sessions,
-            t("最大会话数", "Max sessions"),
-            1,
-            100_000,
-        )?;
+        // 留空就是「用默认值」——输入框旁边的说明一直这么写，所以空串不能
+        // 走进下面的数字解析（那会报「必须是数字」，等于说明在骗人）。
+        let sessions = if self.draft.max_sessions.trim().is_empty() {
+            crate::core::config::DEFAULT_MAX_SESSIONS as u64
+        } else {
+            parse_number(
+                &self.draft.max_sessions,
+                t("最大会话数", "Max sessions"),
+                1,
+                100_000,
+            )?
+        };
         let udpgw = parse_number(
             &self.draft.udpgw_connections,
             t("UDPGW 连接数", "UDPGW connections"),
@@ -830,6 +841,7 @@ impl App {
             rate: shared.rate,
             probe: shared.probe.clone(),
             blocked: shared.start_blocked.clone(),
+            sessions_full: shared.sessions_full,
             split: shared.split.clone(),
             split_update: shared.split_update.clone(),
         }

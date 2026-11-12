@@ -66,6 +66,15 @@ const KEEP_DAYS: usize = 7;
 /// 默认记录到 INFO：DEBUG 会把 tokio / gpui 的内部细节一起倒进界面。
 const DEFAULT_LEVEL: LevelFilter = LevelFilter::INFO;
 
+/// tun2proxy 在并发会话名额打满、丢弃新连接时打的日志片段。
+///
+/// 原文是 `Too many sessions that over {limit}, dropping new session`（tun2proxy
+/// 0.8.6 `src/lib.rs`）。只认后半句：数字会随配置变，而且这里也不需要它。
+///
+/// 打满时这条会跟着**每一条**被丢的连接重复，几百行里夹一句，用户不可能看见；
+/// 所以界面层顺手在共享状态里留一个标记，交给提示条去说。
+const SESSIONS_FULL_MARKER: &str = "dropping new session";
+
 /// 文件里的时间：精确到毫秒，跨天时能看出是哪一天的那一条。
 const FILE_TS: &[FormatItem<'static>] = time::macros::format_description!(
     "[year]-[month]-[day] [hour]:[minute]:[second].[subsecond digits:3]"
@@ -184,6 +193,9 @@ impl<S: Subscriber> Layer<S> for UiLayer {
         event.record(&mut MessageVisitor(&mut message));
         let line = ui_line(meta.target(), *meta.level(), &message);
         if let Ok(mut shared) = self.shared.lock() {
+            if message.contains(SESSIONS_FULL_MARKER) {
+                shared.sessions_full = true;
+            }
             shared.push_log(line);
         }
         self.dirty.store(true, Ordering::Relaxed);

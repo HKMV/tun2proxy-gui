@@ -28,6 +28,7 @@ use gpuikit::theme::{ControlSize, Theme, Themeable};
 use gpuikit::traits::control_sized::ControlSized;
 use gpuikit::DefaultIcons;
 
+use crate::core::config::DEFAULT_MAX_SESSIONS;
 use crate::core::engine::ProbeState;
 use crate::core::i18n::{t, tf};
 use crate::core::split::SplitGroup;
@@ -439,11 +440,14 @@ pub fn stat_group(app: &App, theme: &Theme) -> AnyElement {
         Some(name) => name.to_string(),
         None => t("每次启动随机", "Random each start").to_string(),
     };
-    let sessions = app.draft.max_sessions.trim();
-    let sessions = if sessions.is_empty() {
-        t("默认", "Default").to_string()
-    } else {
-        tf(t("{sessions} 个", "{sessions}"), &[("sessions", sessions)])
+    // 输入框留空时显示实际会生效的默认值：只写「默认」的话，用户不知道默认
+    // 到底是多少，也就无从判断要不要调。
+    let sessions = match app.draft.max_sessions.trim() {
+        "" => tf(
+            t("{sessions}（默认）", "{sessions} (default)"),
+            &[("sessions", &DEFAULT_MAX_SESSIONS.to_string())],
+        ),
+        typed => tf(t("{sessions} 个", "{sessions}"), &[("sessions", typed)]),
     };
 
     let rows = vec![
@@ -479,7 +483,7 @@ pub fn stat_group(app: &App, theme: &Theme) -> AnyElement {
         .into_any_element(),
         setting_row(
             Some(row_icon(DefaultIcons::mixer_horizontal(), theme).into_any_element()),
-            t("会话上限", "Session limit"),
+            t("最大会话数", "Max sessions"),
             Some(
                 t(
                     "同时保持的最大连接数",
@@ -930,13 +934,13 @@ pub fn network_group(app: &App, theme: &Theme, cx: &mut Context<App>) -> AnyElem
         setting_row(
             Some(row_icon(DefaultIcons::people(), theme).into_any_element()),
             t("最大会话数", "Max sessions"),
-            Some(
+            Some(tf(
                 t(
-                    "同时保持的连接上限，留空用默认值",
-                    "Connection cap; leave empty for the default",
-                )
-                .to_string(),
-            ),
+                    "默认 {sessions} 条；清空即恢复默认，整机流量大时可以调高",
+                    "Default {sessions}; clear the field to restore it. Raise it for heavy whole-machine traffic.",
+                ),
+                &[("sessions", &DEFAULT_MAX_SESSIONS.to_string())],
+            )),
             None,
             Some(text_input(
                 &app.inputs.get(Field::MaxSessions),

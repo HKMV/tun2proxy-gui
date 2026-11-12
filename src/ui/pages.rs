@@ -18,7 +18,7 @@ use gpui::{AnyElement, Context, IntoElement, div, px, prelude::*};
 use gpuikit::DefaultIcons;
 use gpuikit::theme::{Theme, Themeable};
 
-use crate::core::i18n::t;
+use crate::core::i18n::{t, tf};
 
 use super::cards::{
     about_group, appearance_group, binary_group, bypass_group, editing_profile,
@@ -49,15 +49,16 @@ pub fn content(app: &App, snap: &Snapshot, theme: &Theme, cx: &mut Context<App>)
         .into_any_element()
 }
 
-/// 顶部提示条：保存结果、动作出错、启动被拦下、已复制…都在这里说。
+/// 顶部提示条：保存结果、动作出错、启动被拦下、会话打满、已复制…都在这里说。
 ///
 /// 原来这些提示只画在仪表盘的首屏卡里，可「保存到磁盘」的按钮在代理配置页
 /// 的顶栏上——点完什么也不会出现，看起来就像没生效。提示条挂在内容区，
 /// 任何一页做任何动作都能立刻看到结果。
 ///
 /// 只显示一条：错误优先（出问题时不该被上一句「已保存」盖住），其次是动作
-/// 回执，最后是「启动被拦下的原因」——它由后台的检测线程写进快照，在别的
-/// 页面点「启动」时原来同样毫无反馈。
+/// 回执，然后是「启动被拦下的原因」——它由后台的检测线程写进快照，在别的
+/// 页面点「启动」时原来同样毫无反馈。最后是「会话打满」：它不是错误（隧道
+/// 还在跑），但优先级得低于上面几条，否则用户刚做的动作会看不到回执。
 fn notice_bar(
     app: &App,
     snap: &Snapshot,
@@ -80,7 +81,25 @@ fn notice_bar(
             theme.warning(),
             DefaultIcons::exclamation_triangle(),
         ),
-        (None, None, None) => return None,
+        (None, None, None) => {
+            if !snap.sessions_full {
+                return None;
+            }
+            // 数字读的是「当前配置」，不是打满那一刻的值：提示的用途是让人去
+            // 调大，显示他现在填的那个数比显示历史更贴题。
+            let limit = app.profile().max_sessions.to_string();
+            (
+                tf(
+                    t(
+                        "并发会话数已达到上限（{limit}），新连接被丢弃，已有连接不受影响。到「网络与绕过 → 最大会话数」调大即可。",
+                        "The concurrent session limit ({limit}) has been reached: new connections are dropped while existing ones keep running. Raise “Max sessions” under Network.",
+                    ),
+                    &[("limit", &limit)],
+                ),
+                theme.warning(),
+                DefaultIcons::exclamation_triangle(),
+            )
+        }
     };
 
     Some(
