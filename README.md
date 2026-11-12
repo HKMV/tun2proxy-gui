@@ -39,7 +39,9 @@ UI 框架）和 gpuikit（shadcn 风格的 GPUI 组件库），不依赖 WebView
   （直连 / 虚拟 IP / 走 TCP，默认虚拟 IP）、DNS 服务器、虚拟地址池、绕过网段、
   TUN 网卡名（留空则每次启动随机生成 `t2p_xxxxxxxx`）、MTU、TCP/UDP 超时、
   最大会话数、IPv6（默认开）、自动配置路由、UDPGW、日志级别。
-- **实时日志**：子进程的 stdout/stderr 直接显示在界面里，可一键清空。
+- **实时日志**：子进程的 stdout/stderr 直接显示在界面里，可一键清空；同一份日志
+  用 `tracing` 按天写入数据目录下的 `logs/`（`tun2proxy-gui.YYYY-MM-DD.log`，保留
+  最近 7 天），界面清空不影响已落盘的文件；panic 另记 `tun2proxy-gui.panic.log`。
 - **代理连通性检测**：填完上游地址点一下「检测」，程序自己建立 TCP 连接并按
   协议走一次握手（SOCKS5 问候 / HTTP `CONNECT`），把「端口没在监听」「代理
   要求认证」「连上了但协议不对」直接写在那一行里——不用等启动失败再猜。
@@ -67,6 +69,7 @@ src/
 ├─ core/           与界面无关的内核（不依赖 GUI 框架，可单独测试）
 │  ├─ mod.rs       模块说明与再导出
 │  ├─ paths.rs     配置 / 下载 / 日志的存放位置
+│  ├─ logs.rs      运行日志（tracing）：按天落盘、同时推给界面
 │  ├─ config.rs    多套代理配置的读写、校验、转成命令行参数
 │  ├─ binary.rs    下载 / 校验 / 解压 tun2proxy 官方二进制
 │  ├─ engine.rs    拉起子进程、收日志、维护状态与更新进度
@@ -270,7 +273,9 @@ Linux 用 `SO_BINDTODEVICE` 把 socket 绑上去；**其它平台（含 macOS）
 | macOS | `~/Library/Application Support/tun2proxy-gui/` |
 | Linux | `~/.config/tun2proxy-gui/`（遵循 `$XDG_CONFIG_HOME`） |
 
-目录内容：`config.json`（全部配置）、`bin/`（下载的 tun2proxy 与 wintun.dll 等）。
+目录内容：`config.json`（全部配置）、`bin/`（下载的 tun2proxy 与 wintun.dll 等）、
+`logs/`（按天一份运行日志 `tun2proxy-gui.YYYY-MM-DD.log`，只保留最近 7 天；
+崩溃另记 `tun2proxy-gui.panic.log`）。
 设置环境变量 `TUN2PROXY_GUI_HOME` 可以把整个目录搬到别处（便携版）。
 
 `config.json` 形如：

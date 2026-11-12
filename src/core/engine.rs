@@ -21,17 +21,14 @@ use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-#[cfg(not(windows))]
-use std::time::{SystemTime, UNIX_EPOCH};
-
-use log::{Log, Metadata, Record};
 
 use crate::core::binary;
 use crate::core::config::Profile;
 use crate::core::i18n;
 use crate::core::i18n::t;
+use crate::core::logs;
 use crate::core::paths;
 use crate::core::probe::{self, ProbeReport};
 use crate::core::split::ipset::Cidr;
@@ -140,7 +137,11 @@ impl Shared {
     /// 追加一行日志并维持长度上限。
     ///
     /// 直接用 `logs.push_back` 会漏掉 [`Shared::log_total`]，界面就不知道
-    /// 又来了新行，所以三条写入路径都走这里。
+    /// 又来了新行，所以三条写入路径（应用提示、分流器、子进程输出）都走这里。
+    ///
+    /// **只写内存**：落盘由 [`crate::core::logs`] 的格式化层负责，两者吃的是
+    /// 同一批 tracing 事件，所以界面与文件不会对不上。点「清空日志」也只清
+    /// 这里，文件保留——那是事后要查的证据。
     pub fn push_log(&mut self, line: impl Into<String>) {
         self.logs.push_back(line.into());
         self.log_total += 1;
@@ -231,15 +232,14 @@ impl SplitUpdate {
 
 /// 把分流器的日志与状态接到引擎的共享状态上。
 struct EngineSink {
-    shared: Arc<Mutex<Shared>>,
     dirty: Arc<AtomicBool>,
 }
 
 impl SplitSink for EngineSink {
     fn log(&self, line: String) {
-        if let Ok(mut shared) = self.shared.lock() {
-            shared.push_log(line);
-        }
+        // 走 tracing 而不是直接 push：同一条事件由日志层分发到界面和文件，
+        // 分流器的判定才会出现在磁盘上（以前它只进内存）。
+        tracing::info!(target: logs::TARGET_SPLIT, "{}", line);
         self.dirty.store(true, Ordering::Relaxed);
     }
 }
@@ -255,7 +255,8 @@ pub struct Engine {
 }
 
 impl Engine {
-    /// 创建引擎：安装日志桥接、启动重绘调度线程，并探测已安装版本。
+    /// 创建引擎：装好日志（tracing + 落盘 + 界面）、启动重绘调度线程，
+    /// 并探测已安装版本。
     pub fn new() -> Self {
         let shared = Arc::new(Mutex::new(Shared {
             status: Status::Stopped,
@@ -273,7 +274,9 @@ impl Engine {
             split_update: SplitUpdate::Idle,
         }));
         let dirty = Arc::new(AtomicBool::new(false));
-        install_logger(shared.clone(), dirty.clone());
+        // 日志要先于任何一条 `log_line` 装好，否则启动初期那几行只进了内存。
+        // 建不出文件不算致命错误：界面日志照旧，下面提示一句原因。
+        let log_error = logs::init(shared.clone(), dirty.clone()).err();
 
         let engine = Self {
             shared,
@@ -289,6 +292,17 @@ impl Engine {
             "Config directory {}",
             paths::app_dir().display()
         ));
+        match log_error {
+            None => engine.log_line(tr_format!(
+                "运行日志 {}（按天一个文件，保留最近 7 天）",
+                "Run log {} (one file per day, keeps the last 7)",
+                logs::current_file(&paths::logs_dir()).display()
+            )),
+            Some(err) => engine.log_line(tr_format!(
+                "无法创建运行日志文件：{err}（界面日志不受影响）",
+                "Cannot create the run log file: {err} (the in-app log is unaffected)"
+            )),
+        }
         engine
     }
 
@@ -392,6 +406,10 @@ impl Engine {
         }
     }
 
+    /// 只清界面上的日志，**不动**磁盘上的文件。
+    ///
+    /// 清空是「我要重新看一遍接下来发生什么」，而文件是事后排查的证据——
+    /// 用户点一下就把刚过去的故障现场删掉，那是帮倒忙。
     pub fn clear_logs(&self) {
         if let Ok(mut shared) = self.shared.lock() {
             shared.logs.clear();
@@ -399,13 +417,15 @@ impl Engine {
         self.touch();
     }
 
+    /// 打一条本程序自己的提示。
+    ///
+    /// 不再直接往共享状态里塞：走 tracing 之后，同一条记录会由日志层分别交给
+    /// 界面（[`crate::core::logs`] 的界面层）和文件（按天滚动），两条线不会
+    /// 各说各话。
     pub fn log_line(&self, line: impl Into<String>) {
         let line = line.into();
         eprintln!("{line}");
-        if let Ok(mut shared) = self.shared.lock() {
-            shared.push_log(line);
-        }
-        self.touch();
+        tracing::info!(target: logs::TARGET_APP, "{}", line);
     }
 
     /// 关掉「启动被拦下」的原因。
@@ -727,7 +747,6 @@ impl Engine {
             fake_pool,
         };
         let sink: Arc<dyn SplitSink> = Arc::new(EngineSink {
-            shared: self.shared.clone(),
             dirty: self.dirty.clone(),
         });
         let addr = self.split.start(plan, sink)?;
@@ -1126,9 +1145,11 @@ fn spawn_reader(
                 // 后者才是「进程要退出了」的那一条，所以两种都收，后到的覆盖
                 // 先到的——最后一条才是死因。
                 let is_error = line.contains(" ERROR ") || line.trim_start().starts_with("Error:");
-                if let Ok(mut shared) = shared.lock() {
-                    shared.push_log(line.clone());
-                    if is_error {
+                // 原样交给日志层（target 决定「不加时间戳、不加级别」）：
+                // tun2proxy 自己的行已经带了这两个，界面和文件里都直接照抄。
+                tracing::info!(target: logs::TARGET_OUTPUT, "{}", line);
+                if is_error {
+                    if let Ok(mut shared) = shared.lock() {
                         shared.last_error = Some(line);
                     }
                 }
@@ -1196,55 +1217,6 @@ fn send_interrupt(_pid: u32) -> bool {
     false
 }
 
-// ---------------------------------------------------------------- logging --
-
-struct SharedLogger {
-    shared: Arc<Mutex<Shared>>,
-    dirty: Arc<AtomicBool>,
-}
-
-impl Log for SharedLogger {
-    fn enabled(&self, _: &Metadata<'_>) -> bool {
-        true
-    }
-
-    fn log(&self, record: &Record<'_>) {
-        let line = format!("{} {:<5} {}", timestamp(), record.level(), record.args());
-        if let Ok(mut shared) = self.shared.lock() {
-            shared.push_log(line);
-        }
-        self.dirty.store(true, Ordering::Relaxed);
-    }
-
-    fn flush(&self) {}
-}
-
-fn install_logger(shared: Arc<Mutex<Shared>>, dirty: Arc<AtomicBool>) {
-    static LOGGER: OnceLock<SharedLogger> = OnceLock::new();
-    let logger = LOGGER.get_or_init(|| SharedLogger { shared, dirty });
-    if log::set_logger(logger).is_ok() {
-        log::set_max_level(log::LevelFilter::Info);
-    }
-}
-
-/// 日志行首的 `HH:MM:SS`，取**本地时间**。
-///
-/// `SystemTime` 给的是 UTC 秒数，直接取余会整整差出一个时区（东八区差 8
-/// 小时），日志时间戳对不上系统时钟，排查问题时没法拿它跟别处的日志对齐。
-#[cfg(windows)]
-fn timestamp() -> String {
-    let mut st: windows_sys::Win32::Foundation::SYSTEMTIME = unsafe { std::mem::zeroed() };
-    unsafe { windows_sys::Win32::System::SystemInformation::GetLocalTime(&mut st) };
-    format!("{:02}:{:02}:{:02}", st.wHour, st.wMinute, st.wSecond)
-}
-
-#[cfg(not(windows))]
-fn timestamp() -> String {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as libc::time_t;
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    unsafe { libc::localtime_r(&now, &mut tm) };
-    format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec)
-}
+// 日志本身（tracing 订阅端、按天落盘、界面分发）都在 `crate::core::logs`。
+// 这里只负责在正确的时机产生事件：应用提示走 `TARGET_APP`、分流器走
+// `TARGET_SPLIT`、子进程的原始输出走 `TARGET_OUTPUT`。

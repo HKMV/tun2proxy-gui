@@ -9,6 +9,7 @@
 //! | [`config`] | 用户配置（代理地址、DNS、MTU…）的读写、校验，以及转换成 CLI 参数 |
 //! | [`binary`] | 从 GitHub Release 下载 / 校验 / 解压 tun2proxy 官方二进制，读取版本号 |
 //! | [`engine`] | 把 tun2proxy 作为子进程拉起、收集日志、维护状态与更新进度 |
+//! | [`logs`] | 运行日志（tracing）：按天写 `<数据目录>/logs/`，同时推给界面 |
 //! | [`probe`] | 检测上游代理地址是否连得通（TCP + SOCKS5/HTTP 握手） |
 //! | [`split`] | 分流规则：国内 IP / 域名的清单聚合、匹配，以及本机 SOCKS5 分流器 |
 //! | [`traffic`] | 读 TUN 网卡的收发计数，给仪表盘的流量折线图用 |
@@ -33,6 +34,7 @@ pub mod elevate;
 pub mod engine;
 pub mod i18n;
 pub mod icon;
+pub mod logs;
 pub mod paths;
 pub mod platform;
 pub mod probe;
@@ -45,3 +47,10 @@ pub mod window;
 pub use config::{Config, DnsMode, Profile, ThemeSetting, Verbosity};
 pub use engine::{Engine, Shared, Status, Update};
 pub use traffic::TrafficSample;
+
+/// 本程序（GUI）的版本号。
+///
+/// 和侧栏底部那行「tun2proxy v0.8.6」不是一个东西：那是官方二进制的版本，
+/// 会随「检查更新」变；这个是这份 GUI 自己发布时的版本，从 `Cargo.toml`
+/// 编译进来，用来回答「你现在用的是哪一版前端」。
+pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
