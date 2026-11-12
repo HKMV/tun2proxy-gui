@@ -207,7 +207,6 @@ pub enum Msg {    /// 切换到左侧导航的某一页。
     TcpTimeout(String),
     UdpTimeout(String),
     MaxSessions(String),
-    SetExitOnFatal(bool),
 
     // —— 操作 ——
     Start,

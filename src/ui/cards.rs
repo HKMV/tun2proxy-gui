@@ -2277,32 +2277,21 @@ pub fn udpgw_group(app: &App, theme: &Theme, cx: &mut Context<App>) -> AnyElemen
 
 // —— 程序与日志 ——
 
-/// 运行方式：进程层面的两个开关。
+/// 运行方式：进程层面的开关。
 ///
-/// 都不是「日常会改」的项，但它们是「这个程序怎么跑」而不是「网络怎么走」，
-/// 所以归到程序页，而不是网络页。
-pub fn runtime_group(app: &App, theme: &Theme, cx: &mut Context<App>) -> AnyElement {
-    let profile = app.profile();
-
-    let mut rows = vec![compact_row(
-        t("会话打满时退出", "Exit when sessions run out"),
-        Some(
-            toggle_control(
-                "toggle-exit-on-fatal",
-                profile.exit_on_fatal,
-                cx.listener(|this, _, _, cx| {
-                    let value = !this.profile().exit_on_fatal;
-                    this.handle(Msg::SetExitOnFatal(value), cx)
-                }),
-            )
-            .into_any_element(),
-        ),
-        theme,
-    )
-    .into_any_element()];
+/// 这一组原来还有「会话打满时退出」，那个开关已经删掉：`--exit-on-fatal-error`
+/// 在 tun2proxy 里唯一的触发条件就是名额打满，打开它等于用「整机断网」换掉
+/// 「丢几条新连接」，桌面版没有理由让用户这样选。现在只剩 Linux 的
+/// 「免 root 运行」（`--unshare`）。
+///
+/// 非 Linux 上这一组没有任何内容，返回 `None`——以前会留下一张只有标题的
+/// 空卡片（标题下面一条虚线再没有行，看着像界面坏了）。
+pub fn runtime_group(app: &App, theme: &Theme, cx: &mut Context<App>) -> Option<AnyElement> {
+    let mut rows = Vec::new();
 
     // 用户命名空间是 Linux 专有选项，其它平台不显示。
     if cfg!(target_os = "linux") {
+        let profile = app.profile();
         rows.push(
             compact_row(
                 t("免 root 运行", "Run without root"),
@@ -2323,7 +2312,10 @@ pub fn runtime_group(app: &App, theme: &Theme, cx: &mut Context<App>) -> AnyElem
         );
     }
 
-    settings_group(t("运行方式", "Process"), rows, theme).into_any_element()
+    if rows.is_empty() {
+        return None;
+    }
+    Some(settings_group(t("运行方式", "Process"), rows, theme).into_any_element())
 }
 
 /// 窗口与托盘：关窗时的行为。

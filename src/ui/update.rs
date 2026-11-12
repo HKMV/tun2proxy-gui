@@ -131,7 +131,6 @@ pub fn update(app: &mut App, msg: Msg, cx: &mut Context<App>) {
         Msg::TcpTimeout(value) => app.draft.tcp_timeout = value,
         Msg::UdpTimeout(value) => app.draft.udp_timeout = value,
         Msg::MaxSessions(value) => app.draft.max_sessions = value,
-        Msg::SetExitOnFatal(value) => app.profile_mut().exit_on_fatal = value,
 
         // —— 操作 ——
         Msg::Start => {

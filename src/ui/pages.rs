@@ -306,13 +306,18 @@ fn page_body(app: &App, snap: &Snapshot, theme: &Theme, cx: &mut Context<App>) -
             bypass_group(app, theme, cx),
         ],
         // 程序：二进制版本 / 更新 + 运行方式 + 日志（含日志级别）。
-        super::state::Page::Program => vec![
-            binary_group(snap, theme, cx),
-            runtime_group(app, theme, cx),
-            window_group(app, theme, cx),
-            appearance_group(app, theme),
-            log_group(app, snap, theme, cx),
-            about_group(theme),
-        ],
+        super::state::Page::Program => {
+            let mut rows = vec![binary_group(snap, theme, cx)];
+            // 「运行方式」只剩 Linux 的「免 root 运行」：其它平台上这一组
+            // 返回 None，别摆一张只有标题的空卡片。
+            if let Some(group) = runtime_group(app, theme, cx) {
+                rows.push(group);
+            }
+            rows.push(window_group(app, theme, cx));
+            rows.push(appearance_group(app, theme));
+            rows.push(log_group(app, snap, theme, cx));
+            rows.push(about_group(theme));
+            rows
+        }
     }
 }
