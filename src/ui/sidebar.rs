@@ -33,6 +33,7 @@ use gpui::{AnyElement, Context, Div, Hsla, IntoElement, Svg, div, px, rems, prel
 use gpuikit::theme::{Theme, ThemeVariant, Themeable};
 use gpuikit::{DefaultIcons, elements::icon_button::icon_button};
 
+use crate::core::APP_VERSION;
 use crate::core::config::ThemeSetting;
 use crate::core::i18n::{LangSetting, t, tf};
 
@@ -45,11 +46,13 @@ use super::widgets::{SPACE_S, SPACE_XL, SPACE_XS, dot, hairline, icon, v_hairlin
 ///
 /// 宽度由两件事撑出来，取更宽的那个：
 ///
-/// - 品牌行：`Tun2Proxy`（15dp 半粗）+ 间距 + 收起按钮 28dp；
+/// - 品牌行：`Tun2ProxyGUI`（14dp 半粗）+ `v0.5.0`（11dp 灰）+ 间距 + 收起按钮
+///   32dp，约 170dp；
 /// - 版本胶囊：`tun2proxy v0.8.6` 在 14dp 下约 130dp，加左右留白约 146dp。
 ///
-/// 176 - 左右各 8 = 160dp 可用宽，两件都装得下。
-pub const SIDEBAR_WIDTH: f32 = 176.0;
+/// 200 - 左右各 8 = 184dp 可用宽，两件都装得下。176dp 时 `v0.5.0` 会被收起按钮
+/// 压掉最后一个字符，所以品牌名加上 `GUI` 之后必须跟着放宽。
+pub const SIDEBAR_WIDTH: f32 = 200.0;
 /// 收起后的图标栏宽度：40dp 的导航项 + 左右各 6dp 留白。
 pub const RAIL_WIDTH: f32 = 52.0;
 /// 侧边栏内部左右留白。
@@ -109,20 +112,41 @@ fn expanded(app: &UiApp, snap: &Snapshot, theme: &Theme, cx: &mut Context<UiApp>
                 .items_center()
                 .gap(px(SPACE_S))
                 .child(
+                    // 名称后面紧跟本程序自己的版本：排查时第一句话往往是
+                    // 「你用的是哪一版」，它得在一眼看得见的地方，而不是
+                    // 「程序与日志」页面里。字重和字号都降一档，别跟名称抢。
                     div()
+                        .flex()
                         .flex_1()
                         .min_w_0()
-                        .text_size(px(TEXT_GROUP))
-                        .font_weight(WEIGHT_SEMIBOLD)
-                        .text_color(theme.fg())
-                        .whitespace_nowrap()
-                        .child("Tun2Proxy"),
+                        // 按基线对齐：15dp 的名称和 11dp 的版本光靠垂直居中
+                        // 会差出一两个像素，看起来像版本号掉在了名称下面。
+                        .items_baseline()
+                        .gap(px(5.0))
+                        .child(
+                            div()
+                                .text_size(px(TEXT_GROUP))
+                                .font_weight(WEIGHT_SEMIBOLD)
+                                .text_color(theme.fg())
+                                .whitespace_nowrap()
+                                .child("Tun2ProxyGUI"),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(11.0))
+                                .text_color(theme.fg_muted())
+                                .whitespace_nowrap()
+                                .child(format!("v{APP_VERSION}")),
+                        ),
                 )
                 .child(toggle(app, theme, cx)),
         )
         // 版本号是小字而不是彩色胶囊：胶囊是「状态」的形状（未运行 / 运行中
         // 都是胶囊），版本号是静态信息，给它同一个形状会让侧栏顶部出现两个
         // 视觉焦点，也让人以为版本会变。
+        //
+        // 这一行是 **tun2proxy 二进制的版本**，和名称后面那个 GUI 版本是两件
+        // 事：二进制可以随时「检查更新」换掉，前端版本只在装新版程序时变。
         .child(
             div()
                 .px(px(4.0))
