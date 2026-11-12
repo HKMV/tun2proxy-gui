@@ -15,8 +15,13 @@ rebuilt around "multiple proxy profiles + one-click start/stop".
 
 ![Dashboard](assets/screenshots/dashboard-en.png)
 
-*English UI (Dashboard): navigation and service state always in the sidebar;
-current profile, runtime options and live log on the right.*
+*English UI (Dashboard): navigation and service state always in the sidebar; live traffic
+and routing, current profile and runtime options on the right.*
+
+![Split routing](assets/screenshots/split-en.png)
+
+*English UI (Split routing): master switch and status, list update time, recent decisions,
+and the built-in lists you can switch off row by row.*
 
 ## Features
 
@@ -25,14 +30,30 @@ current profile, runtime options and live log on the right.*
   delete or rename them. The selected profile is what the tunnel starts with.
 - **One-click start/stop**: the sidebar always shows the service state plus a
   start/stop button, so you can tell at a glance whether the tunnel is up.
+- **China IP / domain direct routing**: a built-in snapshot of Chinese domains,
+  IPv4 and IPv6 ranges decides what goes out over your local network and what
+  keeps using the upstream proxy. Every built-in list row can be switched off on
+  its own, and it coexists with both SOCKS5 and TProxy modes.
+- **Online list updates**: one click on the split page re-aggregates the China IP
+  and domain lists from APNIC and v2fly (showing the data date and entry counts),
+  and "Restore" falls back to the built-in snapshot. Changes apply immediately —
+  no tunnel restart.
+- **Recent decisions**: the splitter writes one line per connection (direct /
+  proxied / failed), and the dashboard carries the counts plus a trend chart, so
+  you can see which connection went where.
+- **Leftover adapter cleanup**: on startup the app removes `t2p_*` Wintun
+  adapters left behind by a killed process — including non-present device nodes
+  that never show up in "Network connections". Wintun adapters belonging to other
+  VPNs are never touched.
 - **Managed tun2proxy**: on first run, hit "Download and install" and the app
   fetches the official binary for your platform from GitHub Releases, verifies
   its SHA-256 and unpacks it into its own data directory. Later you can "Check
   for updates" and swap it in place — no need to ship a new GUI release.
 - **Full option coverage**: upstream proxy (`socks5://` / `socks4://` /
   `http://`), DNS strategy (direct / virtual IP / over TCP, virtual IP by
-  default), DNS servers, virtual address pool, bypass ranges, TUN name, MTU,
-  TCP/UDP timeouts, max sessions, IPv6, auto route setup, UDPGW and log level.
+  default), DNS servers, virtual address pool, bypass ranges, TUN adapter name
+  (empty means a random `t2p_xxxxxxxx` each start), MTU, TCP/UDP timeouts, max
+  sessions, IPv6 (on by default), auto route setup, UDPGW and log level.
 - **Live log**: the child process's stdout/stderr is streamed straight into the
   window, and can be cleared with one click.
 - **Proxy reachability check**: fill in the upstream URL, hit "Test", and the
@@ -47,8 +68,10 @@ current profile, runtime options and live log on the right.*
   or click the "Language" cell at the bottom of the sidebar — applied immediately.
   Every string lives in code as
   `t("中文", "English")`, so there is no separate translation file to maintain.
-- **Live traffic chart**: the dashboard hero card shows downstream/upstream
-  throughput for the last minute.
+- **Live traffic and routing**: one dashboard card holds two stacked line charts —
+  both cover the last two minutes on a shared time axis with vertical units — and
+  the routing chart carries direct / proxied / failed counters you can expand into
+  a per-connection list.
 - **System tray**: a tray icon is always present, with a tooltip that follows
   the service state. Its context menu can start, stop, show the window or quit;
   double-clicking the icon brings the window back.
@@ -70,7 +93,18 @@ src/
 │  ├─ engine.rs    Spawn the child process, collect logs, track state and progress
 │  ├─ elevate.rs   Administrator / root detection and Windows auto-elevation
 │  ├─ probe.rs     Upstream proxy reachability check (TCP + SOCKS5 / HTTP handshake)
-│  ├─ traffic.rs   Sample the child process's byte counters (Windows IO counters / /proc)
+│  ├─ traffic.rs   Sample TUN adapter byte counters by name (Windows interface table / /sys)
+│  ├─ adapters.rs  Remove leftover t2p_* tunnel adapters before start (Windows SetupAPI)
+│  ├─ split/       China-traffic direct routing
+│  │  ├─ service.rs  Local SOCKS5 splitter: decisions, direct / proxied, counters and trend
+│  │  ├─ rules.rs    Rules and matchers (domain suffix / keyword / CIDR)
+│  │  ├─ library.rs  List aggregation: built-in snapshot + downloads + custom rules + per-row switches
+│  │  ├─ builtin.rs  The list snapshot compiled into the binary
+│  │  ├─ update.rs   Download and aggregate lists from APNIC + v2fly
+│  │  ├─ outlet.rs   Detect and bind the direct-outlet adapter
+│  │  ├─ upstream.rs Upstream proxy protocols (SOCKS5 / HTTP CONNECT)
+│  │  ├─ ipset.rs    IP range set
+│  │  └─ settings.rs Split settings
 │  ├─ tray.rs      Tray icon (Windows: a dedicated message window + Shell_NotifyIcon)
 │  ├─ window.rs    Find and show/hide the main window (tray restore, minimize to tray)
 │  ├─ icon.rs      Multi-size bitmaps of the app icon (one copy for window and tray)
@@ -84,11 +118,14 @@ src/
    ├─ pages.rs     Content area: thin top bar + the grouped composition of each page
    ├─ cards.rs     Groups and rows for each page
    ├─ widgets.rs   Reusable text styles and widgets (hero card, group, setting row, pill)
-   ├─ chart.rs     Live traffic chart (gpui canvas)
+   ├─ chart.rs     Line charts (gpui canvas): live traffic, routing, split trend
    └─ update.rs    Message handling (the only place that mutates state)
 assets/
 ├─ icon.ico       App icon (multi-size, embedded into the exe resource section)
-└─ icon.png       Icon source image (512×512, with alpha)
+├─ icon.png       Icon source image (512×512, with alpha)
+└─ screenshots/   UI screenshots used by the READMEs (Chinese and English)
+tools/
+└─ regen-rules/   Small tool that regenerates the builtin.rs list snapshot
 build.rs          Compiles app.rc (icon + version info) into the Windows exe
 ```
 
@@ -107,18 +144,16 @@ icon, replace `assets/icon.ico` and run `cargo build` again.
 
 ```
 ┌──────────────┬──────────────────────────────────────┐
-│ Tun2Proxy    │ Dashboard          Service state, …  │
-│ [v0.0.1]     │──────────────────────────────────────│
+│ Tun2Proxy    │ Dashboard          Service state, …  │ ← thin top bar (~45dp)
+│ tun2proxy …  │──────────────────────────────────────│ ← 1dp hairline
 │              │  ╭──────────────────────────────────╮│
-│ ▸ Dashboard  │  │ [Stopped]            [  Start ]  ││
-│ ▸ Profiles   │  │ Tun2Proxy is not running         ││
-│ ▸ Network    │  │ One line of explanation…         ││
-│ ▸ App & logs │  ╰──────────────────────────────────╯│
-│              │  Active profile                      │
-│              │  ╭──────────────────────────────────╮│
-│              │  │ [▤] Profile         [ Default ⌄] ││
+│ ▸ Dashboard  │  │ Live traffic / routing (2 min)   ││
+│ ▸ Profiles   │  ╰──────────────────────────────────╯│
+│ ▸ Split      │  Current profile                     │ ← group title (outside the card)
+│ ▸ Network    │  ╭──────────────────────────────────╮│
+│ ▸ Program    │  │ [▤] Profile         [ Default ⌄] ││ ← row
 │              │  │     The tunnel starts with…      ││
-│              │  ├──────────────────────────────────┤│
+│              │  ├──────────────────────────────────┤│ ← hairline inset on both sides
 │              │  │ [⚙] Upstream  socks5://…   [✎]   ││
 │              │  ╰──────────────────────────────────╯│
 │ ● Service    │                                      │
@@ -157,9 +192,10 @@ The log pane grows a thin scrollbar on its right when the content overflows
 (none is drawn otherwise), and its two corner icons copy the whole log and
 clear it. Log timestamps are local wall-clock time.
 
-Each of the four pages owns one group of settings, and switching pages never
-loses anything you typed (all state lives in `App`). The old "Advanced options"
-page is gone: log level moved to "App & logs", UDP forwarding (UDPGW) to
+Each of the five pages owns one group of settings (Dashboard / Profiles / Split routing /
+Network / Program), and switching pages never loses anything you typed (all state lives
+in `App`). The old "Advanced options"
+page is gone: log level moved to "Program", UDP forwarding (UDPGW) to
 "Network" — a page with three switches only adds a click.
 
 The core notifies the UI exclusively through a repaint callback
@@ -189,13 +225,16 @@ Pushing a tag builds every supported target and publishes them to GitHub
 Releases (see `.github/workflows/release.yml`):
 
 ```bash
-# Bump `version` in Cargo.toml, commit it, then tag — CI enforces that they match
-# Use an annotated tag (-a): its message becomes the release notes verbatim
-git tag -a v0.3.11 -m "v0.3.11
-
-- First change
-- Second change" && git push origin v0.3.11
+# Bump `version` in Cargo.toml, commit it, then tag — CI enforces that they match.
+# Write the notes to a file and tag with -F: --cleanup=verbatim is required, or git
+# strips lines starting with `#` (i.e. every `## heading`) as comments and the
+# release page ends up with one undivided list.
+git tag -a v0.4.0 -F notes.txt --cleanup=verbatim
+git push origin v0.4.0
 ```
+
+The first line of `notes.txt` is the tag title; after a blank line comes the
+release body (`## sections` are fine).
 
 Artifacts: `tun2proxy-gui-<tag>-<target>.zip` (Windows) and `.tar.gz` (Linux /
 macOS, containing `Tun2Proxy GUI.app` on macOS), plus a `SHA256SUMS.txt`.
@@ -226,6 +265,43 @@ Then start the app from that same terminal. On failure the UI shows the actual
 You can also download the release archive yourself and unpack its contents into
 `bin/` inside the data directory.
 
+## Split routing
+
+With "Split routing → Route China traffic directly" enabled, starting the tunnel
+also starts a local SOCKS5 splitter on `127.0.0.1`, and tun2proxy's upstream
+points at it: connections that match the lists are dialled by the splitter itself
+over your local network, everything else is forwarded to the real upstream proxy.
+The two modes are independent — with split routing off, tun2proxy's command line
+is byte-for-byte what it was before the feature existed.
+
+**Where the lists come from.** A snapshot (Chinese domains plus APNIC's mainland
+China IPv4 / IPv6 ranges, plus LAN and reserved addresses) is compiled into the
+binary, so it works offline. "Update now" on the split page re-fetches and
+re-aggregates from APNIC and v2fly, stores the result in the data directory and
+shows its data date and entry count; "Restore the built-in lists" deletes the
+download and falls back to the snapshot. A finished update is pushed into the
+running tunnel immediately — no restart.
+
+**How a decision is made.** Domains match by suffix / keyword (`qq.com` including
+its subdomains), IPs match by CIDR. Custom rules are one per line
+(`suffix:example.com`, `full:www.qq.com`, `keyword:bilili`, a bare `203.0.113.0/24`,
+and `proxy:example.org` to force one domain back onto the proxy); they sit in front
+of the built-in rules and can override them. Every built-in list row can be switched
+off on its own; to stop using a custom rule, delete its line (a `#` starts a comment).
+
+**Recent decisions.** The splitter writes one line per connection (direct /
+proxied / failed, with domain, IP and the rule that matched). The split page keeps
+the latest 20; the full log is on the Program page. The dashboard's routing chart
+is the same data over a two-minute window, with direct / proxied / failed counters.
+
+**Direct outlet.** The app picks the adapter carrying the current default route
+(it has to be detected before tun2proxy starts, while the default route is still a
+single clean entry); you can also type an adapter name or interface index. Windows
+binds the socket with `IP_UNICAST_IF`, Linux with `SO_BINDTODEVICE`. **Other
+platforms (macOS included) have no binding implementation: the splitter still
+starts, but "direct" decisions fall back to the proxy**, and the log says that no
+direct outlet was found.
+
 ## Data directory
 
 | Platform | Path |
@@ -248,9 +324,25 @@ variable moves the whole directory elsewhere (portable mode).
   ],
   "active": 0,
   "auto_check_update": true,
-  "release_repo": "tun2proxy/tun2proxy"
+  "release_repo": "tun2proxy/tun2proxy",
+  "language": "en",
+  "theme": "light",
+  "split": {
+    "enabled": true,
+    "local_networks": true,
+    "china_ip": true,
+    "china_domain": true,
+    "custom": "suffix:example.com",
+    "disabled": ["suffix:qq.com"],
+    "direct_dns": "223.5.5.5",
+    "direct_interface": ""
+  }
 }
 ```
+
+`split` sits next to `profiles`: the rules describe "which sites should not use
+the proxy", so switching proxies should not make you tick every list again.
+`disabled` holds rows switched off individually (keys look like `suffix:qq.com`).
 
 Missing fields fall back to defaults, so a hand-written config only needs the
 keys you care about.
@@ -267,6 +359,11 @@ keys you care about.
 - "Start" probes the upstream proxy first (the same handshake as the "Test"
   button). If it can't connect, the core is never started and the dialog states
   the reason.
+- Changing the split-routing **master switch** needs a tunnel restart; list updates
+  and per-row switches are hot-reloaded and apply immediately.
+- The tunnel adapter name is random on every start (`t2p_xxxxxxxx`); a leftover with
+  the same prefix from a killed process is cleaned up at startup. Fill in a name on
+  the Network page if you want it fixed.
 
 ## Tray and closing
 
@@ -299,7 +396,7 @@ decided in three places, highest priority first:
 1. **The `TUN2PROXY_GUI_THEME` environment variable** (for debugging and
    screenshots — it pins light/dark regardless of everything else; when it is set,
    the sidebar "Theme" cell greys out and says so, since clicking changes nothing);
-2. **Settings → "Program & logs" → "Appearance" → "Theme"** (System / Light /
+2. **Settings → "Program" → "Appearance" → "Theme"** (System / Light /
    Dark, applied immediately and saved), or **the "Theme" cell at the bottom of the
    sidebar** (clicking cycles Light → Dark → System; from System it jumps to the
    opposite of what you see now, so a click always changes something, and the
@@ -374,7 +471,7 @@ fails the original icon is used — a wrong colour is minor, a missing icon is n
 
 ```bash
 cargo check        # type check
-cargo test         # unit tests for config management
+cargo test         # unit tests: config, split rules and list aggregation, traffic sampling, chart ticks
 cargo build        # debug build
 ```
 
