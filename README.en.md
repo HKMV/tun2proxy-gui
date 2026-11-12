@@ -233,8 +233,12 @@ git tag -a v0.4.0 -F notes.txt --cleanup=verbatim
 git push origin v0.4.0
 ```
 
-The first line of `notes.txt` is the tag title; after a blank line comes the
-release body (`## sections` are fine).
+The first line of `notes.txt` is rendered **verbatim as the opening paragraph of the
+release body** — the one-line summary, e.g. "0.4.0: direct routing for mainland IPs and
+domains, automatic cleanup of leftover tunnel adapters". After a blank line comes the
+rest of the body (`## sections` are fine). Write that first line as a self-contained
+summary, not `v0.4.0` or `update`: the release title is always `Tun2Proxy GUI <tag>`, so
+the first line never becomes the title, it only becomes that paragraph at the top.
 
 Artifacts: `tun2proxy-gui-<tag>-<target>.zip` (Windows) and `.tar.gz` (Linux /
 macOS, containing `Tun2Proxy GUI.app` on macOS), plus a `SHA256SUMS.txt`.
