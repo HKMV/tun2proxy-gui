@@ -242,17 +242,23 @@ jobs:
       # 0.3.3 到 0.3.7 的 Release 页面全都是那样，详细说明写在了版本提交里
       # 却没人看得见。
       #
-      # 现在的顺序：先取 tag 正文（`git tag -a -m "..."` 写的那段），
+      # 现在的顺序：先取 tag 说明（`git tag -a -F notes.txt` 写的那份），
       # 没写再退回版本提交的正文（`chore(release): ...` 下面那段）。
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # 说明取自 tag 正文。注意打 tag 时必须带 `--cleanup=verbatim`，否则
-          # git 会把 `## 标题` 这种以 `#` 开头的行当注释剥掉，这里读到的正文就
-          # 只剩一串没有分段的 bullet（v0.4.0 第一次发布踩过）。
-          notes="$(git tag -l --format='%(contents:body)' "$TAG")"
+          # 说明取自 tag 说明的**全部内容**（`%(contents)`），不是
+          # `%(contents:body)`：后者按 git 的定义会砍掉第一个段落，而 tag 的第一行
+          # 正好是「0.4.0：一句话摘要」那句，砍掉之后 Release 页面顶部就只剩
+          # `## 新功能`，摘要哪儿都不显示（标题又是写死的 `Tun2Proxy GUI <tag>`）。
+          # 留着它，摘要就渲染成正文首段，排在第一个 `##` 小节之前。
+          #
+          # 另注意打 tag 时必须带 `--cleanup=verbatim`，否则 git 会把 `## 标题`
+          # 这种以 `#` 开头的行当注释剥掉，这里读到的正文就只剩一串没有分段的
+          # bullet（v0.4.0 第一次发布踩过）。
+          notes="$(git tag -l --format='%(contents)' "$TAG")"
           if [ -z "$(printf '%s' "$notes" | tr -d '[:space:]')" ]; then
             notes="$(git log -1 --pretty=%b HEAD)"
           fi
