@@ -211,6 +211,14 @@ cargo build --release
 The binary lands in `target/release/tun2proxy-gui` (`tun2proxy-gui.exe` on
 Windows).
 
+The release profile is tuned for **size**, not build time (see
+`[profile.release]` in `Cargo.toml`): `opt-level = "s"` + `lto = "fat"` +
+`codegen-units = 1` + `panic = "abort"` + `strip = "symbols"`. On Windows the exe
+drops from 14.9 MB to 7.6 MB and the packaged zip from 5.9 MB to 3.5 MB. It costs
+a few minutes of full release build time (incremental rebuilds only relink), and
+`panic = "abort"` means `cargo test --release` no longer works — run `cargo test`
+with the default dev profile.
+
 Dependencies:
 
 - Windows: nothing extra.

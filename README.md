@@ -176,6 +176,13 @@ cargo build --release
 
 产物在 `target/release/tun2proxy-gui`（Windows 为 `tun2proxy-gui.exe`）。
 
+release profile 是按**体积**调的，不是按编译时间（见 `Cargo.toml` 的
+`[profile.release]`）：`opt-level = "s"` + `lto = "fat"` + `codegen-units = 1` +
+`panic = "abort"` + `strip = "symbols"`。Windows 上 exe 从 14.9 MB 降到 7.6 MB，
+打包后的 zip 从 5.9 MB 降到 3.5 MB。代价是全量 release 编译要几分钟到十几分钟
+（增量只重链一次）；另外 `panic = "abort"` 让 `cargo test --release` 不可用，
+跑测试请用默认的 dev 配置 `cargo test`。
+
 依赖说明：
 
 - Windows：无需额外依赖。
