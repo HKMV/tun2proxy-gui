@@ -14,10 +14,10 @@
 //!
 //! | target | 来源 | 界面/文件里的样子 |
 //! |--------|------|------------------|
-//! | [`TARGET_OUTPUT`] | tun2proxy 子进程的 stdout/stderr | `HH:MM:SS 级别 [tun2proxy] 消息` |
-//! | [`TARGET_APP`] | 本程序的提示（启动、下载、托盘…） | `HH:MM:SS 消息` |
-//! | [`TARGET_SPLIT`] | 分流器每条连接的判定 | `HH:MM:SS 消息` |
-//! | 其它 | `log` / `tracing` 宏（含 gpuikit） | `HH:MM:SS 级别 消息` |
+//! | [`TARGET_OUTPUT`] | tun2proxy 子进程的 stdout/stderr | `YYYY-MM-DD HH:MM:SS 级别 [tun2proxy] 消息` |
+//! | [`TARGET_APP`] | 本程序的提示（启动、下载、托盘…） | `YYYY-MM-DD HH:MM:SS 消息` |
+//! | [`TARGET_SPLIT`] | 分流器每条连接的判定 | `YYYY-MM-DD HH:MM:SS 消息` |
+//! | 其它 | `log` / `tracing` 宏（含 gpuikit） | `YYYY-MM-DD HH:MM:SS 级别 消息` |
 //!
 //! # 子进程那一层为什么要改写时间
 //!
@@ -128,9 +128,13 @@ const FILE_TS: &[FormatItem<'static>] = time::macros::format_description!(
     "[year]-[month]-[day] [hour]:[minute]:[second].[subsecond digits:3]"
 );
 
-/// 界面行首只放 `HH:MM:SS`：日志面板窄，日期在文件名里已经有。
-const CLOCK_TS: &[FormatItem<'static>] =
-    time::macros::format_description!("[hour]:[minute]:[second]");
+/// 界面行首的时间：日期 + 时分秒，精确到秒。
+///
+/// 日期不能省：程序常开着不重启，面板里会横跨零点；只写时分秒的话，前一天的
+/// 「23:59」和今天的「00:01」看起来是同一个瞬间。毫秒留给文件——面板里对齐
+/// 读的是「什么时候发生了什么」，不是亚秒级的先后。
+const UI_TS: &[FormatItem<'static>] =
+    time::macros::format_description!("[year]-[month]-[day] [hour]:[minute]:[second]");
 
 /// 本地时区偏移，进程内只算一次。
 ///
@@ -372,10 +376,9 @@ fn relocalize(line: &str, format: &[FormatItem<'static>]) -> String {
 fn ui_line(target: &str, level: Level, message: &str) -> (LogKind, String) {
     let kind = kind_of(target);
     if kind == LogKind::Output {
-        // 界面行首只放 `HH:MM:SS`：日期在文件名里已经有，面板又窄。
-        return (kind, relocalize(message, CLOCK_TS));
+        return (kind, relocalize(message, UI_TS));
     }
-    let clock = now().format(CLOCK_TS).unwrap_or_default();
+    let clock = now().format(UI_TS).unwrap_or_default();
     let text = match kind {
         LogKind::App | LogKind::Split => format!("{clock} {message}"),
         _ => format!("{clock} {level:<5} {message}"),
@@ -414,7 +417,10 @@ mod tests {
         assert_eq!(kind, LogKind::App);
         assert!(app.ends_with(" 配置目录 C:\\x"), "{app:?}");
         assert!(!app.contains("INFO"), "{app:?}");
-        assert_eq!(&app[2..3], ":", "{app:?}");
+        // 行首是 `YYYY-MM-DD HH:MM:SS`：带日期，跨零点时也分得清是哪一天。
+        assert_eq!(&app[4..5], "-", "{app:?}");
+        assert_eq!(&app[10..11], " ", "{app:?}");
+        assert_eq!(&app[13..14], ":", "{app:?}");
 
         // 分流器同理。
         let (kind, split) = ui_line(TARGET_SPLIT, Level::INFO, "直连 1.1.1.1");
@@ -435,8 +441,9 @@ mod tests {
         assert_eq!(kind, LogKind::Output);
         let tail = " INFO  [tun2proxy] Beginning #1";
         assert!(output.ends_with(tail), "{output:?}");
-        // 前 8 个字符是 `HH:MM:SS`：既不带上游那个 UTC 时间戳，也不重复时间。
-        assert_eq!(output.len() - tail.len(), 8, "{output:?}");
+        // 前 19 个字符是 `YYYY-MM-DD HH:MM:SS`：既不带上游那个 UTC 时间戳，
+        // 也不重复时间。
+        assert_eq!(output.len() - tail.len(), 19, "{output:?}");
     }
 
     #[test]
