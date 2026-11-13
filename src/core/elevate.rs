@@ -145,13 +145,23 @@ mod imp {
         let Ok(exe) = std::env::current_exe() else {
             return false;
         };
-        let args = std::env::args()
-            .skip(1)
+        let mut args: Vec<String> = std::env::args().skip(1).collect();
+        // 新进程是**接手**的那一个：旧进程的窗口可能还活着几十毫秒，不带上
+        // 这个标记的话，它会把自己当成「已经有一个在跑」而直接退出——用户
+        // 看到的是「点了重启，程序没了」。见 `core::single_instance`。
+        if !args
+            .iter()
+            .any(|arg| arg == crate::core::single_instance::TAKEOVER_ARG)
+        {
+            args.push(crate::core::single_instance::TAKEOVER_ARG.to_string());
+        }
+        let args = args
+            .iter()
             .map(|arg| {
                 if arg.contains(' ') {
                     format!("\"{arg}\"")
                 } else {
-                    arg
+                    arg.clone()
                 }
             })
             .collect::<Vec<_>>()

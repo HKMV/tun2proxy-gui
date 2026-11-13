@@ -217,8 +217,17 @@ pub fn update(app: &mut App, msg: Msg, cx: &mut Context<App>) {
             // 先把内核收掉：否则旧进程退出后，新进程会碰到还在跑的 tun2proxy
             // （TUN 网卡与路由都还挂在旧进程名下）。
             app.engine.shutdown_blocking();
+            // 再把「唯一实例」的名额让出去：新进程是接手的那个，不放开的话
+            // 它会以为已经有一个在跑，然后把自己关掉。
+            crate::core::single_instance::release();
             if crate::core::elevate::relaunch_elevated() {
                 std::process::exit(0);
+            }
+            // 没拉起来：把名额拿回来，否则这会儿再开一个就成了两个实例。
+            // `release` 连「显示窗口」事件一起交出去了，所以这里要重新开出来：
+            // 不然这一路失败之后，双击 exe 就没人应，窗口再也叫不回来。
+            if crate::core::single_instance::claim() {
+                crate::core::single_instance::create_show_event();
             }
             app.error = Some(
                 t(

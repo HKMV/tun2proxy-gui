@@ -29,6 +29,7 @@
 //!
 //! 启动流程：
 //!
+//! 0. 单实例：已经有一个在跑，就把它的窗口叫到前台，自己直接退出；
 //! 1. 检查权限（Windows 上没有管理员权限时会询问并 UAC 重新拉起自己）；
 //! 2. 读取配置，创建内核引擎；
 //! 3. 装托盘图标（装不上不影响主流程）；
@@ -67,8 +68,32 @@ fn main() {
     // 0. 卡顿探针：之后界面线程无论卡在哪一段，都会写进 stall.log。
     core::watchdog::install();
 
+    // 0.5 单实例：已经开着一个就请它自己把窗口显示出来，本进程直接退出。
+    //
+    // 放在提权**之前**：第二次双击不该再弹一次 UAC。这里只往一个命名事件上
+    // 打个信号，不碰对方的窗口，所以不会有「对方被叫出来了但一片白」的问题
+    // （原因见 `core::single_instance` 模块头）。
+    if core::single_instance::request_show() {
+        return;
+    }
+
     // 1. 权限：不足时可能直接重新拉起自己（Windows 会弹 UAC 对话框）。
     elevate::ensure_elevated();
+
+    // 1.5 认领「本会话唯一实例」。提权之后才认领，是因为提权重启出来的子进程
+    //     正是接手的那个，而父进程从头到尾没有窗口、也不占名额。
+    if !core::single_instance::claim() {
+        // 上面那次信号没送出去（跨权限时低完整的本进程可能拿不到提权实例
+        // 事件上的 `EVENT_MODIFY_STATE`）。现在两边同级了，再请它一次。
+        if !core::single_instance::request_show() {
+            // 还是没有：对方的托盘线程不在（没人看事件），只能直接动它的窗口。
+            core::single_instance::focus_window(WINDOW_TITLE);
+        }
+        return;
+    }
+
+    // 1.6 名额拿到了：开出「显示窗口」事件，之后别人双击 exe 就靠它找到我们。
+    core::single_instance::create_show_event();
 
     // 2. 声明 DPI 感知（必须在建窗口之前）。
     core::platform::init();

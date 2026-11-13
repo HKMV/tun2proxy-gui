@@ -22,6 +22,10 @@
 //! | 右键菜单 · 停止 | 与界面上的「停止」同一条路径（先中断，6 秒后强杀） |
 //! | 右键菜单 · 退出 | 停服务 → 关窗口 → 进程退出 |
 //!
+//! 这个线程还兼职一件事：每 200ms 看一眼 `core::single_instance` 的「显示窗口」
+//! 事件——用户第二次双击 exe 时，第二个进程只发信号不碰窗口，由这里走和双击
+//! 托盘图标同一条路把窗口显示出来（外部 `ShowWindow` 会让 GPUI 露出白窗口）。
+//!
 //! 「启动」读磁盘上的配置而不是界面里正在编辑的草稿：托盘线程碰不到界面
 //! 状态，而磁盘上的那份才是「上次保存的、可信的」配置。界面上没保存的改动
 //! 本来就不该被托盘偷偷拿去用。
@@ -82,7 +86,11 @@ mod imp {
     /// 托盘回调消息（`WM_APP + 1` 是托盘图标的惯例位置）。
     const WM_TRAY: u32 = WM_APP + 1;
     const TRAY_ID: u32 = 1;
+    /// 刷提示文字（状态是后台线程改的，2 秒一次足够）。
     const TIMER_ID: usize = 1;
+    /// 看一眼「有人双击 exe 找我吗」。200ms 是「点了就出来」和「别空转」的折中，
+    /// 和刷提示文字的节奏分开，免得为了这个把图标刷新提到每秒 5 次。
+    const SHOW_TIMER_ID: usize = 2;
     const MENU_SHOW: usize = 1;
     const MENU_START: usize = 2;
     const MENU_STOP: usize = 3;
@@ -142,7 +150,10 @@ mod imp {
             let hwnd = CreateWindowExW(
                 0,
                 class_name.as_ptr(),
-                class_name.as_ptr(),
+                // 窗口标题故意留空：这个窗口从不显示，而 `core::window::find_main`
+                // 是按「有标题的顶层窗口」反查主窗口的——给它一个标题就等于多出
+                // 一个诱饵（历史上就是这么把「显示窗口」抓到空窗口上的）。
+                std::ptr::null(),
                 WS_POPUP,
                 0,
                 0,
@@ -159,7 +170,10 @@ mod imp {
 
             let mut data = icon_data(hwnd);
             if Shell_NotifyIconW(NIM_ADD, &data) == 0 {
-                // 提示区被策略禁用 / 资源管理器没起来：记一行，别静默失败。
+                // 提示区被策略禁用 / 资源管理器没起来：记一行，但**不要退出这个
+                // 线程**。消息循环还兼职「响应第二次启动」和每 2 秒重试注册图标
+                // （见 `refresh_tooltip` 里的 `NIM_ADD` 重试）；线程一退，藏进托盘
+                // 的窗口就再也叫不回来了，用户看到的是程序凭空消失。
                 if let Some(engine) = ENGINE.get() {
                     engine.log_line(
                         t(
@@ -169,13 +183,13 @@ mod imp {
                         .to_string(),
                     );
                 }
-                return;
-            }
-            if let Some(engine) = ENGINE.get() {
+            } else if let Some(engine) = ENGINE.get() {
                 engine.log_line(t("托盘：图标已注册", "Tray: icon registered").to_string());
             }
             // 每 2 秒刷一次提示文字：状态是后台线程改的，托盘得自己跟上。
             SetTimer(hwnd, TIMER_ID, 2000, None);
+            // 另外每 200ms 看一次「是不是有人又双击了 exe」。
+            SetTimer(hwnd, SHOW_TIMER_ID, 200, None);
 
             let mut message: MSG = std::mem::zeroed();
             loop {
@@ -224,6 +238,13 @@ mod imp {
             WM_TIMER => {
                 if wparam == TIMER_ID {
                     refresh_tooltip(hwnd);
+                } else if wparam == SHOW_TIMER_ID
+                    && crate::core::single_instance::take_show_request()
+                {
+                    // 有人又双击了 exe：走和「双击托盘图标」完全同一条路。第二个
+                    // 进程只发了信号，窗口得我们自己显示——它从外面 `ShowWindow`
+                    // 只会让 GPUI 露出白窗口。
+                    crate::core::window::show_main();
                 }
                 0
             }

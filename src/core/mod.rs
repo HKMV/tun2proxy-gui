@@ -17,6 +17,7 @@
 //! | [`watchdog`] | 界面线程卡顿探针（假死时把「卡在哪一段」写进 stall.log） |
 //! | [`icon`] | 程序图标的唯一真源（exe 资源 / 标题栏 / 托盘共用一份字节） |
 //! | [`window`] | 主窗口句柄的查找与显隐（托盘唤回、最小化到托盘） |
+//! | [`single_instance`] | 只允许开一个实例：第二次启动请已有实例自己把窗口显出来 |
 //! | [`tray`] | 系统托盘图标（Windows）：状态提示、启停、显示窗口、退出 |
 //! | [`elevate`] | 管理员 / root 权限检测与 Windows 上的自动提权重启 |
 //!
@@ -38,6 +39,7 @@ pub mod logs;
 pub mod paths;
 pub mod platform;
 pub mod probe;
+pub mod single_instance;
 pub mod split;
 pub mod traffic;
 pub mod tray;
