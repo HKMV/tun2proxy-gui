@@ -15,18 +15,21 @@
 //! **强调色实心主按钮**、**图标 + 文字的行内动作**、**设置分组卡片**。
 
 use gpui::{
-    AnyElement, App, BorderStyle, Bounds, ClickEvent, DispatchPhase, Div, ElementId, Entity, Hsla,
-    IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, ScrollHandle, SharedString, Stateful,
-    Svg, Window, canvas, div, point, px, prelude::*, quad, rems, size, transparent_black,
+    AnyElement, App, BorderStyle, Bounds, ClickEvent, Context, DispatchPhase, Div, ElementId,
+    Entity, Hsla, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, Render, ScrollHandle,
+    SharedString, Stateful, Svg, Window, canvas, div, point, px, prelude::*, quad, rems, size,
+    transparent_black,
 };
 use gpuikit::elements::checkbox::{CheckState, checkbox_box};
 use gpuikit::elements::icon_button::icon_button;
 use gpuikit::elements::tooltip::tooltip;
 use gpuikit::input::InputState;
-use gpuikit::theme::{ControlSize, Theme, Themeable};
+use gpuikit::theme::{ActiveTheme, ControlSize, Theme, Themeable};
 use gpuikit::traits::control_sized::ControlSized;
 use std::cell::Cell;
 use std::rc::Rc;
+
+use crate::core::i18n::t;
 
 use super::theme::{TEXT_BODY, TEXT_GROUP, TEXT_MONO, TEXT_SMALL, TEXT_TITLE, WEIGHT_SEMIBOLD};
 
@@ -901,6 +904,59 @@ pub fn toggle_control(
             })
             .control_size(ControlSize::Large),
         )
+}
+
+/// 关窗弹窗底部那个「记住这个选择」。
+///
+/// 为什么是独立实体而不是 `App` 上的一个布尔：弹窗正文是「渲染时才调用」的
+/// 闭包（`Dialog::content`），在闭包里回头去动 `App` 会和正在渲染它的那一帧
+/// 撞车（同一个实体被借两次）。这里只存「勾没勾」，真值在用户按下两个答案
+/// 之后才由调用方写进 `config.close_action`。
+#[derive(Default)]
+pub struct RememberChoice {
+    checked: bool,
+}
+
+impl RememberChoice {
+    /// 用户勾了没有。
+    pub fn checked(&self) -> bool {
+        self.checked
+    }
+}
+
+impl Render for RememberChoice {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        div()
+            .id("remember-close-action")
+            .flex()
+            .items_center()
+            .gap(px(SPACE_S))
+            .cursor_pointer()
+            .on_click(cx.listener(|this, _event, _window, cx| {
+                this.checked = !this.checked;
+                cx.notify();
+            }))
+            .child(
+                checkbox_box(if self.checked {
+                    CheckState::Checked
+                } else {
+                    CheckState::Unchecked
+                })
+                // 和设置页的勾选框同档：弹窗里的按钮是 `Large`，勾选框比它们
+                // 矮一档会像缩水了一圈。
+                .control_size(ControlSize::Large),
+            )
+            .child(
+                div()
+                    .text_size(px(TEXT_SMALL))
+                    .text_color(theme.fg())
+                    .child(t(
+                        "记住这个选择，下次不再询问",
+                        "Remember this choice, don't ask again",
+                    )),
+            )
+    }
 }
 
 /// 把字节数格式化成人类可读的大小。

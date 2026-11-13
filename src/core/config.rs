@@ -498,6 +498,36 @@ impl ThemeSetting {
     }
 }
 
+/// 点标题栏的叉时怎么办。
+///
+/// 三态而不是「问不问」一个布尔：关窗弹窗里勾了「记住这个选择」之后，程序
+/// 得知道用户当时选的是哪一边——「以后别问了」在「最小化到托盘」和「退出
+/// 程序」两种答案下意思完全相反。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum CloseAction {
+    /// 每次先问一句（默认）。
+    #[default]
+    Ask,
+    /// 直接藏进托盘，退出走托盘菜单。
+    Minimize,
+    /// 直接退出程序。
+    Quit,
+}
+
+impl CloseAction {
+    pub const ALL: [CloseAction; 3] = [Self::Ask, Self::Minimize, Self::Quit];
+
+    /// 下拉框里的文字。
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Ask => t("每次询问", "Always ask"),
+            Self::Minimize => t("最小化到托盘", "Minimize to tray"),
+            Self::Quit => t("退出程序", "Quit"),
+        }
+    }
+}
+
 /// 应用级配置：多套代理配置 + 当前选中的下标 + 与代理无关的选项。
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -511,11 +541,12 @@ pub struct Config {
     pub language: LangSetting,
     /// 界面主题：跟随系统 / 浅色 / 深色。
     pub theme: ThemeSetting,
-    /// 点标题栏的叉时，先问「要不要最小化到托盘」而不是直接退出。
+    /// 点标题栏的叉时怎么办。
     ///
-    /// 默认开：tun2proxy 是常驻服务，误关窗口会把正在跑的隧道一起停掉。
-    /// 关掉之后就按「关窗即最小化到托盘」处理，退出走托盘菜单。
-    pub confirm_close_to_tray: bool,
+    /// 默认「每次询问」：tun2proxy 是常驻服务，误关窗口会把正在跑的隧道一起
+    /// 停掉。关窗弹窗里勾上「记住这个选择」之后，这里会被改成用户当时选的
+    /// 那一项（最小化到托盘 / 退出程序），下次点叉就不再问。
+    pub close_action: CloseAction,
     /// 分流设置：国内 IP / 域名直连。
     ///
     /// 和 [`Profile`] 平级：分流规则描述的是「哪些站点不该走代理」，
@@ -535,17 +566,41 @@ fn missing_config_version() -> u32 {
     0
 }
 
+/// 把 v5 及更早的 `confirm_close_to_tray`（布尔）翻译成 v6 的 `close_action`。
+///
+/// 旧字段的意思是「点叉时先问一句吗」：开着就是问，关掉就是「关窗即最小化
+/// 到托盘」。用户设过的意图不能因为升级就丢掉——不翻译的话，那些特意关掉
+/// 询问的人会突然又开始被问。
+fn migrate_close_action(mut value: serde_json::Value) -> serde_json::Value {
+    let Some(object) = value.as_object_mut() else {
+        return value;
+    };
+    let old = object.remove("confirm_close_to_tray");
+    // 已经有新字段就以新字段为准（手工改过配置的情况）。
+    if object.contains_key("close_action") {
+        return value;
+    }
+    if let Some(false) = old.as_ref().and_then(|flag| flag.as_bool()) {
+        object.insert(
+            "close_action".to_string(),
+            serde_json::Value::String("minimize".to_string()),
+        );
+    }
+    value
+}
+
 /// 当前配置文件格式版本。
 ///
 /// * 1 —— 初始格式；
 /// * 2 —— 曾经把 `--exit-on-fatal-error` 默认打开过（v3 撤回）；
 /// * 3 —— `max_sessions` 默认从 200 抬到 [`DEFAULT_MAX_SESSIONS`]；
 /// * 4 —— DNS 策略默认从 `direct` 改成 `virtual`；
-/// * 5 —— `ipv6` 默认从关改成开。
+/// * 5 —— `ipv6` 默认从关改成开；
+/// * 6 —— `confirm_close_to_tray`（布尔）换成三态的 `close_action`。
 ///
 /// `exit_on_fatal` 字段本身已经删了（见 [`Profile::cli_args`]），不需要为它
 /// 再升一个版本号：旧文件里那一项会被 serde 忽略。
-const CONFIG_VERSION: u32 = 5;
+const CONFIG_VERSION: u32 = 6;
 
 impl Default for Config {
     fn default() -> Self {
@@ -556,7 +611,7 @@ impl Default for Config {
             release_repo: "tun2proxy/tun2proxy".to_string(),
             language: LangSetting::Auto,
             theme: ThemeSetting::Auto,
-            confirm_close_to_tray: true,
+            close_action: CloseAction::Ask,
             split: SplitSettings::default(),
             config_version: CONFIG_VERSION,
         }
@@ -588,6 +643,9 @@ impl Config {
                 return Config::default();
             }
         };
+        // 旧字段要在反序列化**之前**翻译：`Config` 里已经没有
+        // `confirm_close_to_tray` 了，serde 会直接把它当无关字段丢掉。
+        let value = migrate_close_action(value);
 
         let mut config = if value.get("profiles").is_some() {
             // 反序列化失败时不能静默换成默认值：那样用户看到的是一份
@@ -805,6 +863,36 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 旧文件里那个布尔必须翻译成三态：关掉「询问」的人升级后不该又被问。
+    #[test]
+    fn the_old_close_flag_becomes_a_close_action() {
+        let read = |value: serde_json::Value| {
+            serde_json::from_value::<Config>(migrate_close_action(value)).unwrap()
+        };
+
+        assert_eq!(
+            read(serde_json::json!({ "profiles": [], "confirm_close_to_tray": false }))
+                .close_action,
+            CloseAction::Minimize,
+            "关掉询问 = 关窗即最小化到托盘"
+        );
+        assert_eq!(
+            read(serde_json::json!({ "profiles": [], "confirm_close_to_tray": true })).close_action,
+            CloseAction::Ask,
+            "开着询问还是每次问"
+        );
+        assert_eq!(
+            read(serde_json::json!({
+                "profiles": [],
+                "confirm_close_to_tray": false,
+                "close_action": "quit",
+            }))
+            .close_action,
+            CloseAction::Quit,
+            "新字段在场时以它为准"
+        );
+    }
 
     #[test]
     fn profile_management_keeps_state_valid() {

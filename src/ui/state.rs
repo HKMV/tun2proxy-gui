@@ -26,8 +26,8 @@ use crate::core::engine::ProbeState;
 use crate::core::i18n::{LangSetting, t, tf};
 use crate::core::logs::{LogKind, LogLine};
 use crate::core::{
-    Config, DnsMode, Engine, Profile, Shared, Status, ThemeSetting, TrafficSample, Update,
-    Verbosity,
+    CloseAction, Config, DnsMode, Engine, Profile, Shared, Status, ThemeSetting, TrafficSample,
+    Update, Verbosity,
 };
 use crate::ui::widgets::ROW_CONTROL;
 
@@ -249,8 +249,8 @@ pub enum Msg {    /// 切换到左侧导航的某一页。
     SplitFilter(String),
 
     // —— 窗口与托盘 ——
-    /// 修改「关闭窗口时询问」这个开关。
-    SetConfirmCloseToTray(bool),
+    /// 修改「点关闭按钮时怎么办」（每次询问 / 最小化到托盘 / 退出程序）。
+    SetCloseAction(CloseAction),
     /// 直接最小化到托盘（不弹窗）。
     MinimizeToTray,
     /// 切换界面语言（跟随系统 / 中文 / English）。
@@ -439,6 +439,7 @@ pub struct Selects {
     pub log_filter: Entity<SelectState<usize>>,
     pub language: Entity<SelectState<usize>>,
     pub theme: Entity<SelectState<usize>>,
+    pub close_action: Entity<SelectState<usize>>,
 }
 
 impl Selects {
@@ -452,6 +453,7 @@ impl Selects {
             log_filter: cx.new(|_| SelectState::new(log_filter_select(log_filter))),
             language: cx.new(|_| SelectState::new(language_select(config))),
             theme: cx.new(|_| SelectState::new(theme_select(config))),
+            close_action: cx.new(|_| SelectState::new(close_action_select(config))),
         }
     }
 
@@ -607,8 +609,34 @@ fn theme_select(config: &Config) -> gpuikit::elements::select::Select<usize> {
         })
 }
 
-/// 界面渲染时读到的共享状态快照。
+/// 「点关闭按钮时」下拉框。
 ///
+/// 三态而不是一个「关窗时询问」的开关：关窗弹窗里勾了「记住这个选择」之后，
+/// 用户得能看见自己到底记住了什么（最小化到托盘 ≠ 退出程序），也能在这里
+/// 改回「每次询问」——否则那个勾就是一次性、不可撤销的。
+fn close_action_select(config: &Config) -> gpuikit::elements::select::Select<usize> {
+    let options: Vec<(usize, String)> = CloseAction::ALL
+        .iter()
+        .enumerate()
+        .map(|(index, action)| (index, action.label().to_string()))
+        .collect();
+    let current = CloseAction::ALL
+        .iter()
+        .position(|action| *action == config.close_action)
+        .unwrap_or(0);
+    select("close-action-select", t("点关闭按钮时", "On close"), options)
+        .large()
+        .selected(current)
+        .full_width(true)
+        // 弹层默认按内容排版，会比 220dp 的触发框窄一截，看着不像同一个控件。
+        .popup_width(px(ROW_CONTROL))
+        .on_change(|index, _window, cx| {
+            let action = CloseAction::ALL[index.min(CloseAction::ALL.len() - 1)];
+            with_app(cx, |app, cx| app.handle(Msg::SetCloseAction(action), cx));
+        })
+}
+
+/// 界面渲染时读到的共享状态快照。///
 /// 一次性把锁里的数据拷出来，视图层不再碰 [`Mutex`]，避免一帧内多次加锁。
 #[derive(Clone, Debug)]
 pub struct Snapshot {
@@ -984,6 +1012,20 @@ impl App {
             .update(cx, |state, cx| state.set_selected(Some(theme), cx));
     }
 
+    /// 让「点关闭按钮时」下拉框显示现在真正的值。
+    ///
+    /// 这一项有两个入口：设置页的下拉框，和关窗弹窗里那个「记住这个选择」。
+    /// 弹窗改完 `config.close_action` 之后不同步的话，回到设置页看到的还是旧值。
+    pub fn sync_close_action_select(&mut self, cx: &mut Context<Self>) {
+        let action = CloseAction::ALL
+            .iter()
+            .position(|one| *one == self.config.close_action)
+            .unwrap_or(0);
+        self.selects
+            .close_action
+            .update(cx, |state, cx| state.set_selected(Some(action), cx));
+    }
+
     /// 让下拉框显示「现在真正的值」。
     pub fn sync_selects(&mut self, cx: &mut Context<Self>) {
         let profile = self.config.active;
@@ -1007,6 +1049,10 @@ impl App {
             .iter()
             .position(|setting| *setting == self.config.theme)
             .unwrap_or(0);
+        let close_action = CloseAction::ALL
+            .iter()
+            .position(|action| *action == self.config.close_action)
+            .unwrap_or(0);
 
         self.selects
             .profile
@@ -1026,6 +1072,9 @@ impl App {
         self.selects
             .theme
             .update(cx, |state, cx| state.set_selected(Some(theme), cx));
+        self.selects
+            .close_action
+            .update(cx, |state, cx| state.set_selected(Some(close_action), cx));
     }
 
     /// 日志行数变了就滚到底（贴住最新一行）。

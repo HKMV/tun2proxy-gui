@@ -11,15 +11,17 @@
 //! - 用户打字 → 实体已经是新的，**不要**回写（会把光标打回开头）；
 //! - 程序改值（切配置、填默认值、增删配置、换语言）→ 回写实体。
 
-use gpui::{AppContext, Context, Window};
+use gpui::{AppContext, Context, IntoElement, Window};
 use gpuikit::elements::dialog::{DialogState, dialog};
 use gpuikit::theme::ControlSize;
 use gpuikit::traits::control_sized::ControlSized;
 
 use crate::core::i18n::{apply as apply_language, t, tf};
 use crate::core::watchdog;
+use crate::core::CloseAction;
 
 use super::state::{App, Msg, Page};
+use super::widgets::RememberChoice;
 
 /// 处理一条界面消息。
 pub fn update(app: &mut App, msg: Msg, cx: &mut Context<App>) {
@@ -321,9 +323,9 @@ pub fn update(app: &mut App, msg: Msg, cx: &mut Context<App>) {
         }
 
         // —— 窗口与托盘 ——
-        Msg::SetConfirmCloseToTray(value) => {
-            app.config.confirm_close_to_tray = value;
-            // 这个开关就在设置页上，改完立刻落盘：它决定「关窗时会不会被拦」，
+        Msg::SetCloseAction(value) => {
+            app.config.close_action = value;
+            // 这一项就在设置页上，改完立刻落盘：它决定「点叉时会不会被拦」，
             // 不能等用户再点一次保存。
             if let Err(err) = app.config.save() {
                 app.error = Some(err);
@@ -443,10 +445,11 @@ impl App {
 
     /// 窗口的叉被按下时调用：决定「真的关」还是「藏进托盘」。
     ///
-    /// 返回 `true` 表示放行关闭。三种情况：
+    /// 返回 `true` 表示放行关闭。四种情况：
     ///
     /// - 托盘菜单点了「退出」→ 用户在别处已经确认过意图，直接退出；
-    /// - 开了「关闭时询问」且能藏窗口 → 弹窗，等用户选；
+    /// - 上次在弹窗里勾了「记住这个选择」→ 不再问，直接照办；
+    /// - 「每次询问」且能藏窗口 → 弹窗，等用户选；
     /// - 其余 → 直接藏进托盘（藏不住就退出，见 [`App::minimize_to_tray`]）。
     pub fn on_close_requested(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let _guard = watchdog::enter(watchdog::MSG_CLOSE_REQUESTED);
@@ -457,7 +460,21 @@ impl App {
             return true;
         }
 
-        if self.config.confirm_close_to_tray && crate::core::window::can_hide() {
+        // 用户已经表过态（弹窗里勾了「记住这个选择」，或设置页里选过）：
+        // 再问一遍就是明知故问。
+        match self.config.close_action {
+            CloseAction::Minimize => {
+                self.minimize_to_tray(cx);
+                return false;
+            }
+            CloseAction::Quit => {
+                cx.quit();
+                return true;
+            }
+            CloseAction::Ask => {}
+        }
+
+        if crate::core::window::can_hide() {
             // 对话框正文随服务状态变：**没在跑**的时候说「会停掉隧道」是在骗人
             // （根本没有隧道），用户会怀疑这个提示是模板话术。
             let running = self.engine.is_active();
@@ -473,7 +490,13 @@ impl App {
                 )
             };
 
+            // 「记住这个选择」只存勾没勾，真值在按下答案之后才写进配置。
+            let remember = cx.new(|_| RememberChoice::default());
+
             let state = cx.new(|_| {
+                let confirm_remember = remember.clone();
+                let cancel_remember = remember.clone();
+                let content_remember = remember.clone();
                 DialogState::new(
                     dialog("close-to-tray")
                         .confirm(t("最小化到托盘？", "Minimize to the tray?"), body)
@@ -484,15 +507,26 @@ impl App {
                         .destructive(false)
                         .confirm_label(t("最小化到托盘", "Minimize to tray"))
                         .cancel_label(t("退出程序", "Quit"))
-                        .on_confirm(|_window, cx| {
+                        // 正文区就是那句「记住这个选择」：两个答案各自带着它
+                        // 落盘，下次点叉不再问。
+                        .content(move |_window, _cx| content_remember.clone().into_any_element())
+                        .on_confirm(move |_window, cx| {
                             super::state::with_app(cx, |app, cx| {
                                 let _guard = watchdog::enter(watchdog::MSG_CLOSE_DIALOG);
+                                if confirm_remember.read(cx).checked() {
+                                    remember_close_action(app, CloseAction::Minimize, cx);
+                                }
                                 app.minimize_to_tray(cx);
                             });
                         })
-                        .on_cancel(|_window, cx| {
-                            let _guard = watchdog::enter(watchdog::MSG_CLOSE_DIALOG);
-                            cx.quit();
+                        .on_cancel(move |_window, cx| {
+                            super::state::with_app(cx, |app, cx| {
+                                let _guard = watchdog::enter(watchdog::MSG_CLOSE_DIALOG);
+                                if cancel_remember.read(cx).checked() {
+                                    remember_close_action(app, CloseAction::Quit, cx);
+                                }
+                                cx.quit();
+                            });
                         })
                         // 点弹窗外面（或按 Esc）只是把这句话问完就走开：这个
                         // 弹窗的「取消」答案是**退出程序**，一次误点就把整个
@@ -536,6 +570,18 @@ impl App {
             cx.quit();
         }
     }
+}
+
+/// 记住「以后点叉就怎么办」，并让设置页的下拉框跟上。
+///
+/// 必须立刻落盘：这条决定的就是「下次点叉会不会再问」，只留在内存里的话，
+/// 用户关掉程序再打开又会被问一遍——那个勾等于没勾。
+fn remember_close_action(app: &mut App, action: CloseAction, cx: &mut Context<App>) {
+    app.config.close_action = action;
+    if let Err(err) = app.config.save() {
+        app.error = Some(err);
+    }
+    app.sync_close_action_select(cx);
 }
 
 /// 切完配置立刻把「当前用的是哪一套」写回磁盘。

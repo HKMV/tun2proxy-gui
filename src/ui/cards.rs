@@ -2322,21 +2322,15 @@ pub fn runtime_group(app: &App, theme: &Theme, cx: &mut Context<App>) -> Option<
 ///
 /// 单独一组而不是塞进「运行方式」：它管的是「窗口怎么关」，不是「进程怎么跑」，
 /// 而误关窗口把隧道停掉是这个程序最容易踩的坑。
+///
+/// 为什么是下拉框而不是一个「关窗时询问」的开关：关窗弹窗里能勾「记住这个
+/// 选择」，那个勾记下来的可能是「最小化到托盘」也可能是「退出程序」——两者
+/// 意思相反，一个开关说不清，用户也没地方改回「每次询问」。
 #[cfg_attr(not(windows), allow(dead_code))]
 pub fn window_group(app: &App, theme: &Theme, cx: &mut Context<App>) -> AnyElement {
     let mut rows = vec![compact_row(
-        t("关闭窗口时询问", "Ask when closing"),
-        Some(
-            toggle_control(
-                "toggle-confirm-close",
-                app.config.confirm_close_to_tray,
-                cx.listener(|this, _, _, cx| {
-                    let value = !this.config.confirm_close_to_tray;
-                    this.handle(Msg::SetConfirmCloseToTray(value), cx)
-                }),
-            )
-            .into_any_element(),
-        ),
+        t("点关闭按钮时", "On close"),
+        Some(select_input(app.selects.close_action.clone(), ROW_CONTROL)),
         theme,
     )
     .into_any_element()];
