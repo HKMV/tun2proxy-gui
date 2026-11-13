@@ -237,8 +237,8 @@ Releases (see `.github/workflows/release.yml`):
 # Write the notes to a file and tag with -F: --cleanup=verbatim is required, or git
 # strips lines starting with `#` (i.e. every `## heading`) as comments and the
 # release page ends up with one undivided list.
-git tag -a v0.5.0 -F notes.txt --cleanup=verbatim
-git push origin v0.5.0
+git tag -a v0.6.1 -F notes.txt --cleanup=verbatim
+git push origin v0.6.1
 ```
 
 The first line of `notes.txt` is rendered **verbatim as the opening paragraph of the
