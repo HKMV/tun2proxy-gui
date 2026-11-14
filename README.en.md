@@ -41,10 +41,13 @@ and the built-in lists you can switch off row by row.*
 - **Recent decisions**: the splitter writes one line per connection (direct /
   proxied / failed), and the dashboard carries the counts plus a trend chart, so
   you can see which connection went where.
-- **Leftover adapter cleanup**: on startup the app removes `t2p_*` Wintun
-  adapters left behind by a killed process — including non-present device nodes
-  that never show up in "Network connections". Wintun adapters belonging to other
-  VPNs are never touched.
+- **Leftover process and adapter cleanup**: on startup the app first ends any
+  `tun2proxy-bin` process left behind by a killed run — only the binary this app
+  downloaded, never a tun2proxy installed elsewhere — and waits for it to really
+  exit, then removes the `t2p_*` Wintun adapters, including non-present device
+  nodes that never show up in "Network connections". The order matters: while an
+  orphan still holds its adapter the adapter reports as Up, and none of them can
+  be removed. Wintun adapters belonging to other VPNs are never touched.
 - **Managed tun2proxy**: on first run, hit "Download and install" and the app
   fetches the official binary for your platform from GitHub Releases, verifies
   its SHA-256 and unpacks it into its own data directory. Later you can "Check
@@ -104,6 +107,7 @@ src/
 │  ├─ elevate.rs   Administrator / root detection and Windows auto-elevation
 │  ├─ probe.rs     Upstream proxy reachability check (TCP + SOCKS5 / HTTP handshake)
 │  ├─ traffic.rs   Sample TUN adapter byte counters by name (Windows interface table / /sys)
+│  ├─ orphans.rs   End leftover tun2proxy-bin processes before start (Windows ToolHelp)
 │  ├─ adapters.rs  Remove leftover t2p_* tunnel adapters before start (Windows SetupAPI)
 │  ├─ split/       China-traffic direct routing
 │  │  ├─ service.rs  Local SOCKS5 splitter: decisions, direct / proxied, counters and trend
@@ -383,9 +387,11 @@ keys you care about.
   the reason.
 - Changing the split-routing **master switch** needs a tunnel restart; list updates
   and per-row switches are hot-reloaded and apply immediately.
-- The tunnel adapter name is random on every start (`t2p_xxxxxxxx`); a leftover with
-  the same prefix from a killed process is cleaned up at startup. Fill in a name on
-  the Network page if you want it fixed.
+- The tunnel adapter name is random on every start (`t2p_xxxxxxxx`). What a killed
+  run leaves behind is cleaned up at startup in a fixed order — end the leftover
+  `tun2proxy-bin` process first, then remove the adapter. While the orphan lives
+  its adapter stays Up, so no adapter can be removed and the next start fails on
+  the name collision. Fill in a name on the Network page if you want it fixed.
 
 ## Tray and closing
 
