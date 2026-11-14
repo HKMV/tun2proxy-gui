@@ -324,11 +324,18 @@ fn direction_chart(samples: &[RouteTraffic], direction: Direction, theme: &Theme
         .w_full()
         .gap(px(SPACE_XS))
         .child(
+            // 「下行」和此刻的速率挨在一起放左边，而不是一个靠左一个靠右。
+            //
+            // 靠右的那个位置紧挨着刻度列的最上一档，而纵轴上限就是两分钟里的峰值：
+            // 一路拉满带宽时峰值往往正好落在最后一个采样点上，于是标题行写「1.1 MB/s」、
+            // 紧下方刻度也写「1.1 MB/s」，两行同样的数字上下顶着，看着像刻度写重了
+            // （其实一个是此刻、一个是上限）。挪到标签后面就没有并排可言，也正好是
+            // 「标签后面带上当前速率」这个本意。
             div()
                 .flex()
                 .items_center()
-                .justify_between()
                 .w_full()
+                .gap(px(SPACE_XS))
                 .child(hint(direction.label(), theme))
                 .child(
                     div()
