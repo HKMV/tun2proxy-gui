@@ -64,14 +64,24 @@ and the built-in lists you can switch off row by row.*
 - **Pre-flight before start**: pressing "Start" runs the same handshake probe
   first. If the proxy is unreachable the app explains why in a dialog and does
   **not** launch the core, instead of spawning a tun2proxy that is bound to fail.
+- **Visible progress when starting or stopping**: the next frame after pressing
+  "Start" / "Stop" dims the whole window with a spinner and one line naming the
+  step being waited on (probe, clearing leftover adapters, starting the splitter,
+  launching the child), and it stays until the action has an outcome. The
+  sidebar button is greyed out meanwhile, so a double click cannot start two
+  pre-checks.
 - **Chinese and English UI**: pick "Follow system / 中文 / English" in Settings —
   or click the "Language" cell at the bottom of the sidebar — applied immediately.
   Every string lives in code as
   `t("中文", "English")`, so there is no separate translation file to maintain.
-- **Live traffic and routing**: one dashboard card holds two stacked line charts —
-  both cover the last two minutes on a shared time axis with vertical units — and
-  the routing chart carries direct / proxied / failed counters you can expand into
-  a per-connection list.
+- **Live traffic and routing**: one dashboard card holds three line charts (down
+  traffic, up traffic, routing), all covering the last two minutes on a shared
+  time axis with vertical units. Traffic is split by direction because up and
+  down differ by orders of magnitude — sharing one axis would flatten uploads
+  onto the baseline — and each chart stacks direct and proxied bytes into two
+  bands (measured by the splitter itself, with per-lane up/down rates in the
+  legend). The routing chart carries direct / proxied / failed counters you can
+  expand into a per-connection list.
 - **System tray**: a tray icon is always present, with a tooltip that follows
   the service state. Its context menu can start, stop, show the window or quit;
   double-clicking the icon brings the window back.
