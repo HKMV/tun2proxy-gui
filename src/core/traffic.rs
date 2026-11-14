@@ -18,6 +18,17 @@
 //!
 //! 采样只用于界面上的折线图，不做计量：读失败（进程刚起、网卡还没建出来、
 //! 平台不支持、权限不足）一律返回 `None`，界面显示「—」而不是报错。
+//!
+//! # 为什么要分「直连 / 代理」
+//!
+//! TUN 网卡的计数只有一个总数：图上看得见「在下东西」，看不出「这些字节走的是
+//! 直连还是代理」。要拆开就得多一处记账——分流器（[`crate::core::split`]）是每条
+//! 连接的唯一中继点，两条路的字节都在它手里过一遍，所以那里按路累加累计字节
+//! （[`RouteBytes`]），这里的 [`RouteMeter`] 再把它差分成本秒的两条速率。
+//!
+//! 分流器没开（或起不来、本机照原配置直接连上游）时没有分路数据，那时**全部
+//! 字节确实都从上游代理走**，于是把网卡的真值整份算到「代理」那条路上，直连那
+//! 一路是 0——这是实话，不是估算。
 
 use std::collections::VecDeque;
 use std::process::Child;
@@ -39,11 +50,28 @@ pub struct TrafficSample {
     pub up: u64,
 }
 
-impl TrafficSample {
-    /// 这条采样里较大的一个方向，用来定折线图的纵轴。
-    pub fn peak(self) -> u64 {
-        self.down.max(self.up)
-    }
+/// 分流器按路累加的**累计**字节（单调递增，只在分流器启动时清零）。
+///
+/// 用累计值而不是直接传速率：记账发生在每条连接的中继循环里（可能几百条并发），
+/// 那里只做 `fetch_add` 最省事；差分成速率是采样线程每秒干一次的事。
+///
+/// 方向语义和网卡计数一致：`down` 是对端递过来的（下载），`up` 是塞给对端的
+/// （上传）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RouteBytes {
+    pub direct_down: u64,
+    pub direct_up: u64,
+    pub proxy_down: u64,
+    pub proxy_up: u64,
+}
+
+/// 一次采样里两条路由各自的瞬时速率（字节/秒）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RouteTraffic {
+    /// 命中「直连」的连接跑出来的流量。
+    pub direct: TrafficSample,
+    /// 走上游代理的连接跑出来的流量。
+    pub proxy: TrafficSample,
 }
 
 /// 网卡表里的一行，抽出来是为了让「挑网卡」这段逻辑能写单测。
@@ -212,8 +240,85 @@ impl TrafficMeter {
     }
 }
 
+/// 把分流器累计的字节差分成本秒的两条速率。
+///
+/// 和 [`TrafficMeter`] 一样记住上一次的读数：分流器给的是「本次运行累计」，
+/// 折线图要的是「现在每秒多少」。
+#[derive(Debug, Default)]
+pub struct RouteMeter {
+    last: Option<(RouteBytes, Instant)>,
+    /// 上一次采样时分流器在不在跑。切换记账方式时旧基线作废。
+    live: bool,
+}
+
+impl RouteMeter {
+    /// 采一拍，返回这一秒两条路各跑了多少。
+    ///
+    /// `live` 是「分流器在跑吗」：在跑就用 `bytes` 差分；没跑就说明每一份流量
+    /// 都从上游代理走，把 `total`（网卡实测的真值）整份记到代理那条路上。
+    /// 两个来源不能混着加：混起来会把同一批字节数成两份。
+    pub fn sample(&mut self, live: bool, bytes: RouteBytes, total: TrafficSample) -> RouteTraffic {
+        // 记账方式换了（分流器刚起 / 刚停），上一次的读数不再可比。
+        if live != self.live {
+            self.reset();
+            self.live = live;
+        }
+        if !live {
+            self.last = Some((bytes, Instant::now()));
+            return RouteTraffic {
+                direct: TrafficSample::default(),
+                proxy: total,
+            };
+        }
+
+        let now = Instant::now();
+        let sample = match self.last {
+            Some((last, at)) => {
+                // 至少按 1ms 算，免得两次采样撞在同一毫秒除出天文数字。
+                let seconds = now.duration_since(at).as_secs_f64().max(0.001);
+                let rate = |now: u64, before: u64| (now.saturating_sub(before) as f64 / seconds) as u64;
+                RouteTraffic {
+                    direct: TrafficSample {
+                        down: rate(bytes.direct_down, last.direct_down),
+                        up: rate(bytes.direct_up, last.direct_up),
+                    },
+                    proxy: TrafficSample {
+                        down: rate(bytes.proxy_down, last.proxy_down),
+                        up: rate(bytes.proxy_up, last.proxy_up),
+                    },
+                }
+            }
+            // 第一拍没有参照物：按 0 算，否则会把「启动以来的总量」当成一秒内
+            // 的流量，图上开局就是一个巨大的尖峰。
+            None => RouteTraffic::default(),
+        };
+        self.last = Some((bytes, now));
+        sample
+    }
+
+    /// 忘掉上一次的读数（分流器重启后累计值从头开始，不清就会算成负数）。
+    pub fn reset(&mut self) {
+        self.last = None;
+    }
+}
+
+#[cfg(test)]
+impl RouteMeter {
+    /// 造一个「上一次采样发生在 `secs` 秒前、读数是 `bytes`」的采样器：单测要
+    /// 验差分，又不可能真的等上一秒。
+    fn aged(bytes: RouteBytes, secs: u64, live: bool) -> Self {
+        let at = Instant::now()
+            .checked_sub(std::time::Duration::from_secs(secs))
+            .unwrap_or_else(Instant::now);
+        Self {
+            last: Some((bytes, at)),
+            live,
+        }
+    }
+}
+
 /// 把一条采样推进历史，丢掉最旧的。历史为空时用 0 补齐到 [`HISTORY_LEN`]。
-pub fn push(history: &mut VecDeque<TrafficSample>, sample: TrafficSample) {
+pub fn push(history: &mut VecDeque<RouteTraffic>, sample: RouteTraffic) {
     history.push_back(sample);
     while history.len() > HISTORY_LEN {
         history.pop_front();
@@ -296,15 +401,84 @@ mod tests {
     fn history_is_capped_at_the_configured_length() {
         let mut history = VecDeque::new();
         for _ in 0..(HISTORY_LEN + 5) {
-            push(&mut history, TrafficSample { down: 1, up: 2 });
+            push(&mut history, RouteTraffic::default());
         }
         assert_eq!(history.len(), HISTORY_LEN);
     }
 
+    /// 分流器没在跑时没有分路数据，而此刻每一份流量确实都从上游代理走：
+    /// 网卡的真值整份记到代理那一路，直连必须是 0（不能拿总数去平分）。
     #[test]
-    fn peak_picks_the_busier_direction() {
-        let sample = TrafficSample { down: 10, up: 99 };
-        assert_eq!(sample.peak(), 99);
+    fn without_a_splitter_everything_counts_as_proxied() {
+        let mut meter = RouteMeter::default();
+        let total = TrafficSample { down: 1_000, up: 100 };
+        let sample = meter.sample(false, RouteBytes::default(), total);
+        assert_eq!(sample.direct, TrafficSample::default());
+        assert_eq!(sample.proxy, total, "分流没开就是全部走代理");
+    }
+
+    /// 分流器在跑：两条路各记各的，加起来是隧道的总吞吐。
+    #[test]
+    fn live_counters_split_into_two_lanes() {
+        // 第一拍只当基线，速率按 0 算。
+        let first =
+            RouteMeter::default().sample(true, RouteBytes::default(), TrafficSample::default());
+        assert_eq!(first, RouteTraffic::default(), "第一拍不能把累计值当速率");
+
+        // 再拿一个「1 秒前刚采过全零」的采样器，绕开真实等待。
+        let mut meter = RouteMeter::aged(RouteBytes::default(), 1, true);
+        let now = RouteBytes {
+            direct_down: 2_000,
+            direct_up: 200,
+            proxy_down: 4_000,
+            proxy_up: 400,
+        };
+        // 网卡那个总数在分流器在跑时不该被用上，否则同一批字节会被数两遍。
+        let sample = meter.sample(true, now, TrafficSample { down: 9_999, up: 9_999 });
+
+        // 速率 = 差值 / 实际间隔。间隔不是精确的 1 秒（测试跑起来的真实耗时），
+        // 所以按 5% 的容差比，比盯着具体字节数稳。
+        let close = |got: u64, want: u64| {
+            let tolerance = (want / 20).max(1);
+            assert!(
+                got.abs_diff(want) <= tolerance,
+                "{got} 和 {want} 差得太多（容差 {tolerance}）"
+            );
+        };
+        close(sample.direct.down, 2_000);
+        close(sample.direct.up, 200);
+        close(sample.proxy.down, 4_000);
+        close(sample.proxy.up, 400);
+    }
+
+    /// 分流器的累计值被清零（重启）时不能算出负数或天文数字。
+    #[test]
+    fn a_counter_reset_does_not_produce_a_spike() {
+        let before = RouteBytes {
+            proxy_down: 5_000,
+            ..Default::default()
+        };
+        let mut meter = RouteMeter::aged(before, 1, true);
+        let sample = meter.sample(true, RouteBytes::default(), TrafficSample::default());
+        assert_eq!(
+            sample,
+            RouteTraffic::default(),
+            "清零后差值饱和到 0，不能出现负值或尖峰"
+        );
+    }
+
+    /// 记账方式切换（分流器刚起 / 刚停）时旧基线作废：否则第一拍会拿「分流器
+    /// 累计的几十 MB」去减「上一次的 0」，图上就是一根假尖刺。
+    #[test]
+    fn switching_accounting_resets_the_baseline() {
+        let mut meter = RouteMeter::default();
+        meter.sample(false, RouteBytes::default(), TrafficSample { down: 5, up: 6 });
+        let huge = RouteBytes {
+            proxy_down: 50_000_000,
+            ..Default::default()
+        };
+        let sample = meter.sample(true, huge, TrafficSample::default());
+        assert_eq!(sample, RouteTraffic::default(), "换记账方式后第一拍是 0");
     }
 
     /// 机器上可能躺着别的 Wintun 适配器（掉线残留的），只能按名字挑。

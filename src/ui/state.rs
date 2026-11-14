@@ -26,7 +26,7 @@ use crate::core::engine::ProbeState;
 use crate::core::i18n::{LangSetting, t, tf};
 use crate::core::logs::{LogKind, LogLine};
 use crate::core::{
-    CloseAction, Config, DnsMode, Engine, Profile, Shared, Status, ThemeSetting, TrafficSample,
+    CloseAction, Config, DnsMode, Engine, Profile, RouteTraffic, Shared, Status, ThemeSetting,
     Update, Verbosity,
 };
 use crate::ui::widgets::ROW_CONTROL;
@@ -647,10 +647,10 @@ pub struct Snapshot {
     pub logs: Vec<LogLine>,
     /// 累计写入过多少行日志（不受 [`Snapshot::logs`] 的条数上限影响）。
     pub log_total: u64,
-    /// 最近一分钟的流量采样（旧→新），空表示还没开始采。
-    pub traffic: Vec<TrafficSample>,
-    /// 最新一次采样的瞬时速率。
-    pub rate: TrafficSample,
+    /// 最近两分钟的流量采样（旧→新，每秒一个点），按「直连 / 代理」分成两条。
+    pub traffic: Vec<RouteTraffic>,
+    /// 最新一次采样的瞬时速率（同样按两条路分）。
+    pub rate: RouteTraffic,
     /// 上游代理检测状态（`None` = 还没检测过）。
     pub probe: Option<ProbeState>,
     /// 启动被拦下的原因（上游代理连不通等），由后台线程写入。

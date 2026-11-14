@@ -41,7 +41,7 @@ use crate::core::split::service::{
 };
 use crate::core::split::settings::SplitSettings;
 use crate::core::split::upstream::Upstream;
-use crate::core::traffic::{self, TrafficMeter, TrafficSample};
+use crate::core::traffic::{self, RouteMeter, RouteTraffic, TrafficMeter};
 use crate::tr_format;
 
 const MAX_LOGS: usize = 2000;
@@ -96,13 +96,14 @@ pub struct Shared {
     pub version: Option<String>,
     /// 最近的日志行（已经排版好，带来源——界面要按来源过滤）。
     pub logs: VecDeque<logs::LogLine>,
-    /// 最近一分钟的流量采样（每秒一个点），给仪表盘的折线图用。
+    /// 最近两分钟的流量采样（每秒一个点），按「直连 / 代理」分成两条，给仪表盘
+    /// 的折线图用。
     ///
     /// 放在共享状态里而不是引擎自己算：界面每帧重建，图上的点必须能重复读到
     /// 同一份历史，否则「上一帧的曲线」和「这一帧的曲线」接不上。
-    pub traffic: VecDeque<TrafficSample>,
-    /// 最新一次采样的瞬时速率（字节/秒）。
-    pub rate: TrafficSample,
+    pub traffic: VecDeque<RouteTraffic>,
+    /// 最新一次采样的瞬时速率（同样按两条路分）。
+    pub rate: RouteTraffic,
     /// 上游代理连通性检测的状态（界面上那一行「检测」按钮的结果）。
     ///
     /// 和日志/流量一样放在共享状态里：检测在后台线程跑，界面每帧重建，
@@ -281,7 +282,7 @@ impl Engine {
             version: binary::installed_version(),
             logs: VecDeque::new(),
             traffic: VecDeque::new(),
-            rate: TrafficSample::default(),
+            rate: RouteTraffic::default(),
             probe: None,
             start_blocked: None,
             sessions_full: false,
@@ -936,6 +937,10 @@ impl Engine {
         let child = self.child.clone();
         let stopping = self.stopping.clone();
         let dirty = self.dirty.clone();
+        // 分路字节只有分流器知道（它是两条路的唯一中继点）：每秒问它要一次累计
+        // 值，差分成两条速率。分流器没在跑时这个句柄照样能用——`is_running()`
+        // 为 false，那时全部流量都算代理。
+        let split = self.split.clone();
 
         std::thread::Builder::new()
             .name("tun2proxy-supervisor".to_string())
@@ -943,6 +948,7 @@ impl Engine {
                 let mut ticks = 0u32;
                 let mut announced = false;
                 let mut meter = TrafficMeter::new(&tun_name);
+                let mut route_meter = RouteMeter::default();
                 loop {
                     std::thread::sleep(Duration::from_millis(250));
                     ticks += 1;
@@ -988,7 +994,7 @@ impl Engine {
                         if let Ok(mut shared) = shared.lock() {
                             shared.status = status;
                             // 进程没了，速率归零；历史留着，曲线慢慢滑出视野。
-                            shared.rate = TrafficSample::default();
+                            shared.rate = RouteTraffic::default();
                             // 「会话打满」的提示条只对「隧道还在跑、只是丢连接」
                             // 有意义。进程已经没了（用户点了停止，或崩了），
                             // 提示条再挂着就是一句过期的话。
@@ -1016,9 +1022,17 @@ impl Engine {
                             }
                         };
                         if let Some(sample) = sample {
+                            // 网卡给的是隧道总数，分流器给的是「哪条路跑了多少」。
+                            // 分流器在跑就用它的实测，没跑就把总数整份算代理——
+                            // 这时每一份流量确实都从上游代理走（见 `RouteMeter`）。
+                            let routed = route_meter.sample(
+                                split.is_running(),
+                                split.route_bytes(),
+                                sample,
+                            );
                             if let Ok(mut shared) = shared.lock() {
-                                shared.rate = sample;
-                                traffic::push(&mut shared.traffic, sample);
+                                shared.rate = routed;
+                                traffic::push(&mut shared.traffic, routed);
                             }
                             dirty.store(true, Ordering::Relaxed);
                         }

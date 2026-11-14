@@ -276,7 +276,11 @@ fn chart_header(title: &'static str, theme: &Theme) -> AnyElement {
         .into_any_element()
 }
 
-/// 卡片里的「实时流量」一行：标题 + 折线图 + 当前速率的图例。
+/// 卡片里的「实时流量」一行：标题 + 两张折线图 + 当前速率的图例。
+///
+/// 图上两个方向各画一张（下行在上、上行在下），每张里是两条**堆叠**的色带
+/// （直连在下、代理在上）。不合成一张：上下行差着两个数量级，同一个纵轴下行
+/// 那条会把上行压成贴着底边的一根线。
 fn traffic_row(snap: &Snapshot, theme: &Theme) -> AnyElement {
     // 还没采到点（未运行 / 刚启动）时不要显示 0，那会被读成「没流量」。
     let live = !snap.traffic.is_empty();
@@ -288,7 +292,37 @@ fn traffic_row(snap: &Snapshot, theme: &Theme) -> AnyElement {
         }
     };
 
-    div()
+    // 分流器没在跑时，整份流量都记在「代理」那条上：不解释一句，用户会以为
+    // 直连那条恒为 0 是坏了。（分流开着却起不来的情况，下面「连接去向」那张卡
+    // 已经说明了原因，这里只讲「图上为什么没有直连」。）
+    let note = (!snap.split.running).then(|| {
+        t(
+            "分流器没在运行：流量全部走上游代理，直连那条恒为 0。",
+            "The splitter is not running: everything goes through the proxy, so the direct band stays at 0.",
+        )
+    });
+
+    // 图例的色块必须和 chart.rs 里那两条带取同一个颜色，否则图例在说谎。
+    let legend = div()
+        .flex()
+        .items_center()
+        .gap(px(SPACE_M))
+        .child(rate_legend_item(
+            t("直连", "Direct"),
+            snap.rate.direct,
+            theme.success(),
+            &rate,
+            theme,
+        ))
+        .child(rate_legend_item(
+            t("代理", "Proxied"),
+            snap.rate.proxy,
+            theme.accent(),
+            &rate,
+            theme,
+        ));
+
+    let mut column = div()
         .flex()
         .flex_col()
         .w_full()
@@ -301,23 +335,35 @@ fn traffic_row(snap: &Snapshot, theme: &Theme) -> AnyElement {
         .pb(px(SPACE_S))
         .child(chart_header(t("实时流量", "Live traffic"), theme))
         .child(traffic_chart(&snap.traffic, theme))
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(LEGEND_GAP))
-                .child(legend_swatch(theme.accent(), theme))
-                .child(legend_text(
-                    tf(t("下行 {}", "Down {}"), &[("", &rate(snap.rate.down))]),
-                    theme,
-                ))
-                // 上行色块必须和 chart.rs 里那条线取同一个颜色，否则图例在说谎。
-                .child(legend_swatch(theme.success(), theme))
-                .child(legend_text(
-                    tf(t("上行 {}", "Up {}"), &[("", &rate(snap.rate.up))]),
-                    theme,
-                )),
-        )
+        .child(legend);
+    // 说明单独占一行：挤在图例右边会把四个速率顶成两行。
+    if let Some(note) = note {
+        column = column.child(hint(note, theme));
+    }
+    column.into_any_element()
+}
+
+/// 流量图例的一项：色块 + 「直连 ↓1.2 MB/s ↑30 KB/s」。
+///
+/// 上下行用箭头而不是「下行 / 上行」两个词：一行要放下两条路共四个速率，
+/// 中文词会把整行撑到换行。箭头在任何语言里都不用翻译。
+fn rate_legend_item(
+    label: &'static str,
+    sample: crate::core::TrafficSample,
+    color: Hsla,
+    rate: &dyn Fn(u64) -> String,
+    theme: &Theme,
+) -> AnyElement {
+    let down = rate(sample.down);
+    let up = rate(sample.up);
+    let text = format!("{label} ↓{down} ↑{up}");
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(LEGEND_GAP))
+        .child(legend_swatch(color, theme))
+        .child(legend_text(text, theme))
         .into_any_element()
 }
 

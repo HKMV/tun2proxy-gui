@@ -48,7 +48,7 @@ pub mod window;
 
 pub use config::{CloseAction, Config, DnsMode, Profile, ThemeSetting, Verbosity};
 pub use engine::{Engine, Shared, Status, Update};
-pub use traffic::TrafficSample;
+pub use traffic::{RouteTraffic, TrafficSample};
 
 /// 本程序（GUI）的版本号。
 ///

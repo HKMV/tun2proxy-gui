@@ -5,15 +5,25 @@
 //!
 //! gpuikit 没有图表组件，所以这里不另起一套配色和尺度，而是**全部走它的
 //! token**：高度挂到 `ControlScale`（3 个 Large 控件高），网格线用
-//! `border_subtle()`（比卡片轮廓轻一档，是「卡片内部」的语义色），两条曲线
-//! 用 `accent()` 与 `success()`，图例字号用 12 档、色块尺寸跟着控件圆角走。
+//! `border_subtle()`（比卡片轮廓轻一档，是「卡片内部」的语义色），两条色带
+//! 用 `success()` 与 `accent()`，图例字号用 12 档、色块尺寸跟着控件圆角走。
 //! 换主题时图表跟着换，不会变成界面里唯一一块「别人家的图」。
 //!
-//! 两条线：下行（强调色）与上行（成功色），下行线下方铺一层很淡的面积色，
-//! 让「量」在余光里也能看出来。纵轴按窗口内的峰值自适应——固定比例尺会让
-//! 低流量永远贴着底边。
+//! # 两张图：下行一张、上行一张
 //!
-//! 采样是「每秒一个点」，最多 60 个点（最近一分钟）。点不足 2 个时只画基线：
+//! 流量本身只有一个总数，但用户真正想知道的是「这些字节走的是直连还是代理」，
+//! 而且上下行的量级差得很远（下到几 MB/s，上常常只有几十 KB/s）。所以拆成
+//! **两个方向的图**，每张图里再画**堆叠**的两条带：直连（成功色）贴着基线，
+//! 代理（强调色）叠在它上面，两层合起来就是这个方向这一秒的速率。
+//!
+//! 合成一张图行不行？不行：上下行共用一个纵轴时，上行那条会被压成贴着底边的
+//! 一条线，等于没画；而堆成四层（直连下/直连上/代理下/代理上）又会把「哪条路
+//! 跑得多」这个主信息埋进四段色带里。两张图各自按自己的峰值自适应，上行哪怕
+//! 只有 40 KB/s 也占满一整张图的高度。
+//!
+//! 纵轴按窗口内的峰值自适应——固定比例尺会让低流量永远贴着底边。
+//!
+//! 采样是「每秒一个点」，最多 120 个点（最近两分钟）。点不足 2 个时只画基线：
 //! 一条平的线会被读成「确实没流量」，而空图 + 灰字「—」才是「还没数据」。
 
 use gpui::{
@@ -24,16 +34,19 @@ use gpuikit::theme::{ControlSize, Theme, Themeable};
 
 use crate::core::i18n::t;
 use crate::core::split::TrendBucket;
-use crate::core::TrafficSample;
+use crate::core::RouteTraffic;
 
 use super::theme::{CONTROL_HEIGHT_LARGE, TEXT_SMALL};
 use super::widgets::{hint, human_bytes, SPACE_S, SPACE_XS};
 
-/// 折线图高度：3 个 `ControlSize::Large` 控件高（32 × 3）。
+/// 流量图里**一个方向**（下行 / 上行）的高度：2.5 个控件高（32 × 2.5 = 80）。
+///
+/// 原来是「上下行合计」的一张 96dp 图。拆成两张之后各自收一档：两张叠起来
+/// 不至于把卡片顶得太高，80dp 里两条带也仍然分得清。
 ///
 /// 和控件同源（见 [`CONTROL_HEIGHT_LARGE`]），旁边按钮的高度改一档时图表
 /// 跟着改，不会出现「图表比按钮矮半头」这种只有肉眼能发现的对不齐。
-pub const CHART_HEIGHT: f32 = CONTROL_HEIGHT_LARGE * 3.0;
+pub const TRAFFIC_CHART_HEIGHT: f32 = CONTROL_HEIGHT_LARGE * 2.5;
 
 /// 分流趋势图的高度：比流量缩略图高一档。
 ///
@@ -41,7 +54,7 @@ pub const CHART_HEIGHT: f32 = CONTROL_HEIGHT_LARGE * 3.0;
 /// 用同样的高度会显得又扁又空。
 pub const SPLIT_CHART_HEIGHT: f32 = CONTROL_HEIGHT_LARGE * 4.0;
 
-/// 空态高度：没数据时只放一句说明，占满 [`CHART_HEIGHT`] 会空出一大片。
+/// 空态高度：没数据时只放一句说明，占满 [`TRAFFIC_CHART_HEIGHT`] 会空出一大片。
 ///
 /// 两张图的空态用同一个高度，取「一个控件高 + 上下各一档 [`SPACE_S`]」：
 /// 一句话居中看着就是个提示条，而不是一张画坏了的空图。有数据后高度换成
@@ -198,25 +211,12 @@ fn paint_time_guides(
     }
 }
 
-/// 画一张流量折线图。
+/// 画实时流量：下行一张、上行一张，每张各自堆叠「直连在下、代理在上」。
 ///
 /// `samples` 是「旧 → 新」的采样序列，最新的点画在最右边。宽度跟着容器走
-/// （和分流趋势图一样），两张图才能并排放在同一张卡片里对齐时间轴。
-pub fn traffic_chart(samples: &[TrafficSample], theme: &Theme) -> AnyElement {
-    // 两条线要能一眼分开。accent 在深色主题里是蓝、上行取 success 的绿，
-    // 色相差得够远；同色系的两档（比如 accent + info 都是蓝）在 72dp 高的
-    // 缩略图上会糊成一条。
-    let accent = theme.accent();
-    let upstream = theme.success();
-    let border = theme.border();
-    // 参考线取 `surface_tertiary()`：比卡片底亮两档，1dp 画上去刚好看得见，
-    // 又不至于像网格纸。`border_subtle()` 和卡片同色（它就是「卡片内部不画
-    // 线」的语义），`border()` 又只比卡片亮一档，两者画上去都等于没画。
-    let grid = theme.surface_tertiary();
-
-    // 还没采到点：画一条基线 + 一句说明。
-    //
-    // 空图必须自己说明白：只有一个方框会被读成「画坏了」。
+/// （和分流趋势图一样），几张图的时间轴才能对齐。
+pub fn traffic_chart(samples: &[RouteTraffic], theme: &Theme) -> AnyElement {
+    // 还没采到点：一句话说明，别画两个空框。
     if samples.len() < 2 {
         return div()
             .flex_none()
@@ -226,7 +226,7 @@ pub fn traffic_chart(samples: &[TrafficSample], theme: &Theme) -> AnyElement {
             .items_center()
             .justify_center()
             .border_b_1()
-            .border_color(border)
+            .border_color(theme.border())
             .child(hint(
                 t("启动后显示实时流量", "Live traffic appears after start"),
                 theme,
@@ -234,16 +234,68 @@ pub fn traffic_chart(samples: &[TrafficSample], theme: &Theme) -> AnyElement {
             .into_any_element();
     }
 
-    // 纵轴的上限先在外面算出来：右边的刻度文字要用它，不能只留在画布里。
+    div()
+        .flex()
+        .flex_col()
+        .w_full()
+        .gap(px(SPACE_S))
+        .child(direction_chart(samples, Direction::Down, theme))
+        .child(direction_chart(samples, Direction::Up, theme))
+        .into_any_element()
+}
+
+/// 图上的一个方向。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Direction {
+    Down,
+    Up,
+}
+
+impl Direction {
+    /// 采样里这个方向、这条路的速率。
+    fn rate(self, sample: RouteTraffic, direct: bool) -> u64 {
+        let lane = if direct { sample.direct } else { sample.proxy };
+        match self {
+            Direction::Down => lane.down,
+            Direction::Up => lane.up,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Direction::Down => t("下行", "Down"),
+            Direction::Up => t("上行", "Up"),
+        }
+    }
+}
+
+/// 一个方向的小图：一行标签 + 堆叠色带 + 右侧刻度。
+///
+/// 两张图的画法完全一样，只有取值方向不同，所以这里只写一遍——两份几乎一样
+/// 的画布代码，改一处忘一处的时候就是对不齐的时候。
+fn direction_chart(samples: &[RouteTraffic], direction: Direction, theme: &Theme) -> AnyElement {
+    // 两条带要能一眼分开，还要和正下方那张「连接去向」图用同一套颜色语言：
+    // 绿色 = 直连，强调色 = 代理。换个色系（比如两个蓝），读者就得记住
+    // 「哪张图的绿是哪条路」。
+    let direct = theme.success();
+    let proxy = theme.accent();
+    let border = theme.border();
+    // 参考线取 `surface_tertiary()`：比卡片底亮两档，1dp 画上去刚好看得见，
+    // 又不至于像网格纸。`border_subtle()` 和卡片同色（它就是「卡片内部不画
+    // 线」的语义），`border()` 又只比卡片亮一档，两者画上去都等于没画。
+    let grid = theme.surface_tertiary();
+
+    // 纵轴上限只算**这一个方向**：下行几 MB/s、上行几十 KB/s 是常态，共用一个
+    // 上限的话上行那张永远是一条贴底的线。
     let peak = samples
         .iter()
-        .map(|sample| sample.peak())
+        .map(|sample| direction.rate(*sample, true) + direction.rate(*sample, false))
         .max()
         .unwrap_or(0)
         .max(1);
 
     // 刻度取「上限 / 一半 / 0」：小图上再多一条就成了网格纸。
-    let scale = ticks(CHART_HEIGHT, peak);
+    let scale = ticks(TRAFFIC_CHART_HEIGHT, peak);
     let entries: Vec<(f32, String)> = scale
         .iter()
         .map(|&(y, value)| {
@@ -256,59 +308,99 @@ pub fn traffic_chart(samples: &[TrafficSample], theme: &Theme) -> AnyElement {
         })
         .collect();
 
+    // 标签右边那个读数是「此刻这个方向一共多快」。
+    //
+    // 两张图各自按自己的峰值定纵轴，光看刻度要凑近了才能发现比例尺不是一套；
+    // 把读数写在标签后面，一眼就是「这张图画的是现在 1.5 MB/s 这个量级」，
+    // 也顺手把「两个方向分着画」这件事说清楚了。
+    let current = samples.last().copied().unwrap_or_default();
+    let current_rate = direction.rate(current, true) + direction.rate(current, false);
+
     let samples = samples.to_vec();
     let grid_ticks = scale.clone();
     div()
-        .relative()
-        .flex_none()
+        .flex()
+        .flex_col()
         .w_full()
-        .h(px(CHART_HEIGHT))
+        .gap(px(SPACE_XS))
         .child(
-            canvas(
-                |_, _, _| (),
-                move |bounds: Bounds<gpui::Pixels>, _, window, _| {
-                    let width: f32 = bounds.size.width.into();
-                    // 画图只占左边那一块，右边留给刻度文字；网格线和基线也跟着缩。
-                    let plot = (width - AXIS_WIDTH).max(8.0);
-                    let height = CHART_HEIGHT;
-                    let baseline = height - 1.0;
-
-                    let peak = peak as f64;
-                    // 顶部留 2dp：贴着上边缘的线会被画布裁掉半个像素。
-                    let usable = (height - 3.0).max(1.0) as f64;
-
-                    // 水平参考线跟着刻度走（上限那档就是曲线的最高点），0 那档
-                    // 由下面的基线代表。只看折线能看出「有起伏」，看不出「起伏
-                    // 多大」；线比外轮廓轻一档，不抢折线。
-                    for (y, _) in &grid_ticks {
-                        if *y < baseline - 0.5 {
-                            window.paint_quad(fill(rect(bounds, 0.0, *y, plot, 1.0), grid));
-                        }
-                    }
-
-                    // 基线：一条发丝线，给折线一个「地面」。
-                    window.paint_quad(fill(rect(bounds, 0.0, baseline, plot, 1.0), border));
-                    paint_time_guides(window, bounds, plot, baseline, grid.opacity(0.7));
-
-                    let down: Vec<f32> = samples
-                        .iter()
-                        .map(|sample| y_for(sample.down as f64, peak, usable, baseline))
-                        .collect();
-                    let up: Vec<f32> = samples
-                        .iter()
-                        .map(|sample| y_for(sample.up as f64, peak, usable, baseline))
-                        .collect();
-
-                    // 面积先画（在线下面），否则会把线盖住。
-                    fill_area(window, bounds, &down, plot, baseline, accent);
-                    stroke(window, bounds, &down, plot, accent);
-                    stroke(window, bounds, &up, plot, upstream);
-                },
-            )
-            .w_full()
-            .h(px(CHART_HEIGHT)),
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .w_full()
+                .child(hint(direction.label(), theme))
+                .child(
+                    div()
+                        .text_size(px(TEXT_SMALL))
+                        .text_color(theme.fg())
+                        .whitespace_nowrap()
+                        .child(format!("{}/s", human_bytes(current_rate))),
+                ),
         )
-        .child(axis_column(AXIS_WIDTH, CHART_HEIGHT, entries, theme))
+        .child(
+            div()
+                .relative()
+                .flex_none()
+                .w_full()
+                .h(px(TRAFFIC_CHART_HEIGHT))
+                .child(
+                    canvas(
+                        |_, _, _| (),
+                        move |bounds: Bounds<gpui::Pixels>, _, window, _| {
+                            let width: f32 = bounds.size.width.into();
+                            // 画图只占左边那一块，右边留给刻度文字；网格线和基线也跟着缩。
+                            let plot = (width - AXIS_WIDTH).max(8.0);
+                            let height = TRAFFIC_CHART_HEIGHT;
+                            let baseline = height - 1.0;
+
+                            let peak = peak as f64;
+                            // 顶部留 2dp：贴着上边缘的线会被画布裁掉半个像素。
+                            let usable = (height - 3.0).max(1.0) as f64;
+
+                            // 水平参考线跟着刻度走（上限那档就是曲线的最高点），0 那档
+                            // 由下面的基线代表。只看折线能看出「有起伏」，看不出「起伏
+                            // 多大」；线比外轮廓轻一档，不抢折线。
+                            for (y, _) in &grid_ticks {
+                                if *y < baseline - 0.5 {
+                                    window.paint_quad(fill(rect(bounds, 0.0, *y, plot, 1.0), grid));
+                                }
+                            }
+
+                            // 基线：一条发丝线，给折线一个「地面」。
+                            window.paint_quad(fill(rect(bounds, 0.0, baseline, plot, 1.0), border));
+                            paint_time_guides(window, bounds, plot, baseline, grid.opacity(0.7));
+
+                            let direct_ys: Vec<f32> = samples
+                                .iter()
+                                .map(|sample| {
+                                    y_for(direction.rate(*sample, true) as f64, peak, usable, baseline)
+                                })
+                                .collect();
+                            let total_ys: Vec<f32> = samples
+                                .iter()
+                                .map(|sample| {
+                                    let both = direction.rate(*sample, true)
+                                        + direction.rate(*sample, false);
+                                    y_for(both as f64, peak, usable, baseline)
+                                })
+                                .collect();
+
+                            // 先铺两条带（在线下面，否则会把线盖住）：直连贴地，代理
+                            // 从直连的顶边填到总量的顶边。这样高矮和面积都能读，
+                            // 「大半走代理」一眼就看得出来。
+                            fill_area(window, bounds, &direct_ys, plot, baseline, direct);
+                            fill_band(window, bounds, &total_ys, &direct_ys, plot, proxy);
+                            // 两条交界线各描一道：代理那条其实是「总量」的轮廓。
+                            stroke(window, bounds, &total_ys, plot, proxy);
+                            stroke(window, bounds, &direct_ys, plot, direct);
+                        },
+                    )
+                    .w_full()
+                    .h(px(TRAFFIC_CHART_HEIGHT)),
+                )
+                .child(axis_column(AXIS_WIDTH, TRAFFIC_CHART_HEIGHT, entries, theme)),
+        )
         .into_any_element()
 }
 
@@ -458,6 +550,39 @@ fn fill_area(
     let first = points[0];
     builder.line_to(point(last.x, bottom));
     builder.line_to(point(first.x, bottom));
+    builder.close();
+    if let Ok(path) = builder.build() {
+        window.paint_path(path, color.opacity(0.14));
+    }
+}
+
+/// 两条折线之间的淡色带：堆叠图上层用它（从下层顶边填到本层顶边）。
+///
+/// `top` 的纵坐标必须比 `bottom` 小（屏幕坐标向下为正，值大的在上面）；
+/// 两条线的点数不一致时直接不画——那说明调用方把序列错位了，画出来是一块
+/// 歪七扭八的色斑，比不画更难查。
+fn fill_band(
+    window: &mut Window,
+    bounds: Bounds<gpui::Pixels>,
+    top: &[f32],
+    bottom: &[f32],
+    width: f32,
+    color: Hsla,
+) {
+    if top.len() < 2 || top.len() != bottom.len() {
+        return;
+    }
+    let top_points = line_points(bounds, top, width);
+    let bottom_points = line_points(bounds, bottom, width);
+    let mut builder = PathBuilder::fill();
+    builder.move_to(top_points[0]);
+    for point in &top_points[1..] {
+        builder.line_to(*point);
+    }
+    // 回程顺着下层顶边倒着走，围成一个闭合的带子。
+    for point in bottom_points.iter().rev() {
+        builder.line_to(*point);
+    }
     builder.close();
     if let Ok(path) = builder.build() {
         window.paint_path(path, color.opacity(0.14));

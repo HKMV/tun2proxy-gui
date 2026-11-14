@@ -34,11 +34,12 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime::{Builder, Runtime};
 
 use crate::core::i18n::t;
+use crate::core::traffic::RouteBytes;
 use crate::tr_format;
 
 use super::ipset::Cidr;
@@ -152,12 +153,19 @@ impl Default for Decisions {
 }
 
 /// 计数器。
+///
+/// 前四个是「几条连接」，后四个是「几个字节」：字节按路累加（直连 / 代理 ×
+/// 上下行），给仪表盘的流量图拆两条曲线用。都是单调累加，只在分流器启动时清零。
 #[derive(Debug, Default)]
 pub struct Counters {
     pub direct: AtomicU64,
     pub proxy: AtomicU64,
     pub failed: AtomicU64,
     pub sessions: AtomicU64,
+    pub direct_down: AtomicU64,
+    pub direct_up: AtomicU64,
+    pub proxy_down: AtomicU64,
+    pub proxy_up: AtomicU64,
 }
 
 impl Counters {
@@ -167,7 +175,36 @@ impl Counters {
             proxy: self.proxy.load(Ordering::Relaxed),
             failed: self.failed.load(Ordering::Relaxed),
             sessions: self.sessions.load(Ordering::Relaxed),
+            bytes: self.bytes(),
         }
+    }
+
+    /// 累计字节（不含连接数），给每秒一次的速度采样读。
+    fn bytes(&self) -> RouteBytes {
+        RouteBytes {
+            direct_down: self.direct_down.load(Ordering::Relaxed),
+            direct_up: self.direct_up.load(Ordering::Relaxed),
+            proxy_down: self.proxy_down.load(Ordering::Relaxed),
+            proxy_up: self.proxy_up.load(Ordering::Relaxed),
+        }
+    }
+
+    fn clear_bytes(&self) {
+        self.direct_down.store(0, Ordering::Relaxed);
+        self.direct_up.store(0, Ordering::Relaxed);
+        self.proxy_down.store(0, Ordering::Relaxed);
+        self.proxy_up.store(0, Ordering::Relaxed);
+    }
+
+    /// 记一块字节。中继循环里每搬一块就调一次，所以只是 `fetch_add`，不取锁。
+    fn add(&self, lane: Lane, down: bool, bytes: u64) {
+        let counter = match (lane, down) {
+            (Lane::Direct, true) => &self.direct_down,
+            (Lane::Direct, false) => &self.direct_up,
+            (Lane::Proxy, true) => &self.proxy_down,
+            (Lane::Proxy, false) => &self.proxy_up,
+        };
+        counter.fetch_add(bytes, Ordering::Relaxed);
     }
 }
 
@@ -178,6 +215,8 @@ pub struct CounterSnapshot {
     pub proxy: u64,
     pub failed: u64,
     pub sessions: u64,
+    /// 累计字节（按路、按方向分开）。
+    pub bytes: RouteBytes,
 }
 
 /// 趋势每隔多久汇总一格（秒）。
@@ -492,6 +531,11 @@ impl SplitService {
         self.counters.snapshot()
     }
 
+    /// 累计字节（按路、按方向分开）。流量图每秒读一次做差分。
+    pub fn route_bytes(&self) -> RouteBytes {
+        self.counters.bytes()
+    }
+
     /// 最近的 `limit` 条判定，新的在前。
     pub fn recent_decisions(&self, limit: usize) -> Vec<Decision> {
         self.decisions.recent(limit)
@@ -507,6 +551,7 @@ impl SplitService {
         self.counters.proxy.store(0, Ordering::Relaxed);
         self.counters.failed.store(0, Ordering::Relaxed);
         self.counters.sessions.store(0, Ordering::Relaxed);
+        self.counters.clear_bytes();
     }
 
     /// 启动监听，返回**实际**监听地址（端口可能是系统分配的）。
@@ -733,7 +778,7 @@ async fn serve(mut client: TcpStream, dispatch: Arc<Dispatch>) {
                     if !write_reply(&mut client, 0x00).await {
                         return;
                     }
-                    relay(client, remote_stream).await;
+                    relay(client, remote_stream, dispatch.counters.clone(), Lane::Direct).await;
                 }
                 Err(failure) => {
                     dispatch.count_failed();
@@ -775,7 +820,7 @@ async fn proxy_only(
             if !write_reply(&mut client, 0x00).await {
                 return;
             }
-            relay(client, remote).await;
+            relay(client, remote, dispatch.counters.clone(), Lane::Proxy).await;
         }
         Err(err) => {
             dispatch.count_failed();
@@ -794,7 +839,7 @@ async fn proxy_only(
             let _ = write_reply(&mut client, 0x05).await;
         }
     }
-    // `remote` 在这里被 drop，连接随之关闭。
+    // `remote` 已经交给 `relay`，中继结束时连接随之关闭。
 }
 
 /// 直连：域名先按出口做一次 DNS，IP 直接用。
@@ -876,13 +921,85 @@ fn reply_code(err: &io::Error) -> u8 {
     }
 }
 
-/// 双向中继，直到两边都关。
-async fn relay(mut client: TcpStream, mut remote: TcpStream) {
+/// 这条连接走的是哪条路——决定中继时把字节记到哪一对计数器上。
+///
+/// 和 [`DecisionRoute`] 分开：那个是给界面读的「判定结论」，这个只在记账时用，
+/// 不做序列化、不上界面，多一个字段也没人看得见。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Lane {
+    Direct,
+    Proxy,
+}
+
+/// 中继时一次搬多少字节。
+///
+/// 和 tokio 的 `copy_bidirectional` 默认缓冲一样是 8 KB：一是那条路径本来就在
+/// 用这个尺寸，换成更大的值没有实测收益；二是每条连接两个方向各一份，整机流量
+/// 下这个常量直接乘在内存占用上。
+const COPY_BUFFER: usize = 8 * 1024;
+
+/// 双向中继，直到两边都关，**顺便把字节记到这条路账上**。
+///
+/// 方向：`client` 是 tun2proxy（本机），`remote` 是对端。client → remote 是
+/// 上行（系统要发出去的），remote → client 是下行，和 TUN 网卡计数的方向语义
+/// 一致，两张图才读得对。
+///
+/// 用自己写的搬运循环而不是 `copy_bidirectional`：后者只在最后返回总量，而
+/// 界面要的是「现在每秒多少」——必须边搬边记账。
+async fn relay(client: TcpStream, remote: TcpStream, counters: Arc<Counters>, lane: Lane) {
     let _ = client.set_nodelay(true);
     let _ = remote.set_nodelay(true);
-    let _ = tokio::io::copy_bidirectional(&mut client, &mut remote).await;
-    let _ = client.shutdown().await;
-    let _ = remote.shutdown().await;
+    let (mut client_read, mut client_write) = client.into_split();
+    let (mut remote_read, mut remote_write) = remote.into_split();
+
+    // 两个方向各起一个任务：一边先关（半关闭）时另一边还得继续，直到对端也关，
+    // 所以不能串着做。这里不用 `tokio::join!`——那个宏要开 tokio 的 `macros`
+    // feature，而两个方向本来就可以当独立任务跑，`spawn` 已经让它们并发了。
+    let up = {
+        let counters = counters.clone();
+        tokio::spawn(async move {
+            let _ = copy_counted(&mut client_read, &mut remote_write, |bytes| {
+                counters.add(lane, false, bytes)
+            })
+            .await;
+        })
+    };
+    let down = tokio::spawn(async move {
+        let _ = copy_counted(&mut remote_read, &mut client_write, |bytes| {
+            counters.add(lane, true, bytes)
+        })
+        .await;
+    });
+    let _ = up.await;
+    let _ = down.await;
+}
+
+/// 搬一个方向的数据，每搬成功一块就把字节数交给 `account`。
+async fn copy_counted<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    account: impl Fn(u64),
+) -> io::Result<u64>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let mut buffer = vec![0u8; COPY_BUFFER];
+    let mut moved = 0u64;
+    loop {
+        let read = match reader.read(&mut buffer).await {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(err) => return Err(err),
+        };
+        // 只记「真的写出去了」的字节：写失败说明这条连接已经传不下去，
+        // 那些还压在缓冲里的字节既没到对端，也不该算进速率。
+        writer.write_all(&buffer[..read]).await?;
+        account(read as u64);
+        moved += read as u64;
+    }
+    let _ = writer.shutdown().await;
+    Ok(moved)
 }
 
 /// 读 SOCKS5 问候与 CONNECT 请求，返回目标。
@@ -983,6 +1100,15 @@ mod tests {
         let (rules, errors) = parse_rules_text(text, Action::Direct, "test");
         assert!(errors.is_empty(), "{errors:?}");
         RuleSet::build(&rules).0
+    }
+
+    /// 给端到端用例的每一步套个超时：卡住时要报出「卡在哪一步」，而不是让
+    /// CI 挂到全局超时才失败。
+    async fn within<F: std::future::Future>(step: &str, future: F) -> F::Output {
+        match tokio::time::timeout(Duration::from_secs(5), future).await {
+            Ok(value) => value,
+            Err(_) => panic!("5 秒超时：{step}"),
+        }
     }
 
     struct Quiet;
@@ -1153,5 +1279,217 @@ mod tests {
         assert_eq!(code(io::ErrorKind::HostUnreachable), 0x04);
         assert_eq!(code(io::ErrorKind::NetworkUnreachable), 0x04);
         assert_eq!(code(io::ErrorKind::PermissionDenied), 0x01);
+    }
+
+    /// 四条字节计数各记各的：两条路 × 上下行，串了就说明方向或路径写错了，
+    /// 界面上的两条色带会跟着串。
+    #[test]
+    fn byte_counters_keep_the_two_lanes_apart() {
+        let counters = Counters::default();
+        counters.add(Lane::Direct, true, 1);
+        counters.add(Lane::Direct, false, 10);
+        counters.add(Lane::Proxy, true, 100);
+        counters.add(Lane::Proxy, false, 1_000);
+
+        assert_eq!(
+            counters.bytes(),
+            RouteBytes {
+                direct_down: 1,
+                direct_up: 10,
+                proxy_down: 100,
+                proxy_up: 1_000,
+            }
+        );
+        // 清零是「每跑一次重新记账」，四条要一起归零。
+        counters.clear_bytes();
+        assert_eq!(counters.bytes(), RouteBytes::default());
+    }
+
+    /// 分流器重启会清计数：流量图的基线跟着归零，不能留着上一轮的数字。
+    #[test]
+    fn route_bytes_start_fresh_on_each_run() {
+        let service = SplitService::new();
+        service.counters.add(Lane::Proxy, true, 42);
+        assert_eq!(service.route_bytes().proxy_down, 42);
+        service.reset_counters();
+        assert_eq!(service.route_bytes(), RouteBytes::default());
+    }
+
+    /// 搬运循环必须把「真的写出去了」的字节交出来：流量图全靠这个数字，
+    /// 少记就会显示得比实际慢，多记就是凭空造流量。
+    ///
+    /// 手动建运行时而不是 `#[tokio::test]`：那个宏要开 tokio 的 `macros`
+    /// feature，为一个测试加 feature 不值得。
+    #[test]
+    fn copying_counts_every_byte_it_moves() {
+        let runtime = Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("建得起单线程运行时");
+        runtime.block_on(async {
+            // 缓冲开得比总量大：这里只验记账，不想测背压导致的阻塞。
+            let (mut source, mut source_tail) = tokio::io::duplex(8 * 1024);
+            let (mut sink, mut sink_tail) = tokio::io::duplex(8 * 1024);
+            let counted = Arc::new(AtomicU64::new(0));
+
+            let task_counted = counted.clone();
+            let handle = tokio::spawn(async move {
+                copy_counted(&mut source_tail, &mut sink, move |bytes| {
+                    task_counted.fetch_add(bytes, Ordering::Relaxed);
+                })
+                .await
+            });
+
+            let payload = vec![7u8; 2_000];
+            for _ in 0..3 {
+                source.write_all(&payload).await.expect("写进管道");
+            }
+            // 关掉写端 = 半关闭，搬运循环读到 EOF 就该收工。
+            source.shutdown().await.expect("关掉写端");
+
+            let moved = handle.await.expect("搬运任务没 panic").expect("搬运成功");
+            assert_eq!(moved, 6_000, "三块 2000 字节");
+            assert_eq!(counted.load(Ordering::Relaxed), moved, "记账要和实际搬运一致");
+
+            let mut received = Vec::new();
+            sink_tail
+                .read_to_end(&mut received)
+                .await
+                .expect("读回对端");
+            assert_eq!(received.len(), 6_000, "字节要真的到了对端");
+            assert!(received.iter().all(|&byte| byte == 7));
+        });
+    }
+
+    /// 端到端：一条真的经过分流器的连接，字节要记在它**实际走的那条路**上。
+    ///
+    /// 单测能证明搬运循环会数数，但证明不了「代理这条分支传的是 Proxy 那条
+    /// 账本」——那正是流量图会不会把两条路搞反的关键，所以这里用假上游跑一遍
+    /// 完整的 SOCKS5：客户端 → 分流器 → 上游 → 回显。
+    #[test]
+    fn relayed_bytes_land_on_the_proxy_lane() {
+        // 上游端口先用标准库占住：分流器得在它自己的运行时里 bind，不能嵌在
+        // 别人的 `block_on` 里调用（那会 panic「Cannot start a runtime from
+        // within a runtime」）。
+        let upstream = std::net::TcpListener::bind("127.0.0.1:0").expect("绑上游端口");
+        let upstream_addr = upstream.local_addr().expect("上游地址");
+        upstream.set_nonblocking(true).expect("切非阻塞");
+
+        let service = SplitService::new();
+        // 规则集是空的：任何目标都「未命中清单」→ 走代理，正是要测的那条路。
+        let plan = StartPlan {
+            listen: "127.0.0.1:0".parse().expect("常量地址"),
+            upstream: Upstream::parse(&format!("socks5://{upstream_addr}")).expect("上游地址合法"),
+            rules: RuleSet::build(&Vec::<Rule>::new()).0,
+            rule_count: 0,
+            direct_dns: "223.5.5.5:53".parse().expect("常量 DNS"),
+            outlet_hint: String::new(),
+            fake_pool: None,
+        };
+        let addr = service.start(plan, Arc::new(Quiet)).expect("分流器起来");
+
+        let runtime = Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("建得起单线程运行时");
+        // 句柄要拷一份进去：`service` 本身得留在外面收尾（`stop()`）。
+        let handle = service.clone();
+        runtime.block_on(async move {
+            // 假上游：只认一条连接，握手后把收到的字节原样吐回去。
+            let upstream = TcpListener::from_std(upstream).expect("接管上游监听");
+            let upstream_task = tokio::spawn(async move {
+                let (mut socket, _) = upstream.accept().await.expect("接受上游连接");
+                let mut greeting = [0u8; 2];
+                socket.read_exact(&mut greeting).await.expect("读问候");
+                let mut methods = vec![0u8; greeting[1] as usize];
+                socket.read_exact(&mut methods).await.expect("读方法");
+                socket.write_all(&[0x05, 0x00]).await.expect("回方法");
+                let mut request = [0u8; 4];
+                socket.read_exact(&mut request).await.expect("读请求头");
+                let address_len = match request[3] {
+                    0x01 => 4,
+                    0x04 => 16,
+                    0x03 => {
+                        // 域名前面那个长度字节已经在这里读掉了，剩下的就只是域名。
+                        let mut length = [0u8; 1];
+                        socket.read_exact(&mut length).await.expect("读域名长度");
+                        length[0] as usize
+                    }
+                    _ => 0,
+                };
+                let mut rest = vec![0u8; address_len + 2];
+                socket.read_exact(&mut rest).await.expect("读地址与端口");
+                socket
+                    .write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+                    .await
+                    .expect("回应答");
+                let mut buffer = [0u8; 512];
+                while let Ok(read) = socket.read(&mut buffer).await {
+                    if read == 0 || socket.write_all(&buffer[..read]).await.is_err() {
+                        break;
+                    }
+                }
+            });
+
+            let mut client = within("连上分流器", TcpStream::connect(addr))
+                .await
+                .expect("连上分流器");
+            within("发问候", client.write_all(&[0x05, 0x01, 0x00]))
+                .await
+                .expect("问候");
+            let mut greeting = [0u8; 2];
+            within("收问候应答", client.read_exact(&mut greeting))
+                .await
+                .expect("收问候应答");
+            assert_eq!(greeting, [0x05, 0x00]);
+
+            let host = b"example.com";
+            let mut request = vec![0x05, 0x01, 0x00, 0x03, host.len() as u8];
+            request.extend_from_slice(host);
+            request.extend_from_slice(&80u16.to_be_bytes());
+            within("发 CONNECT", client.write_all(&request))
+                .await
+                .expect("发 CONNECT");
+            let mut reply = [0u8; 10];
+            within("收 CONNECT 应答", client.read_exact(&mut reply))
+                .await
+                .expect("收应答");
+            assert_eq!(reply[1], 0x00, "上游应答应是成功");
+
+            // 中继阶段的字节：100 字节上行，回显 100 字节下行。
+            let payload = vec![0x5au8; 100];
+            within("发数据", client.write_all(&payload))
+                .await
+                .expect("发数据");
+            let mut echoed = vec![0u8; 100];
+            within("收回显", client.read_exact(&mut echoed))
+                .await
+                .expect("收回显");
+            assert_eq!(echoed, payload);
+
+            // 记账发生在 `write_all` 返回之后那一行，客户端可能抢在此之前就读到
+            // 了回显——所以给一小段重试窗口，别赌谁先跑完。
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let bytes = loop {
+                let bytes = handle.route_bytes();
+                if (bytes.proxy_up == 100 && bytes.proxy_down == 100) || Instant::now() >= deadline {
+                    break bytes;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            };
+            assert_eq!(bytes.proxy_up, 100, "这 100 字节走的是代理那条路");
+            assert_eq!(bytes.proxy_down, 100, "回显也算在下行里");
+            assert_eq!(bytes.direct_up, 0, "直连那条不该有任何字节");
+            assert_eq!(bytes.direct_down, 0);
+            assert_eq!(handle.counters().proxy, 1, "一条连接算一次代理判定");
+
+            // 客户端断开后假上游也该收工：它要是 panic 了，上面那些断言就成了
+            // 「碰巧过了」，所以在这里把结果收回来。
+            drop(client);
+            within("假上游退出", upstream_task)
+                .await
+                .expect("假上游正常结束");
+        });
+        service.stop();
     }
 }
