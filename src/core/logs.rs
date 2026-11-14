@@ -185,8 +185,13 @@ pub fn init(shared: Arc<Mutex<Shared>>, dirty: Arc<AtomicBool>) -> io::Result<Pa
 ///
 /// 命名规则来自 [`rolling`]：`{前缀}.{日期}.{后缀}`。启动时把这条路径打进
 /// 日志，用户就不用猜「日志到底写哪儿去了」。
+///
+/// 日期必须和 `rolling` 用同一套历法：它按 **UTC** 换日（`tracing-appender`
+/// 内部就是拿到 `SystemTime` 直接取 UTC 日期），而日志**内容**里的时间戳是
+/// 本地时间（见 [`now`]）。东八区凌晨 0 点到 8 点之间这两者差一天——按本地日期
+/// 拼出来的路径那会儿并不存在，用户照着这句提示去打开日志只会扑空。
 pub fn current_file(dir: &Path) -> PathBuf {
-    let day = now()
+    let day = OffsetDateTime::now_utc()
         .format(&time::macros::format_description!("[year]-[month]-[day]"))
         .unwrap_or_default();
     dir.join(format!("{LOG_PREFIX}.{day}.log"))
