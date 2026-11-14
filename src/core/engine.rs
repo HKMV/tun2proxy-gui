@@ -715,13 +715,47 @@ impl Engine {
         Ok(())
     }
 
-    /// 清理本程序留下、当前不在用的隧道网卡，把结果写进日志。
+    /// 清理本程序留下、当前没人要的隧道进程与网卡，把结果写进日志。
     ///
     /// 程序启动时和每次启动隧道前各调一次：网卡名是每次随机生成的，进程被强杀时
-    /// 那张 Wintun 适配器会留在系统里。没有管理员权限时 `remove_stale` 直接返回
-    /// 空结果，不会写日志。
+    /// 那张 Wintun 适配器和它的持有者都会留在系统里。
+    ///
+    /// 两步的顺序由 [`crate::core::orphans::sweep`] 写死：**先结束孤儿进程，再删
+    /// 网卡**。反过来做不会报错，只是网卡一张也删不掉——孤儿攥着它，它的状态一直
+    /// 是 Up，而 Up 的网卡按设计不删；等到下次启动撞名失败，才有人回头查原因。
+    ///
+    /// 没有管理员权限时 `remove_stale` 直接返回空结果，结束进程则只对本用户的
+    /// 进程有效；两种情况都会写日志，不静默。
     pub fn clean_stale_adapters(&self) {
-        let stale = crate::core::adapters::remove_stale();
+        // 自己拉着的子进程不是孤儿：停止 / 重启的那一瞬它还在跑。
+        let held: Vec<u32> = self
+            .child
+            .lock()
+            .ok()
+            .and_then(|child| child.as_ref().map(std::process::Child::id))
+            .into_iter()
+            .collect();
+        let (orphans, stale) = crate::core::orphans::sweep(
+            || crate::core::orphans::terminate(&binary::exe_path(), &held),
+            crate::core::adapters::remove_stale,
+        );
+
+        if !orphans.killed.is_empty() {
+            self.log_line(tr_format!(
+                "已结束残留的 tun2proxy 进程：PID {}",
+                "Ended leftover tun2proxy process(es): PID {}",
+                join_pids(&orphans.killed)
+            ));
+        }
+        if !orphans.failed.is_empty() {
+            self.log_line(tr_format!(
+                "有 {} 个残留 tun2proxy 进程结束不掉（需要管理员权限）：PID {}",
+                "Could not end {} leftover tun2proxy process(es) (administrator rights needed): PID {}",
+                orphans.failed.len(),
+                join_pids(&orphans.failed)
+            ));
+        }
+
         if !stale.removed.is_empty() {
             self.log_line(tr_format!(
                 "已清理残留隧道网卡：{}",
@@ -1266,6 +1300,17 @@ fn send_interrupt(pid: u32) -> bool {
 #[cfg(not(any(unix, windows)))]
 fn send_interrupt(_pid: u32) -> bool {
     false
+}
+
+/// 日志里的进程号列表：`1234、5678`。
+///
+/// 中文顿号而不是逗号：和同一行里并列的网卡名（t2p-ab12cd34、t2p-ef56gh78）
+/// 保持同一种分隔，读起来是「一串东西」而不是「一个数后面跟一段话」。
+fn join_pids(pids: &[u32]) -> String {
+    pids.iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join("、")
 }
 
 // 日志本身（tracing 订阅端、按天落盘、界面分发）都在 `crate::core::logs`。

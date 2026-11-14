@@ -93,6 +93,9 @@ windows-sys = { version = "0.59", features = [
     # SetupAPI：启动前删掉本程序留下、当前不在用的隧道网卡
     # （SetupDiGetClassDevsW / DIF_REMOVE，见 core::adapters）。
     "Win32_Devices_DeviceAndDriverInstallation",
+    # ToolHelp32：启动前找出上一次留下的孤儿 tun2proxy 进程
+    # （CreateToolhelp32Snapshot / Process32NextW，见 core::orphans）。
+    "Win32_System_Diagnostics_ToolHelp",
 ] }
 # 托盘图标按状态着色：ico 里的帧是 PNG，要解码改像素再编码回去。
 # 纯 Rust、无系统依赖，只在 Windows 上编进来。

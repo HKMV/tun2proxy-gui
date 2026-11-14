@@ -14,6 +14,7 @@
 //! | [`split`] | 分流规则：国内 IP / 域名的清单聚合、匹配，以及本机 SOCKS5 分流器 |
 //! | [`traffic`] | 读 TUN 网卡的收发计数，给仪表盘的流量折线图用 |
 //! | [`adapters`] | 启动前清理本程序留下、当前不在用的隧道网卡（Windows） |
+//! | [`orphans`] | 启动前结束上一次留下的孤儿 tun2proxy 进程（否则网卡清不掉，Windows） |
 //! | [`watchdog`] | 界面线程卡顿探针（假死时把「卡在哪一段」写进 stall.log） |
 //! | [`icon`] | 程序图标的唯一真源（exe 资源 / 标题栏 / 托盘共用一份字节） |
 //! | [`window`] | 主窗口句柄的查找与显隐（托盘唤回、最小化到托盘） |
@@ -36,6 +37,7 @@ pub mod engine;
 pub mod i18n;
 pub mod icon;
 pub mod logs;
+pub mod orphans;
 pub mod paths;
 pub mod platform;
 pub mod probe;
