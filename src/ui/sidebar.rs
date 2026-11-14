@@ -183,6 +183,11 @@ fn expanded(app: &UiApp, snap: &Snapshot, theme: &Theme, cx: &mut Context<UiApp>
             Msg::Start,
         )
     };
+    // 忙碌（蒙版挂着）的时候这颗按钮也点不动：遮罩挡住了内容区，但侧栏这颗
+    // 按钮就压在遮罩下面，用户会先点它——连点两次会起两条检测线程。置灰比
+    // 「点了弹一句不行」好：不必先点一次才知道现在不能点；tooltip 换成正发生
+    // 的那件事（「正在启动隧道…」），说明为什么点不动。
+    let busy = app.busy.action().map(|action| action.label());
     // 用 gpuikit 的 `icon_button` 而不是自绘方框：它的盒模型、悬停底色、
     // 禁用态和 tooltip 都由组件自己维护，侧栏顶部那个收起按钮也是它，
     // 两处口径一致。32dp 的盒 = `Large` 档，和内容区的按钮、输入框同高；
@@ -190,7 +195,10 @@ fn expanded(app: &UiApp, snap: &Snapshot, theme: &Theme, cx: &mut Context<UiApp>
     let action = icon_button(action_id, action_icon)
         .box_size(rems(2.0))
         .icon_size(rems(1.0))
-        .tooltip(gpuikit::elements::tooltip::tooltip(action_label))
+        .disabled(busy.is_some())
+        .tooltip(gpuikit::elements::tooltip::tooltip(
+            busy.unwrap_or(action_label),
+        ))
         .on_click(cx.listener(move |this, _, _, cx| this.handle(action_msg.clone(), cx)));
 
     div()
@@ -252,6 +260,10 @@ fn rail(app: &UiApp, snap: &Snapshot, theme: &Theme, cx: &mut Context<UiApp>) ->
     } else {
         (t("启动", "Start"), DefaultIcons::play(), Msg::Start)
     };
+    // 忙碌时和上面完整形态那颗图标按钮一样：置灰、点不动、tooltip 说明原因。
+    // 收起态没有 `icon_button` 可用（这一格要和导航项同形状），所以手写一份
+    // 禁用态：去掉光标与点击、图标降到 `fg_disabled()`。
+    let busy = app.busy.action().map(|action| action.label());
     let action = div()
         .id("rail-action")
         .flex()
@@ -261,11 +273,24 @@ fn rail(app: &UiApp, snap: &Snapshot, theme: &Theme, cx: &mut Context<UiApp>) ->
         .w(px(RAIL_ITEM_WIDTH))
         .h(px(ITEM_HEIGHT))
         .rounded(px(6.0))
-        .cursor_pointer()
-        .hover(|style| style.bg(hover_bg(theme)))
-        .tooltip(gpuikit::elements::tooltip::tooltip(action_label))
-        .on_click(cx.listener(move |this, _, _, cx| this.handle(action_msg.clone(), cx)))
-        .child(icon(action_icon, 16.0, theme.fg_muted()));
+        .when(busy.is_none(), |this| {
+            this.cursor_pointer()
+                .hover(|style| style.bg(hover_bg(theme)))
+                .on_click(cx.listener(move |this, _, _, cx| this.handle(action_msg.clone(), cx)))
+        })
+        .when(busy.is_some(), |this| this.cursor_not_allowed())
+        .tooltip(gpuikit::elements::tooltip::tooltip(
+            busy.unwrap_or(action_label),
+        ))
+        .child(icon(
+            action_icon,
+            16.0,
+            if busy.is_some() {
+                theme.fg_disabled()
+            } else {
+                theme.fg_muted()
+            },
+        ));
 
     div()
         .flex()

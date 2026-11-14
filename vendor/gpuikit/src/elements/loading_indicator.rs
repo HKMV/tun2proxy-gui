@@ -282,6 +282,10 @@ pub enum LoadingIndicatorSize {
     Medium,
     /// `text_xl`
     Large,
+    /// 28px —— 上游没有这一档，是本仓库补的（见 `PATCH.md` 第四处补丁）。
+    ///
+    /// `Large` 只有 20px，放在铺满整窗的等待蒙版上像一个小标点，看不出在转。
+    XLarge,
 }
 
 /// A spinner.
@@ -391,6 +395,12 @@ impl LoadingIndicator {
         self
     }
 
+    /// Use [`LoadingIndicatorSize::XLarge`].
+    pub fn xlarge(mut self) -> Self {
+        self.size = LoadingIndicatorSize::XLarge;
+        self
+    }
+
     /// Override the colour of the text or the dots. Defaults to the theme's
     /// accent.
     pub fn color(mut self, color: Hsla) -> Self {
@@ -429,6 +439,8 @@ impl LoadingIndicatorSize {
             LoadingIndicatorSize::Small => rems(0.875),
             LoadingIndicatorSize::Medium => rems(1.0),
             LoadingIndicatorSize::Large => rems(1.25),
+            // 1.75rem = 28px：等待蒙版那种「一眼要看见在转」的场合用。
+            LoadingIndicatorSize::XLarge => rems(1.75),
         }
     }
 }

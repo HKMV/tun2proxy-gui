@@ -11,6 +11,7 @@
 use gpui::{App as GpuiApp, Context, IntoElement, Render, Window, div, prelude::*};
 use gpuikit::theme::{ActiveTheme, ThemeVariant, Themeable};
 
+use super::overlay;
 use super::pages;
 use super::sidebar;
 use super::state::{App, UiHandle};
@@ -38,6 +39,11 @@ impl Render for App {
             .bg(theme.bg())
             .child(sidebar::sidebar(self, &snapshot, &theme, cx))
             .child(pages::content(self, &snapshot, &theme, cx))
+            // 忙碌蒙版挂在最外层、`absolute` 铺满整窗：它盖住侧边栏与内容区，
+            // 但不参与这一行的 flex 排版（绝对定位的兄弟节点不占宽度）。
+            // 两个弹窗排在它后面，gpui 的 `deferred` 让它们仍然画在蒙版之上：
+            // 启动途中点叉弹出的「最小化到托盘？」不会被盖住。
+            .children(overlay::busy_overlay(self, &theme))
             .children(self.close_dialog.clone())
             // 删除确认与关窗确认各占一个字段：两者可能同时挂着（关窗时正好
             // 弹着删除确认），共用的话先弹出来的那个会被悄悄换掉。

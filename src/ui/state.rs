@@ -697,6 +697,12 @@ pub struct App {
     notice_seq: u64,
     /// 红色错误（启动失败等）。
     pub error: Option<String>,
+    /// 全局忙碌蒙版的状态：正在等一次启动 / 停止的结果（见 [`super::overlay`]）。
+    ///
+    /// 为什么不从 `Snapshot::status` 直接推：点「启动」之后到 `Status::Starting`
+    /// 之间状态一直是「未运行」，光看状态分不出「还没开始」和「已经失败」，
+    /// 蒙版会在按下的同一帧就自己撤掉。
+    pub busy: super::overlay::Busy,
 
     /// 文本输入框实体。
     pub inputs: Inputs,
@@ -818,6 +824,7 @@ impl App {
             notice: None,
             notice_seq: 0,
             error: None,
+            busy: super::overlay::Busy::default(),
             inputs,
             selects,
             close_dialog: None,

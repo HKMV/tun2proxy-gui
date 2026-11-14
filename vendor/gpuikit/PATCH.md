@@ -67,10 +67,23 @@ gpui 的 `text_area` 只滚不画条，gpuikit 的 `Textarea` 也没有留画条
 
 应用侧的使用见 `src/ui/widgets.rs` 的 `input_scroll_bar`（绕过列表）。
 
+## 第四处补丁：`LoadingIndicator` 多一档 28px
+
+等待蒙版铺满整窗时，转圈用最大的 `Large`（`rems(1.25)`，默认根字号下 20px）
+在卡片里像一个小标点，静态看只剩两三个点，「在转」这件事就没了说服力。
+上游的尺寸是枚举、只有四档，应用侧拿不到任何 knob。
+
+`src/elements/loading_indicator.rs`
+
+15. `LoadingIndicatorSize` 增加 `XLarge`（`height()` 给 `rems(1.75)`，默认
+    根字号下 28px），构建方法 `xlarge()` 一并补上。
+
+应用侧的使用见 `src/ui/overlay.rs` 的 `busy_overlay`。
+
 ## 升级时怎么做
 
 1. 把新版本源码拷到本目录（`src/`、`assets/`、`Cargo.toml`、两个 LICENSE）；
-2. 按上面 14 条重新打一遍（`git diff` 对着看最快）；
-3. 如果新版上游已经给了 `Select::popup_width`、`Dialog::on_dismiss` 和这三个
-   滚动量接口，直接删掉本目录和 `Cargo.toml` 里的 `[patch.crates-io]` 段，
-   把依赖换回 crates.io。
+2. 按上面 15 条重新打一遍（`git diff` 对着看最快）；
+3. 如果新版上游已经给了 `Select::popup_width`、`Dialog::on_dismiss`、这三个
+   滚动量接口和 `LoadingIndicatorSize::XLarge`，直接删掉本目录和 `Cargo.toml`
+   里的 `[patch.crates-io]` 段，把依赖换回 crates.io。

@@ -11,11 +11,13 @@
 //! | [`pages`] | 每页的标题栏与卡片组合 |
 //! | [`cards`] | 各张设置卡片（服务状态 / 代理 / 网络 / 高级 / 程序 / 日志） |
 //! | [`chart`] | 仪表盘首屏卡右侧的流量折线图（GPUI `canvas`） |
+//! | [`overlay`] | 全局忙碌蒙版：启停期间盖住整窗，让「点了以后在等什么」看得见 |
 //! | [`widgets`] | 可复用的文字样式与小部件 |
 //! | [`update`] | 处理 [`state::Msg`]，修改状态、调用内核 |
 
 pub mod cards;
 pub mod chart;
+pub mod overlay;
 pub mod pages;
 pub mod sidebar;
 pub mod state;

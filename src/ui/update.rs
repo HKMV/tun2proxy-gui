@@ -20,6 +20,7 @@ use crate::core::i18n::{apply as apply_language, t, tf};
 use crate::core::watchdog;
 use crate::core::CloseAction;
 
+use super::overlay::{PendingAction, begin};
 use super::state::{App, Msg, Page};
 use super::widgets::RememberChoice;
 
@@ -136,31 +137,49 @@ pub fn update(app: &mut App, msg: Msg, cx: &mut Context<App>) {
 
         // —— 操作 ——
         Msg::Start => {
-            app.notice = None;
-            app.error = None;
-            // 先补上名字（用户可能清空了输入框），再校验并启动。
-            app.config.normalize();
-            // `normalize()` 补名字时下拉框的选项文字也跟着变（空名字 → 「配置 N」）。
-            app.refresh_profile_select(cx);
-            // 启动前先探上游代理：连不通就不启动（tun2proxy 起来后会接管
-            // 路由，上游写错等于把网切断了）。检测在后台线程跑，结论由
-            // 引擎写进共享状态，界面读 `snapshot.blocked`。
-            let result = app.apply_draft().and_then(|()| {
-                app.engine
-                    .start_with_precheck(app.config.active_profile(), &app.config.split)
-            });
-            match result {
-                Ok(()) => {
-                    let _ = app.config.save();
-                    // 名字被 `normalize()` 补过的话，输入框要跟着显示新名字。
-                    app.sync_inputs(cx);
+            // 已经有一次启停在进行中：蒙版挡住了内容区、侧栏的按钮也置灰了，
+            // 这里再兜一层——连点两次会起两条检测线程，后一条必然回一句「服
+            // 务已经在运行」，把前一条的结论盖掉。
+            if !app.busy.is_busy() {
+                app.notice = None;
+                app.error = None;
+                // 先补上名字（用户可能清空了输入框），再校验并启动。
+                app.config.normalize();
+                // `normalize()` 补名字时下拉框的选项文字也跟着变（空名字 → 「配置 N」）。
+                app.refresh_profile_select(cx);
+                // 启动前先探上游代理：连不通就不启动（tun2proxy 起来后会接管
+                // 路由，上游写错等于把网切断了）。检测在后台线程跑，结论由
+                // 引擎写进共享状态，界面读 `snapshot.blocked`。
+                let result = app.apply_draft().and_then(|()| {
+                    app.engine
+                        .start_with_precheck(app.config.active_profile(), &app.config.split)
+                });
+                match result {
+                    Ok(()) => {
+                        // 从这里到状态变成「正在启动…」还要经过探测、清理残留
+                        // 网卡、起分流器和拉子进程——全在后台线程上，界面**不
+                        // 会被卡住，但也不会有任何变化**。所以在这一帧就把蒙
+                        // 版立起来，告诉用户「在做事」。
+                        begin(app, PendingAction::Starting, cx);
+                        let _ = app.config.save();
+                        // 名字被 `normalize()` 补过的话，输入框要跟着显示新名字。
+                        app.sync_inputs(cx);
+                    }
+                    // 本地校验就没过：错误当场就看得见（提示条），不必立蒙版。
+                    Err(err) => app.error = Some(err),
                 }
-                Err(err) => app.error = Some(err),
             }
         }
         Msg::Stop => {
             app.notice = None;
+            // 停止同样要等：`stop()` 只发中断信号（状态立刻变成「正在停止…」），
+            // 子进程真正退出、虚拟网卡回收是后台监督线程的事。已经停着的时候
+            // 不立蒙版——那时 `stop()` 什么也不做，蒙版会闪一帧就没了。
+            let was_active = app.engine.is_active();
             app.engine.stop();
+            if was_active {
+                begin(app, PendingAction::Stopping, cx);
+            }
         }
         Msg::SaveConfig => {
             app.error = None;
