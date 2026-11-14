@@ -217,8 +217,8 @@ release profile 是按**体积**调的，不是按编译时间（见 `Cargo.toml
 # 先把 Cargo.toml 的 version 改好并提交，tag 必须与它一致（CI 会校验）
 # 说明写进文件再用 -F 打 tag：--cleanup=verbatim 不能省，否则 git 会把
 # `## 新功能` 这种以 # 开头的行当注释剥掉，Release 页面只剩没分段的列表
-git tag -a v0.6.1 -F notes.txt --cleanup=verbatim
-git push origin v0.6.1
+git tag -a v0.6.2 -F notes.txt --cleanup=verbatim
+git push origin v0.6.2
 ```
 
 `notes.txt` 第一行会被**原样渲染成 Release 正文的首段**（就是那句一句话摘要，比如
