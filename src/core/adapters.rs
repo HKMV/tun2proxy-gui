@@ -37,6 +37,7 @@ pub fn remove_stale() -> Cleanup {
 #[cfg(windows)]
 mod imp {
     use std::ptr;
+    use std::time::{Duration, Instant};
 
     use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
         SetupDiCallClassInstaller, SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInfo,
@@ -52,6 +53,13 @@ mod imp {
 
     /// 随机名的长度：前缀后面固定 8 位十六进制。
     const RANDOM_SUFFIX_LEN: usize = 8;
+
+    /// 等设备真的拆完的上限。
+    ///
+    /// 正常情况下一两拍（50–100ms）就从枚举里消失了；1.5 秒是留给 PnP 管理器的
+    /// 余量，再久就不值得把启动拖下去——真没拆干净，下一次启动还会再判一遍。
+    const WAIT_LIMIT: Duration = Duration::from_millis(1500);
+    const WAIT_STEP: Duration = Duration::from_millis(50);
 
     pub fn remove_stale() -> Cleanup {
         let mut result = Cleanup::default();
@@ -91,7 +99,41 @@ mod imp {
 
         // SAFETY: `set` 由 `open_net_devices` 分配，只归还一次。
         unsafe { SetupDiDestroyDeviceInfoList(set) };
+
+        // 删完别急着往下走：`DIF_REMOVE` 只是把移除请求排队，PnP 管理器拆设备栈
+        // 是异步的。清理正好排在启动隧道之前，紧接着 tun2proxy 就要建新适配器，
+        // 撞上还没拆完的那次移除时内核会用「设备未就绪」（0x10DF）把创建顶回来，
+        // 用户看到 `WintunCreateAdapter failed`，可这时系统里一张残留网卡都没有，
+        // 怎么看都不像「有东西没清干净」。
+        if !result.removed.is_empty() {
+            wait_until_gone(&result.removed);
+        }
         result
+    }
+
+    /// 等这些名字的设备真的从设备枚举里消失，最多 [`WAIT_LIMIT`]。
+    ///
+    /// 等不到也不报错：宁可这一次多等一会儿，也不能把启动卡在这里——真没拆干净
+    /// 的话下一次启动还会再判一遍。
+    pub(super) fn wait_until_gone(names: &[String]) {
+        let deadline = Instant::now() + WAIT_LIMIT;
+        while Instant::now() < deadline {
+            if !still_present(names) {
+                return;
+            }
+            std::thread::sleep(WAIT_STEP);
+        }
+    }
+
+    /// 这些名字里还有没有留在设备树上的。
+    pub(super) fn still_present(names: &[String]) -> bool {
+        if names.is_empty() {
+            return false;
+        }
+        let present = net_devices();
+        names
+            .iter()
+            .any(|name| present.iter().any(|(friendly, _)| friendly == name))
     }
 
     /// 打开「网卡类」设备信息集。用完必须 [`SetupDiDestroyDeviceInfoList`]。
@@ -115,7 +157,8 @@ mod imp {
     }
 
     /// 枚举一次所有网卡设备的「友好名 + 硬件 ID」。
-    #[cfg(test)]
+    ///
+    /// 清理要用它确认「删掉的设备是不是真的没了」，测试也用它核对枚举没漏项。
     fn net_devices() -> Vec<(String, String)> {
         let Some(set) = open_net_devices() else {
             return Vec::new();
@@ -207,7 +250,10 @@ mod imp {
 
 #[cfg(all(test, windows))]
 mod tests {
-    use super::imp::{net_device_names_for_test, stale_name_for_test as stale_name};
+    use super::imp::{
+        net_device_names_for_test, stale_name_for_test as stale_name, still_present,
+        wait_until_gone,
+    };
     use crate::core::config::{TUN_NAME_PREFIX, TUN_NAME_SEPARATOR};
 
     #[test]
@@ -275,5 +321,37 @@ mod tests {
                 "只认本程序的前缀"
             );
         }
+    }
+
+    /// 没删到东西就不许等：清理一件没做时，启动不该为此多花一毫秒。
+    #[test]
+    fn waiting_is_a_no_op_when_nothing_was_removed() {
+        let start = std::time::Instant::now();
+        wait_until_gone(&[]);
+        assert!(
+            start.elapsed() < std::time::Duration::from_millis(50),
+            "空名单却等了 {:?}",
+            start.elapsed()
+        );
+    }
+
+    /// 空名单永远不算「还在设备树上」，否则一次空清理也会把 1.5 秒等满。
+    #[test]
+    fn an_empty_name_list_is_never_present() {
+        assert!(!still_present(&[]));
+    }
+
+    /// 真拿一台存在的设备去问：它必须被认成「还在」，不然等待会在第一拍就提前
+    /// 收工，等于白加。
+    #[test]
+    fn a_device_that_exists_is_reported_as_present() {
+        let devices = net_device_names_for_test();
+        let Some((friendly, _)) = devices.iter().find(|(name, _)| !name.is_empty()) else {
+            return;
+        };
+        assert!(
+            still_present(std::slice::from_ref(friendly)),
+            "枚举里明明有 {friendly}，却说它不在"
+        );
     }
 }
