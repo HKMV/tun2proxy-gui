@@ -81,6 +81,7 @@ assets/
 ├─ icon.png       图标原图（512×512，带透明通道）
 └─ screenshots/   README 里的界面截图（中英文各一套）
 tools/
+├─ notes-reflow.py 发布说明的软换行合并（`--check` 打 tag 前自查）
 └─ regen-rules/   重新生成 builtin.rs 清单快照的小工具
 build.rs         把 app.rc（图标 + 版本信息）编进 Windows exe
 ```
@@ -159,6 +160,8 @@ git push origin v0.6.4
 `notes.txt` 第一行会被**原样渲染成 Release 正文的首段**（就是那句一句话摘要，比如「0.4.0：国内 IP / 域名直连分流，残留隧道网卡自动清理」），空一行之后才是分段的正文（`## 小节` 随便写）。所以第一行要写成能独立成句的摘要，别写 `v0.4.0`、`update` 这种脱离上下文看不懂的话——Release 标题固定是 `Tun2Proxy GUI <tag>`，第一行不会变成标题，只会变成页面顶上的那段话。
 
 **正文一段写一行，别手工折行。** Release 页面和 issue 一样，把单个换行当成真的换行：按 80 列折过的段落，在页面上一行只走半截就断，右边留一大片空白。要分段就靠空行，真要硬断行才在行尾留两个空格。README 这边正相反，单个换行会被合并成一个空格，中文里会多出不该有的缝——所以两个 README 也是一段一行。
+
+工作流里有兜底：发布前会跑一遍 [`tools/notes-reflow.py`](tools/notes-reflow.py)，发现软换行就自动合并，并在日志里留一条 warning 和 diff；它只合并段落、列表项里的续行，代码块、表格一眼不碰。打 tag 前想先自查，`python3 tools/notes-reflow.py --check notes.txt`（有折行就退出码 1）。
 
 产物：`tun2proxy-gui-<tag>-<target>.zip`（Windows）、`.tar.gz`（Linux / macOS，macOS 里是 `Tun2Proxy GUI.app`），外加一份 `SHA256SUMS.txt`。也可以在 Actions 页面手动 Run workflow，填一个已存在的 tag 重跑发布（重跑会连发布说明一起刷新）。
 

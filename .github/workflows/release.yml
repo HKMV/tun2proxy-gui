@@ -8,7 +8,7 @@ name: Release
 #   git tag -a v0.4.1 -F notes.txt --cleanup=verbatim
 #   git push origin v0.4.1
 #
-# 两个已经踩过的坑，别再踩：
+# 三个已经踩过的坑，别再踩：
 #
 # 1. **说明里的 Markdown 标题会被 `git tag -F` 当注释剥掉**。不加
 #    `--cleanup=verbatim` 时 git 按「剥注释」处理，以 `#` 开头的行（`## 新功能`
@@ -19,6 +19,10 @@ name: Release
 #    只对 android / fuchsia / linux 编译，代码里却写成了 `#[cfg(unix)]`，macOS
 #    也是 unix，于是报「没有这个方法」。改平台相关的 cfg 时记得三个目标都要
 #    过一遍（本机 `cargo check` 只能验 Windows）。
+# 3. **notes 一段写一行，别按 80 列手工折行**。Release 页面把单个换行当成真的
+#    换行，折过的正文在页面上每行只走半截就断。这条有兜底：发布前
+#    `tools/notes-reflow.py` 会把软换行合并回去并在日志里留一条 warning，
+#    本地也可以先自查一次 `python3 tools/notes-reflow.py --check notes.txt`。
 on:
   push:
     tags:
@@ -242,11 +246,9 @@ jobs:
       # 0.3.3 到 0.3.7 的 Release 页面全都是那样，详细说明写在了版本提交里
       # 却没人看得见。
       #
-      # 现在的顺序：先取 tag 说明（`git tag -a -F notes.txt` 写的那份），
+      # 发布说明的取材顺序：先取 tag 说明（`git tag -a -F notes.txt` 写的那份），
       # 没写再退回版本提交的正文（`chore(release): ...` 下面那段）。
-      - name: Publish
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Collect release notes
         run: |
           set -euo pipefail
           # 说明取自 tag 说明的**全部内容**（`%(contents)`），不是
@@ -266,6 +268,31 @@ jobs:
             notes="**Full Changelog**: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/compare/$TAG~1...$TAG"
           fi
           printf '%s\n' "$notes" > "$RUNNER_TEMP/notes.md"
+          echo "--- release notes ---"
+          cat "$RUNNER_TEMP/notes.md"
+
+      # Release 页面（和 issue / PR 一样）把**单个换行当成真的换行**：tag 里按
+      # 80 列折过的正文，页面上每行只走半截就断，右边留一大片空白（v0.6.4 及
+      # 之前几版的页面都是这个样子，2026-11 统一重排过一次）。
+      #
+      # 约定写在上面的注释里：notes.txt 一段一行。这里做兜底——真折了就地合并，
+      # 不拦下发布（tag 已经推上去，拦下要重编四个平台的产物，代价远大于自动
+      # 改几个换行），但一定在日志和注解里留痕，别让页面悄悄变丑。
+      - name: Reflow release notes
+        run: |
+          set -euo pipefail
+          if python3 tools/notes-reflow.py --check "$RUNNER_TEMP/notes.md"; then
+            echo "发布说明没有软换行，原样使用"
+            exit 0
+          fi
+          echo "::warning::发布说明里有手工折行（Release 页面会每行半截就断），已自动重排成一段一行；下面 diff 是具体合并了哪些行"
+          python3 tools/notes-reflow.py --diff "$RUNNER_TEMP/notes.md"
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
           echo "--- release notes ---"
           cat "$RUNNER_TEMP/notes.md"
 

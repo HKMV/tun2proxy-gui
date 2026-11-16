@@ -79,6 +79,7 @@ assets/
 ├─ icon.png       Icon source image (512×512, with alpha)
 └─ screenshots/   UI screenshots used by the READMEs (Chinese and English)
 tools/
+├─ notes-reflow.py Merges hard-wrapped release notes into one line per paragraph (`--check` before tagging)
 └─ regen-rules/   Small tool that regenerates the builtin.rs list snapshot
 build.rs          Compiles app.rc (icon + version info) into the Windows exe
 ```
@@ -158,6 +159,8 @@ git push origin v0.6.4
 The first line of `notes.txt` is rendered **verbatim as the opening paragraph of the release body** — the one-line summary, e.g. "0.4.0: direct routing for mainland IPs and domains, automatic cleanup of leftover tunnel adapters". After a blank line comes the rest of the body (`## sections` are fine). Write that first line as a self-contained summary, not `v0.4.0` or `update`: the release title is always `Tun2Proxy GUI <tag>`, so the first line never becomes the title, it only becomes that paragraph at the top.
 
 **One paragraph per line — never hard-wrap by hand.** The release page, like issues and PRs, treats a single newline as a real line break: a paragraph wrapped at 80 columns ends up half-empty on every line. Separate paragraphs with blank lines, and use two trailing spaces only when you truly want a hard break. This README is the opposite: single newlines are folded into spaces, so Chinese text picks up stray gaps — hence one paragraph per line here too.
+
+The workflow has a safety net: before publishing it runs [`tools/notes-reflow.py`](tools/notes-reflow.py), which merges any soft-wrapped lines and leaves a warning plus a diff in the log. It only touches continuations inside paragraphs and list items; code blocks and tables are left alone. To check before tagging, run `python3 tools/notes-reflow.py --check notes.txt` (exits 1 when there is wrapping to fix).
 
 Artifacts: `tun2proxy-gui-<tag>-<target>.zip` (Windows) and `.tar.gz` (Linux / macOS, containing `Tun2Proxy GUI.app` on macOS), plus a `SHA256SUMS.txt`. You can also run the workflow manually from the Actions page with the name of an existing tag to republish (a rerun refreshes the release notes too).
 
