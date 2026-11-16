@@ -64,6 +64,10 @@ and the built-in lists you can switch off row by row.*
   (SOCKS5 greeting / HTTP `CONNECT`). "Nothing is listening on that port", "the
   proxy wants authentication" or "connected, but the protocol is wrong" is
   written right on that row — no need to start the tunnel and guess from logs.
+  Every row of the profile list carries a check icon of its own (testing that
+  profile's address), and "Check all" in the top-right runs one round over every
+  profile. Results are keyed **by address**: switching profiles or editing the
+  URL goes back to "not checked yet" instead of showing an older result.
 - **Pre-flight before start**: pressing "Start" runs the same handshake probe
   first. If the proxy is unreachable the app explains why in a dialog and does
   **not** launch the core, instead of spawning a tun2proxy that is bound to fail.
@@ -191,10 +195,12 @@ hairline at the bottom) instead of taking two rows. The dashboard hero card
 (state pill + large title + primary action) is the first item in the content
 flow. Only the group list scrolls; the top bar stays visible.
 
-On the profile detail page (Profiles → pencil), the right side of the top bar
-becomes a primary "Save to disk" button: when a form is long enough to scroll,
-Save must not scroll out of view. The back button sits left of the title and
-returns to the profile list.
+On the profile list page the top-right corner holds four actions (check all /
+new / duplicate / save to disk): pinned to the top bar they never scroll away
+with a long list. On the profile detail page (Profiles → pencil), the right side
+of the top bar becomes a primary "Save to disk" button: when a form is long
+enough to scroll, Save must not scroll out of view. The back button sits left of
+the title and returns to the profile list.
 
 Action results all go through one **notice bar** just under the top bar (green
 for success, red for failure, amber when a start was blocked, dismissed with

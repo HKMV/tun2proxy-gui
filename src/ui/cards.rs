@@ -595,13 +595,39 @@ pub fn log_preview_group(app: &App, snap: &Snapshot, theme: &Theme, cx: &mut Con
 
 /// 配置列表（「代理配置」页的默认态）。
 ///
-/// 每套配置一行：单选圈决定用哪套，标题是名字，说明是摘要，右侧是改 / 删。
-pub fn profile_list_group(app: &App, theme: &Theme, cx: &mut Context<App>) -> AnyElement {
+/// 每套配置一行：单选圈决定用哪套，标题是名字，说明是摘要 + 上一次的检测结论，
+/// 右侧是检测 / 改 / 删。新建、复制、保存、检测全部挪到了顶栏右上角（见
+/// [`profile_actions`]）：这几件事跟「列表有多长」无关，不该要人滚到底才够得着。
+pub fn profile_list_group(
+    app: &App,
+    snap: &Snapshot,
+    theme: &Theme,
+    cx: &mut Context<App>,
+) -> AnyElement {
     let config = &app.config;
     let mut rows: Vec<AnyElement> = Vec::new();
 
     for (index, profile) in config.profiles.iter().enumerate() {
         let active = config.active == index;
+        // 这一行显示的是**这套配置那个地址**的结论：切到别的配置、或者改了
+        // 地址，它就自然回到「还没测过」，不会挂着别人那次的结果
+        // （见 [`Snapshot::probe_for`]）。
+        let probe = snap.probe_for(&profile.proxy_url);
+        let (desc, tone) = match probe {
+            None => (profile.summary(), None),
+            Some(ProbeState::Running) => (
+                format!("{} · {}", profile.summary(), t("正在连接…", "Connecting…")),
+                Some(theme.fg_muted()),
+            ),
+            Some(ProbeState::Done(report)) => (
+                format!("{} · {}", profile.summary(), report.detail),
+                Some(if report.ok {
+                    theme.success()
+                } else {
+                    theme.danger()
+                }),
+            ),
+        };
         rows.push(
             setting_row(
                 Some(
@@ -616,13 +642,22 @@ pub fn profile_list_group(app: &App, theme: &Theme, cx: &mut Context<App>) -> An
                         .into_any_element(),
                 ),
                 profile.display_name(),
-                Some(profile.summary()),
-                None,
+                Some(desc),
+                tone,
                 Some(
                     div()
                         .flex()
                         .items_center()
                         .gap(px(SPACE_S))
+                        // 检测在这套配置自己那一行上：要测哪一套不用先切过去。
+                        .child(icon_action(
+                            eid("profile-probe", index),
+                            probe_hint(probe),
+                            probe_icon(probe),
+                            cx.listener(move |this, _, _, cx| {
+                                this.handle(Msg::CheckProfile(index), cx)
+                            }),
+                        ))
                         .child(icon_action(
                             eid("profile-edit", index),
                             t("编辑这套配置", "Edit this profile"),
@@ -661,40 +696,6 @@ pub fn profile_list_group(app: &App, theme: &Theme, cx: &mut Context<App>) -> An
         );
     }
 
-    rows.push(
-        div()
-            .id("profile-actions")
-            .flex()
-            .flex_none()
-            .w_full()
-            .items_center()
-            .gap(px(SPACE_S))
-            .px(px(super::widgets::ROW_PADDING))
-            .py(px(super::widgets::ROW_PADDING))
-            .child(labeled_action(
-                "profile-add",
-                t("新建", "New"),
-                DefaultIcons::plus(),
-                theme,
-                cx.listener(|this, _, _, cx| this.handle(Msg::ProfileAdded, cx)),
-            ))
-            .child(labeled_action(
-                "profile-duplicate",
-                t("复制当前", "Duplicate"),
-                DefaultIcons::copy(),
-                theme,
-                cx.listener(|this, _, _, cx| this.handle(Msg::ProfileDuplicated, cx)),
-            ))
-            .child(labeled_action(
-                "profile-save",
-                t("保存到磁盘", "Save to disk"),
-                DefaultIcons::archive(),
-                theme,
-                cx.listener(|this, _, _, cx| this.handle(Msg::SaveConfig, cx)),
-            ))
-            .into_any_element(),
-    );
-
     settings_group(
         tf(
             t("配置 · {} 套", "Profiles · {}"),
@@ -704,6 +705,84 @@ pub fn profile_list_group(app: &App, theme: &Theme, cx: &mut Context<App>) -> An
         theme,
     )
     .into_any_element()
+}
+
+/// 列表行上那颗「检测」按钮的图标：跟着结论变（没测过 / 正在测 / 通 / 不通）。
+///
+/// 不用转圈动画：一行里转圈会抢走整张列表的注意力，而结论本来就会写在同一行
+/// 的说明里，静态图标换形状已经够看清「这一行现在有什么结果」。
+fn probe_icon(state: Option<&ProbeState>) -> Svg {
+    match state {
+        Some(ProbeState::Running) => DefaultIcons::reload(),
+        Some(ProbeState::Done(report)) if report.ok => DefaultIcons::check_circled(),
+        Some(ProbeState::Done(_)) => DefaultIcons::exclamation_circled(),
+        None => DefaultIcons::magnifying_glass(),
+    }
+}
+
+/// 同上那颗按钮的悬停提示（按钮只有图标，文字得说清它测的是哪一套）。
+fn probe_hint(state: Option<&ProbeState>) -> &'static str {
+    match state {
+        Some(ProbeState::Running) => t("正在检测…", "Checking…"),
+        Some(_) => t("重新检测", "Check again"),
+        None => t(
+            "检测这套配置的上游代理",
+            "Check this profile's upstream proxy",
+        ),
+    }
+}
+
+/// 配置列表页右上角的动作条：检测全部 / 新建 / 复制当前 / 保存到磁盘。
+///
+/// 放在顶栏而不是卡片底部：这几件事与「列表有多长」无关，列表长起来之后要滚到
+/// 底才够得着；顶栏那一行也不随内容滚走。「保存到磁盘」和详情页顶栏用的是同一
+/// 个按钮（同样的大小与位置），进出详情时右边缘不会跳一下。
+pub fn profile_actions(snap: &Snapshot, theme: &Theme, cx: &mut Context<App>) -> AnyElement {
+    // 有一轮检测在跑就把按钮文字换成「检测中…」：点了没反应最容易被当成没点上。
+    let checking = snap
+        .probes
+        .values()
+        .any(|state| matches!(state, ProbeState::Running));
+    div()
+        .flex()
+        .items_center()
+        .gap(px(SPACE_S))
+        .child(labeled_action(
+            "profile-probe-all",
+            if checking {
+                t("检测中…", "Checking…")
+            } else {
+                t("检测全部", "Check all")
+            },
+            if checking {
+                DefaultIcons::reload()
+            } else {
+                DefaultIcons::magnifying_glass()
+            },
+            theme,
+            cx.listener(|this, _, _, cx| this.handle(Msg::CheckAllProxies, cx)),
+        ))
+        .child(labeled_action(
+            "profile-add",
+            t("新建", "New"),
+            DefaultIcons::plus(),
+            theme,
+            cx.listener(|this, _, _, cx| this.handle(Msg::ProfileAdded, cx)),
+        ))
+        .child(labeled_action(
+            "profile-duplicate",
+            t("复制当前", "Duplicate"),
+            DefaultIcons::copy(),
+            theme,
+            cx.listener(|this, _, _, cx| this.handle(Msg::ProfileDuplicated, cx)),
+        ))
+        .child(primary_button(
+            "profile-save-header",
+            t("保存到磁盘", "Save to disk"),
+            theme,
+            cx.listener(|this, _, _, cx| this.handle(Msg::SaveConfig, cx)),
+        ))
+        .into_any_element()
 }
 
 /// 单选圈：选中的画实心圆点，未选中的只有外圈。
@@ -793,7 +872,7 @@ pub fn proxy_group(
             theme,
         )
         .into_any_element(),
-        probe_row(snap, theme, cx),
+        probe_row(&profile.proxy_url, snap, theme, cx),
         setting_row(
             Some(row_icon(DefaultIcons::magnifying_glass(), theme).into_any_element()),
             t("DNS 处理模式", "DNS mode"),
@@ -866,8 +945,13 @@ pub fn proxy_group(
 ///
 /// 结论写在说明里而不是弹窗：用户点完「检测」眼睛就在这一行上，
 /// 结果出现在原地才不用再找一遍；颜色区分成功/失败。
-fn probe_row(snap: &Snapshot, theme: &Theme, cx: &mut Context<App>) -> AnyElement {
-    let (desc, tone, action_label, icon) = match &snap.probe {
+///
+/// 读的是**这个地址**的结论（[`Snapshot::probe_for`]），不是「全局最后一次
+/// 检测」：地址改了、或者切到另一套配置，这一行就得回到「还没测过」，
+/// 否则用户会以为新地址已经验过了。
+fn probe_row(url: &str, snap: &Snapshot, theme: &Theme, cx: &mut Context<App>) -> AnyElement {
+    let state = snap.probe_for(url);
+    let (desc, tone, action_label, icon) = match state {
         None => (
             t(
                 "启动前先确认地址真的连得通（TCP + 协议握手）",
@@ -899,7 +983,7 @@ fn probe_row(snap: &Snapshot, theme: &Theme, cx: &mut Context<App>) -> AnyElemen
     };
     // 前导图标跟着结论变。没检测过 / 正在检测时**不能**用对勾：那看起来
     // 像「已经通过了」，而这一行真正要读的是右侧那个按钮和下面那句结论。
-    let leading = match &snap.probe {
+    let leading = match state {
         Some(ProbeState::Done(report)) if report.ok => DefaultIcons::check_circled(),
         Some(ProbeState::Done(_)) => DefaultIcons::exclamation_circled(),
         _ => DefaultIcons::magnifying_glass(),

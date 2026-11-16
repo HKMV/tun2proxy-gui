@@ -17,7 +17,7 @@
 //! `ui-notifier` 把高频的日志/进度变化合并成最多 180ms 一次的重绘请求，
 //! 避免子进程刷日志时把界面拖死。
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::io::{BufRead, BufReader, Read};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -104,11 +104,16 @@ pub struct Shared {
     pub traffic: VecDeque<RouteTraffic>,
     /// 最新一次采样的瞬时速率（同样按两条路分）。
     pub rate: RouteTraffic,
-    /// 上游代理连通性检测的状态（界面上那一行「检测」按钮的结果）。
+    /// 每个上游地址最近一次的连通性检测结论。
+    ///
+    /// **按地址存**，不是「一个全局结果」：配置可以有好几套，每套地址不同，
+    /// 共用一格的话切到另一套配置时，界面上还挂着上一套的结论——看起来就像
+    /// 刚切过来的这套已经测过了。键是 [`probe::key`]，所以改了地址旧结论自然
+    /// 不再命中，两套配置填同一个地址则共用一份结论（本来也是同一件事）。
     ///
     /// 和日志/流量一样放在共享状态里：检测在后台线程跑，界面每帧重建，
     /// 结果必须能重复读到同一份，否则按钮点完界面不知道该显示什么。
-    pub probe: Option<ProbeState>,
+    pub probes: BTreeMap<String, ProbeState>,
     /// 「启动被拦下」的原因（一次性提示）。
     ///
     /// 启动前的连通性检测在后台线程跑，检测不过就写这里；界面把它当成
@@ -283,7 +288,7 @@ impl Engine {
             logs: VecDeque::new(),
             traffic: VecDeque::new(),
             rate: RouteTraffic::default(),
-            probe: None,
+            probes: BTreeMap::new(),
             start_blocked: None,
             sessions_full: false,
             last_error: None,
@@ -374,25 +379,45 @@ impl Engine {
             .unwrap_or(Status::Stopped)
     }
 
-    /// 在后台线程里检测上游代理是否可用。
+    /// 在后台线程里检测一个上游地址是否可用。
     ///
     /// 必须异步：`TcpStream::connect_timeout` 最长要等 3 秒，同步跑会把界面
     /// 冻住。这里先写 `Running` 让按钮立刻变成「检测中…」，出结论后再写一次。
     pub fn check_proxy(&self, url: String) {
+        self.probe_url(url);
+    }
+
+    /// 一次检测多个地址（配置列表右上角的「检测全部」）。
+    ///
+    /// 每个地址一条线程：它们互不相干，串行的话 N 套配置最坏要等 N × 3 秒。
+    /// 已经在测的地址会被 [`Engine::probe_url`] 跳过，所以连点两次不会起两条
+    /// 线程互相盖结论。
+    pub fn check_proxies(&self, urls: Vec<String>) {
+        for url in urls {
+            self.probe_url(url);
+        }
+    }
+
+    /// 检测一个地址并把它自己的那份结论写回共享状态。
+    fn probe_url(&self, url: String) {
+        let key = probe::key(&url);
         if let Ok(mut shared) = self.shared.lock() {
-            shared.probe = Some(ProbeState::Running);
+            if matches!(shared.probes.get(&key), Some(ProbeState::Running)) {
+                return;
+            }
+            shared.probes.insert(key.clone(), ProbeState::Running);
         }
         self.touch();
         self.request_rebuild();
         let shared = self.shared.clone();
         let dirty = self.dirty.clone();
-        let target = url.clone();
+        let thread_key = key.clone();
         let spawned = std::thread::Builder::new()
             .name("proxy-probe".to_string())
             .spawn(move || {
-                let report = probe::check(&target);
+                let report = probe::check(&url);
                 if let Ok(mut shared) = shared.lock() {
-                    shared.probe = Some(ProbeState::Done(report));
+                    shared.probes.insert(thread_key, ProbeState::Done(report));
                 }
                 dirty.store(true, Ordering::Relaxed);
                 // 检测线程自己也要唤醒界面：它不走 180ms 的批量调度，
@@ -404,12 +429,16 @@ impl Engine {
             });
         if spawned.is_err() {
             if let Ok(mut shared) = self.shared.lock() {
-                shared.probe = Some(ProbeState::Done(ProbeReport {
-                    ok: false,
-                    detail: t("无法启动检测线程", "Cannot spawn the probe thread").to_string(),
-                    millis: 0,
-                }));
+                shared.probes.insert(
+                    key,
+                    ProbeState::Done(ProbeReport {
+                        ok: false,
+                        detail: t("无法启动检测线程", "Cannot spawn the probe thread").to_string(),
+                        millis: 0,
+                    }),
+                );
             }
+            self.request_rebuild();
         }
     }
 
@@ -552,10 +581,13 @@ impl Engine {
         }
 
         let url = profile.proxy_url.clone();
+        // 启动前的这次检测写的是**这个地址**那一格：启动完再翻回配置页，
+        // 「连通性检测」那一行显示的正是这次预检的结论，不是别人的。
+        let probe_key = probe::key(&url);
         let profile = profile.clone();
         let settings = settings.clone();
         if let Ok(mut shared) = self.shared.lock() {
-            shared.probe = Some(ProbeState::Running);
+            shared.probes.insert(probe_key.clone(), ProbeState::Running);
             shared.start_blocked = None;
         }
         self.touch();
@@ -569,7 +601,7 @@ impl Engine {
                 let ok = report.ok;
                 let detail = report.detail.clone();
                 if let Ok(mut shared) = engine.shared.lock() {
-                    shared.probe = Some(ProbeState::Done(report));
+                    shared.probes.insert(probe_key, ProbeState::Done(report));
                     if !ok {
                         shared.start_blocked = Some(format!(
                             "{} {detail}",

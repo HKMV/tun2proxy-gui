@@ -221,8 +221,12 @@ pub enum Msg {    /// 切换到左侧导航的某一页。
     DismissNotice,
     /// 以管理员身份重启自己（UAC 提权后新进程接手）。
     RelaunchElevated,
-    /// 检测上游代理地址是否连得通。
+    /// 检测当前配置的上游代理地址是否连得通（详情页那一行）。
     CheckProxy,
+    /// 检测配置列表里第 N 套配置的上游代理（每行那颗图标按钮）。
+    CheckProfile(usize),
+    /// 一次检测列表里所有配置（列表右上角的「检测全部」）。
+    CheckAllProxies,
     CheckUpdate,
     InstallUpdate,
 
@@ -651,8 +655,11 @@ pub struct Snapshot {
     pub traffic: Vec<RouteTraffic>,
     /// 最新一次采样的瞬时速率（同样按两条路分）。
     pub rate: RouteTraffic,
-    /// 上游代理检测状态（`None` = 还没检测过）。
-    pub probe: Option<ProbeState>,
+    /// 每个上游地址最近一次的检测结论（键是 [`crate::core::probe::key`]）。
+    ///
+    /// 按地址存而不是只留「最后测的那一个」：配置列表里每一行都要显示**自己
+    /// 那个地址**的结果，详情页那一行同理（见 [`Snapshot::probe_for`]）。
+    pub probes: std::collections::BTreeMap<String, ProbeState>,
     /// 启动被拦下的原因（上游代理连不通等），由后台线程写入。
     pub blocked: Option<String>,
     /// 隧道跑着的时候会话名额被打满过（日志里出现过 `dropping new session`）。
@@ -664,6 +671,18 @@ pub struct Snapshot {
     pub split: crate::core::engine::SplitRuntime,
     /// 清单在线更新的进度。
     pub split_update: crate::core::engine::SplitUpdate,
+}
+
+impl Snapshot {
+    /// 某个地址最近一次的检测结论（没有就 `None`，界面显示成「还没测过」）。
+    ///
+    /// 一律走这里查、不直接读 [`Snapshot::probes`]：结论是按**归一后的地址**
+    /// 存的（[`crate::core::probe::key`]），少了一步归一就查不到，界面会永远是
+    /// 「还没检测」。更重要的是，这一步让「改了地址」自动等于「没测过」——
+    /// 旧结论不会再挂在它不该属于的那个地址上。
+    pub fn probe_for(&self, url: &str) -> Option<&ProbeState> {
+        self.probes.get(&crate::core::probe::key(url))
+    }
 }
 
 /// 应用根状态，同时也是 GPUI 的根视图实体。
@@ -855,10 +874,14 @@ impl App {
 
     /// 切换配置：草稿与输入框同步刷新成新配置里的数值。
     pub fn select_profile(&mut self, index: usize) {
+        let changed = self.config.active != index;
         self.config.select(index);
         self.draft = Draft::from_profile(self.config.active_profile());
         self.error = None;
         self.notice = None;
+        if changed {
+            self.clear_start_blocked();
+        }
     }
 
     /// 新增 / 复制配置后，草稿跟着切到新配置。
@@ -866,6 +889,21 @@ impl App {
         self.draft = Draft::from_profile(self.config.active_profile());
         self.error = None;
         self.notice = None;
+        self.clear_start_blocked();
+    }
+
+    /// 换了一套配置：擦掉「上一次启动被拦下」的原因。
+    ///
+    /// 那条原因说的是**上一套配置**的事（连不通的是它那个地址），留着的话切到
+    /// 另一套之后屏幕上还挂着一句针对旧地址的失败，看着像新配置也起不来。
+    /// 检测结论不用在这里擦：它是按地址存的，换一套自然读不到上一套那份
+    /// （见 [`Snapshot::probe_for`]）。
+    fn clear_start_blocked(&mut self) {
+        // 正在启动的那几秒里别动：蒙版靠它判断「有结论了没有」
+        // （见 [`super::overlay::settled`]），提前清掉会让蒙版一直挂到超时。
+        if !self.busy.is_busy() {
+            self.engine.dismiss_start_blocked();
+        }
     }
 
     /// 显示一条**会自己消失**的成功提示。
@@ -945,7 +983,7 @@ impl App {
             log_total: shared.log_total,
             traffic: shared.traffic.iter().copied().collect(),
             rate: shared.rate,
-            probe: shared.probe.clone(),
+            probes: shared.probes.clone(),
             blocked: shared.start_blocked.clone(),
             sessions_full: shared.sessions_full,
             split: shared.split.clone(),

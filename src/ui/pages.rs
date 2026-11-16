@@ -22,10 +22,11 @@ use crate::core::i18n::{t, tf};
 
 use super::cards::{
     about_group, appearance_group, binary_group, bypass_group, editing_profile,
-    log_group, log_preview_group, network_group, profile_edit_group, profile_list_group,
-    profile_picker_group, proxy_group, runtime_group, split_custom_group, split_decisions_group,
-    split_detail_group, split_hero_group, split_lists_group, split_outlet_group,
-    split_update_group, stat_group, status_tips, trend_group, udpgw_group, window_group,
+    log_group, log_preview_group, network_group, profile_actions, profile_edit_group,
+    profile_list_group, profile_picker_group, proxy_group, runtime_group, split_custom_group,
+    split_decisions_group, split_detail_group, split_hero_group, split_lists_group,
+    split_outlet_group, split_update_group, stat_group, status_tips, trend_group, udpgw_group,
+    window_group,
 };
 use super::state::{App, Msg, Snapshot};
 use super::theme::TEXT_BODY;
@@ -188,7 +189,8 @@ fn page_header(
     ));
 
     // 右侧：编辑态给「保存到磁盘」（这一页的主操作，固定在右上角就不会随着
-    // 内容滚出屏幕）；仪表盘给运行状态；其余页面给一句说明。
+    // 内容滚出屏幕）；配置列表给整组动作（检测全部 / 新建 / 复制 / 保存）；
+    // 仪表盘给运行状态；其余页面给一句说明。
     row = row.child(div().flex_1());
     row = row.child(if editing {
         primary_button(
@@ -198,6 +200,8 @@ fn page_header(
             cx.listener(|this, _, _, cx| this.handle(Msg::SaveConfig, cx)),
         )
         .into_any_element()
+    } else if matches!(app.page, super::state::Page::Profiles) {
+        profile_actions(snap, theme, cx)
     } else if matches!(app.page, super::state::Page::Dashboard) {
         super::cards::status_strip(snap, theme)
     } else {
@@ -282,7 +286,7 @@ fn page_body(app: &App, snap: &Snapshot, theme: &Theme, cx: &mut Context<App>) -
             proxy_group(app, snap, theme, cx),
             bypass_group(app, theme, cx),
         ],
-        super::state::Page::Profiles => vec![profile_list_group(app, theme, cx)],
+        super::state::Page::Profiles => vec![profile_list_group(app, snap, theme, cx)],
         // 分流：总开关 / 状态 → 清单更新 → 最近判定 → 三组清单 → 自定义规则
         // → 规则明细 → 出口。
         //

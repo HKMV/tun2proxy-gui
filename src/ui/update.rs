@@ -258,7 +258,27 @@ pub fn update(app: &mut App, msg: Msg, cx: &mut Context<App>) {
                 .to_string(),
             );
         }
-        Msg::CheckProxy => app.engine.check_proxy(app.profile().proxy_url.clone()),
+        // 三处检测入口都只把**地址**交给引擎：结论按地址存
+        // （见 `core::engine::Shared::probes`），换一套配置不会读到上一套的结论。
+        Msg::CheckProxy => {
+            let url = app.profile().proxy_url.clone();
+            app.engine.check_proxy(url);
+        }
+        Msg::CheckProfile(index) => {
+            if let Some(profile) = app.config.profiles.get(index) {
+                let url = profile.proxy_url.clone();
+                app.engine.check_proxy(url);
+            }
+        }
+        Msg::CheckAllProxies => {
+            let urls: Vec<String> = app
+                .config
+                .profiles
+                .iter()
+                .map(|profile| profile.proxy_url.clone())
+                .collect();
+            app.engine.check_proxies(urls);
+        }
         Msg::CheckUpdate => app.engine.check_update(app.config.release_repo.clone()),
         Msg::InstallUpdate => app.engine.install_update(app.config.release_repo.clone()),
 
@@ -662,7 +682,7 @@ fn section_of(msg: &Msg) -> watchdog::Section {
         Msg::Start => watchdog::MSG_START,
         Msg::Stop => watchdog::MSG_STOP,
         Msg::SaveConfig => watchdog::MSG_SAVE_CONFIG,
-        Msg::CheckProxy => watchdog::MSG_CHECK_PROXY,
+        Msg::CheckProxy | Msg::CheckProfile(_) | Msg::CheckAllProxies => watchdog::MSG_CHECK_PROXY,
         Msg::CheckUpdate => watchdog::MSG_CHECK_UPDATE,
         Msg::InstallUpdate => watchdog::MSG_INSTALL_UPDATE,
         Msg::RelaunchElevated => watchdog::MSG_RELAUNCH_ELEVATED,

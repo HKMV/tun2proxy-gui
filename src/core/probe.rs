@@ -49,6 +49,20 @@ impl ProbeReport {
     }
 }
 
+/// 把用户填的上游地址归一成「同一个目标」的键。
+///
+/// 检测结论是**按地址**存的（见 [`crate::core::engine::Shared::probes`]）：配置
+/// 可以有好几套，界面上每一行都要显示「这个地址」的结果。而用户填的地址会带
+/// 前后空格，scheme 也可能写成 `SOCKS5://`，直接拿原串当键等于同一台代理换了
+/// 种写法就成了另一个目标。这里只做两件确定不改语义的事：去首尾空白、统一小写
+/// （scheme 与主机名都不区分大小写；检测本身不用凭据，凭据跟着小写没影响）。
+///
+/// 反过来说，**真改了地址就一定对不上**——旧结论不会挂在新区址下面冒充
+/// 「测过了」，这正是这个函数存在的另一半理由。
+pub fn key(url: &str) -> String {
+    url.trim().to_ascii_lowercase()
+}
+
 /// 检测一个代理地址是否可用。
 pub fn check(url: &str) -> ProbeReport {
     let Some(target) = Target::parse(url) else {
@@ -276,6 +290,24 @@ mod tests {
         assert!(Target::parse("").is_none());
         assert!(Target::parse("127.0.0.1").is_none());
         assert!(Target::parse("socks5://host:notaport").is_none());
+    }
+
+    #[test]
+    fn the_same_target_under_two_spellings_shares_one_key() {
+        // 前后空格与 scheme 大小写不改变目标，应当认成同一个地址。
+        assert_eq!(
+            key(" SOCKS5://127.0.0.1:7890 "),
+            key("socks5://127.0.0.1:7890")
+        );
+        assert_eq!(key(" socks5://127.0.0.1:7890"), "socks5://127.0.0.1:7890");
+    }
+
+    #[test]
+    fn a_different_address_never_reuses_an_older_result() {
+        // 端口 / 主机 / scheme 任一处不同，就是另一个目标——旧结论不能命中。
+        assert_ne!(key("socks5://127.0.0.1:7890"), key("socks5://127.0.0.1:7891"));
+        assert_ne!(key("socks5://127.0.0.1:7890"), key("socks5://127.0.0.2:7890"));
+        assert_ne!(key("socks5://127.0.0.1:7890"), key("http://127.0.0.1:7890"));
     }
 
     #[test]
