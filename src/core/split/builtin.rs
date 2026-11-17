@@ -10,8 +10,9 @@
 //! 它们是生成物，头三行写着来源和生成日期。手改会在下次 `generate` 时被整份
 //! 覆盖，而且改出来的条数会和 `lists` 的统计对不上。
 
+use super::ipset::Cidr;
 use super::lists::parse_domain_list;
-use super::rules::{parse_rules_text, Action, Rule, RuleSet, Stats};
+use super::rules::{parse_rules_text, Action, Matcher, Rule, RuleSet, Stats};
 
 /// 国内 IPv4 段（APNIC 委派数据聚合后的快照）。
 pub const CHINA_IPV4: &str = include_str!("../../../assets/rules/china-ipv4.txt");
@@ -45,6 +46,22 @@ pub fn local_rules() -> Vec<Rule> {
     let (rules, errors) = parse_rules_text(&LOCAL_RANGES.join("\n"), Action::Direct, "本地网络");
     debug_assert!(errors.is_empty(), "内置局域网段必须全部合法：{errors:?}");
     rules
+}
+
+/// 上面那批保留段，解析成 CIDR。
+///
+/// 给 [`super::hostnet`] 去重用：本机网卡落在 `10/8` 里的地址没必要再单独作为一条
+/// 规则出现，否则界面上「本地网络」组里会冒出一串被大段盖住的重复行。
+pub fn reserved_ranges() -> Vec<Cidr> {
+    let (rules, errors) = parse_rules_text(&LOCAL_RANGES.join("\n"), Action::Direct, "本地网络");
+    debug_assert!(errors.is_empty(), "内置局域网段必须全部合法：{errors:?}");
+    rules
+        .into_iter()
+        .filter_map(|rule| match rule.matcher {
+            Matcher::Cidr(cidr) => Some(cidr),
+            _ => None,
+        })
+        .collect()
 }
 
 /// 国内 IP 规则（直连）。

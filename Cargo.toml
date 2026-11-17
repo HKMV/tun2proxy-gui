@@ -90,6 +90,9 @@ windows-sys = { version = "0.59", features = [
     # MIB_IF_ROW2 的 OperStatus 类型在 Ndis 特性后面，所以两个都要开。
     "Win32_NetworkManagement_IpHelper",
     "Win32_NetworkManagement_Ndis",
+    # GetAdaptersAddresses（本机网卡网段 → 直连规则，见 core::split::hostnet）
+    # 的结构体里带 SOCKET_ADDRESS，它定义在 WinSock 特性后面。
+    "Win32_Networking_WinSock",
     # SetupAPI：启动前删掉本程序留下、当前不在用的隧道网卡
     # （SetupDiGetClassDevsW / DIF_REMOVE，见 core::adapters）。
     "Win32_Devices_DeviceAndDriverInstallation",

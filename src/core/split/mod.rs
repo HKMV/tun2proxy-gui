@@ -10,6 +10,7 @@
 //! | [`rules`] | 规则模型（域名后缀 / 精确 / 关键字 / IP 段）、规则集编译、判定顺序 |
 //! | [`lists`] | 把 APNIC 与 v2fly 的原始清单解析、聚合成规则 |
 //! | [`builtin`] | 编译期内置的清单快照（离线兜底） |
+//! | [`hostnet`] | 本机网卡所在的网段（VPN / 认证网关那类写不进常量表的直连段） |
 //! | [`library`] | 清单来源选择：优先用下载到用户目录的那份 |
 //! | [`settings`] | 用户设置（总开关、分组开关、单行开关、自定义规则、直连 DNS） |
 //!
@@ -44,6 +45,7 @@
 #![allow(dead_code)]
 
 pub mod builtin;
+pub mod hostnet;
 pub mod ipset;
 pub mod library;
 pub mod lists;

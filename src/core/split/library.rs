@@ -17,6 +17,7 @@ use std::path::PathBuf;
 use crate::core::paths;
 
 use super::builtin;
+use super::hostnet;
 use super::lists::parse_domain_list;
 use super::rules::{parse_rules_text, Action, Rule, RuleSet};
 use super::settings::{SplitGroup, SplitSettings};
@@ -68,7 +69,7 @@ impl Library {
                 let domains = parse_domain_rules(&domain);
                 if !ip.is_empty() && !domains.is_empty() {
                     return Self {
-                        local: builtin::local_rules(),
+                        local: local_group(),
                         ip,
                         domain: domains,
                         origin: Origin::Downloaded,
@@ -86,7 +87,7 @@ impl Library {
     /// 内置快照（不碰磁盘）。
     pub fn builtin() -> Self {
         Self {
-            local: builtin::local_rules(),
+            local: local_group(),
             ip: builtin::china_ip_rules(),
             domain: builtin::china_domain_rules(),
             origin: Origin::Builtin,
@@ -145,6 +146,17 @@ impl Library {
         let rules = self.direct_rules(settings)?;
         Ok(RuleSet::build(&rules).0)
     }
+}
+
+/// 「本地网络」这一组：内置保留段在前，本机网卡探测到的段在后。
+///
+/// 顺序有意义：内置段是常量（`10/8` 这种），先到先在规则集里占位；本机网卡那几条
+/// 是运行时才知道的（企业 VPN 分到的公网样式网段——认证网关就在里面），排在后面
+/// 既不影响内置判断，又能在界面上单独关掉。
+fn local_group() -> Vec<Rule> {
+    let mut rules = builtin::local_rules();
+    rules.extend(hostnet::rules());
+    rules
 }
 
 fn parse_ip_rules(ipv4: &str, ipv6: &str) -> Vec<Rule> {

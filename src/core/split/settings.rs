@@ -52,8 +52,8 @@ impl SplitGroup {
     pub fn hint(self) -> &'static str {
         match self {
             SplitGroup::LocalNetworks => t(
-                "本机、私有网段、组播与链路本地地址，任何情况下都直连",
-                "Loopback, private ranges, multicast and link-local addresses always go direct",
+                "本机、本机网卡所在的网段、私有网段、组播与链路本地地址，任何情况下都直连",
+                "Loopback, the subnets this machine's adapters sit on, private ranges, multicast and link-local addresses always go direct",
             ),
             SplitGroup::ChinaIp => t(
                 "APNIC 委派给中国大陆的地址段",
