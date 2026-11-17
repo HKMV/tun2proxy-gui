@@ -153,8 +153,8 @@ release profile 是按**体积**调的，不是按编译时间（见 `Cargo.toml
 # 先把 Cargo.toml 的 version 改好并提交，tag 必须与它一致（CI 会校验）
 # 说明写进文件再用 -F 打 tag：--cleanup=verbatim 不能省，否则 git 会把
 # `## 新功能` 这种以 # 开头的行当注释剥掉，Release 页面只剩没分段的列表
-git tag -a v0.6.4 -F notes.txt --cleanup=verbatim
-git push origin v0.6.4
+git tag -a v0.6.5 -F notes.txt --cleanup=verbatim
+git push origin v0.6.5
 ```
 
 `notes.txt` 第一行会被**原样渲染成 Release 正文的首段**（就是那句一句话摘要，比如「0.4.0：国内 IP / 域名直连分流，残留隧道网卡自动清理」），空一行之后才是分段的正文（`## 小节` 随便写）。所以第一行要写成能独立成句的摘要，别写 `v0.4.0`、`update` 这种脱离上下文看不懂的话——Release 标题固定是 `Tun2Proxy GUI <tag>`，第一行不会变成标题，只会变成页面顶上的那段话。

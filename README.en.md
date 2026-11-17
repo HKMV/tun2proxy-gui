@@ -152,8 +152,8 @@ Pushing a tag builds every supported target and publishes them to GitHub Release
 # Write the notes to a file and tag with -F: --cleanup=verbatim is required, or git
 # strips lines starting with `#` (i.e. every `## heading`) as comments and the
 # release page ends up with one undivided list.
-git tag -a v0.6.4 -F notes.txt --cleanup=verbatim
-git push origin v0.6.4
+git tag -a v0.6.5 -F notes.txt --cleanup=verbatim
+git push origin v0.6.5
 ```
 
 The first line of `notes.txt` is rendered **verbatim as the opening paragraph of the release body** — the one-line summary, e.g. "0.4.0: direct routing for mainland IPs and domains, automatic cleanup of leftover tunnel adapters". After a blank line comes the rest of the body (`## sections` are fine). Write that first line as a self-contained summary, not `v0.4.0` or `update`: the release title is always `Tun2Proxy GUI <tag>`, so the first line never becomes the title, it only becomes that paragraph at the top.
