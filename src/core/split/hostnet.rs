@@ -40,7 +40,7 @@ pub struct HostNet {
 
 /// 探测本机网卡，转成「直连」规则。
 pub fn rules() -> Vec<Rule> {
-    collect(&probe(), &builtin::reserved_ranges())
+    collect(&probe(), &builtin::builtin_ranges())
 }
 
 /// 把探测结果转成规则。
@@ -222,7 +222,7 @@ mod tests {
     fn a_public_style_vpn_subnet_becomes_a_direct_rule() {
         // 企业 VPN 给网卡分公网样式地址时，这条就是他存在的理由：公网段本来
         // 没有理由直连，但它是「本机所在的网络」。
-        let rules = collect(&[host("203.0.113.9", 24)], &builtin::reserved_ranges());
+        let rules = collect(&[host("203.0.113.9", 24)], &builtin::builtin_ranges());
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].action, Action::Direct);
         assert_eq!(rules[0].source, SOURCE);
@@ -231,7 +231,7 @@ mod tests {
 
     #[test]
     fn addresses_already_covered_by_reserved_ranges_are_not_repeated() {
-        let reserved = builtin::reserved_ranges();
+        let reserved = builtin::builtin_ranges();
         let rules = collect(
             &[
                 host("10.0.0.33", 24),
@@ -248,7 +248,7 @@ mod tests {
     fn the_same_subnet_from_two_adapters_is_added_once() {
         let rules = collect(
             &[host("203.0.113.9", 24), host("203.0.113.200", 24)],
-            &builtin::reserved_ranges(),
+            &builtin::builtin_ranges(),
         );
         assert_eq!(rules.len(), 1, "{rules:?}");
     }
@@ -256,13 +256,13 @@ mod tests {
     #[test]
     fn a_zero_prefix_is_skipped() {
         // `/0` 等于「整机流量都直连」，绝不能因为某张网卡报了个怪前缀就中招。
-        let rules = collect(&[host("203.0.113.9", 0)], &builtin::reserved_ranges());
+        let rules = collect(&[host("203.0.113.9", 0)], &builtin::builtin_ranges());
         assert!(rules.is_empty(), "{rules:?}");
     }
 
     #[test]
     fn ipv6_prefix_is_kept() {
-        let rules = collect(&[host("2001:db8:aa::1", 64)], &builtin::reserved_ranges());
+        let rules = collect(&[host("2001:db8:aa::1", 64)], &builtin::builtin_ranges());
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].key(), "cidr:2001:db8:aa::/64");
     }

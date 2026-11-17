@@ -26,7 +26,7 @@ pub const CHINA_DOMAIN: &str = include_str!("../../../assets/rules/china-domain.
 /// 这一段**不**来自数据文件，而是写死在代码里——它属于「代理程序的基本正确性」，
 /// 不该依赖某次清单更新的成败。`0.0.0.0/8`、组播和保留段放进来是因为把它们
 /// 送到代理只会得到一个神秘的超时。
-const LOCAL_RANGES: [&str; 12] = [
+const RESERVED_RANGES: [&str; 12] = [
     "0.0.0.0/8",
     "10.0.0.0/8",
     "100.64.0.0/10",
@@ -41,27 +41,57 @@ const LOCAL_RANGES: [&str; 12] = [
     "fe80::/10",
 ];
 
+/// 企业认证门户：按环境写死的直连段。
+///
+/// 深信服 aTrust / SSL VPN 的登录门户是一个**公网 IP**，客户端拿 IP 直连
+/// （`https://<ip>/` 302 到 `/login.html?name_jpgraph_antispam=…`），而且登录
+/// 流量走的是物理网卡、不是它自己那张 VPN 网卡——所以这段地址既不在私有保留段里，
+/// 也不在 [`super::hostnet`] 探测到的 VPN 网卡网段里。握手一旦被送进上游代理就
+/// 再也完不成，表现为「VPN 一直转圈、登不上」。
+///
+/// 它属于「某家公司机房的地址」，没有通用值可算，只能当常量维护：换网关就改这里。
+/// 注释里不要写出具体地址——那串数字对每个部署都不一样，写了也只会误导下一个人。
+const AUTH_RANGES: [&str; 1] = [
+    // 深信服认证门户（aTrust / SSL VPN 登录页）：登录握手必须直连
+    "1.1.1.0/24",
+];
+
 /// 本地网络规则（直连）。
+///
+/// 两组分开解析是为了让来源分得清：界面上「局域网与保留地址」那一组里，哪几条是
+/// 常量保留段、哪几条是某家公司机房的认证门户，看来源列就知道。
 pub fn local_rules() -> Vec<Rule> {
-    let (rules, errors) = parse_rules_text(&LOCAL_RANGES.join("\n"), Action::Direct, "本地网络");
-    debug_assert!(errors.is_empty(), "内置局域网段必须全部合法：{errors:?}");
+    let mut rules = Vec::new();
+    for (ranges, source) in [
+        (&RESERVED_RANGES[..], "本地网络"),
+        (&AUTH_RANGES[..], "深信服认证"),
+    ] {
+        let (mut parsed, errors) =
+            parse_rules_text(&ranges.join("\n"), Action::Direct, source);
+        debug_assert!(
+            errors.is_empty(),
+            "内置直连段必须全部合法（{source}）：{errors:?}"
+        );
+        rules.append(&mut parsed);
+    }
     rules
 }
 
-/// 上面那批保留段，解析成 CIDR。
+/// 上面那两组内置直连段，解析成 CIDR。
 ///
 /// 给 [`super::hostnet`] 去重用：本机网卡落在 `10/8` 里的地址没必要再单独作为一条
 /// 规则出现，否则界面上「本地网络」组里会冒出一串被大段盖住的重复行。
-pub fn reserved_ranges() -> Vec<Cidr> {
-    let (rules, errors) = parse_rules_text(&LOCAL_RANGES.join("\n"), Action::Direct, "本地网络");
-    debug_assert!(errors.is_empty(), "内置局域网段必须全部合法：{errors:?}");
-    rules
-        .into_iter()
-        .filter_map(|rule| match rule.matcher {
+pub fn builtin_ranges() -> Vec<Cidr> {
+    let mut ranges = Vec::new();
+    for text in RESERVED_RANGES.iter().chain(AUTH_RANGES.iter()) {
+        let (parsed, errors) = parse_rules_text(text, Action::Direct, "本地网络");
+        debug_assert!(errors.is_empty(), "内置直连段必须全部合法：{errors:?}");
+        ranges.extend(parsed.into_iter().filter_map(|rule| match rule.matcher {
             Matcher::Cidr(cidr) => Some(cidr),
             _ => None,
-        })
-        .collect()
+        }));
+    }
+    ranges
 }
 
 /// 国内 IP 规则（直连）。
@@ -105,9 +135,11 @@ pub fn rule_set() -> (RuleSet, Stats) {
 }
 
 /// 快照规模 `(本地, IPv4, IPv6, 域名)`，给界面和日志用。
+///
+/// 「本地」是保留段与认证门户两组之和——界面上的「局域网与保留地址」显示的就是这一个数。
 pub fn snapshot_size() -> (usize, usize, usize, usize) {
     (
-        LOCAL_RANGES.len(),
+        RESERVED_RANGES.len() + AUTH_RANGES.len(),
         count_data_lines(CHINA_IPV4),
         count_data_lines(CHINA_IPV6),
         count_data_lines(CHINA_DOMAIN),
@@ -161,7 +193,7 @@ mod tests {
     #[test]
     fn snapshot_size_matches_rules() {
         let (local, v4, v6, domain) = snapshot_size();
-        assert_eq!(local, LOCAL_RANGES.len());
+        assert_eq!(local, RESERVED_RANGES.len() + AUTH_RANGES.len());
         assert_eq!(v4, 5499);
         assert_eq!(v6, 2019);
         assert_eq!(domain, 8592);
@@ -197,6 +229,25 @@ mod tests {
         }
         let loopback = set.match_ip(ip("::1")).expect("::1 必须命中");
         assert_eq!(loopback.action(), Action::Direct);
+    }
+
+    #[test]
+    fn enterprise_auth_portals_go_direct() {
+        let (set, _) = rule_set();
+        for text in AUTH_RANGES {
+            // 网段的网络地址本身也在段内，拿它当代表地址。
+            let (addr, _len) = text.split_once('/').expect("内置段都带前缀长度");
+            let hit = set
+                .match_ip(ip(addr))
+                .unwrap_or_else(|| panic!("{addr} 是认证门户段，必须命中直连"));
+            assert_eq!(hit.action(), Action::Direct, "{addr} 必须直连");
+        }
+        // 来源单独标出来：界面上要能一眼看出这条不是本机网段、也不是私有段。
+        let marked = local_rules()
+            .iter()
+            .filter(|rule| rule.source == "深信服认证")
+            .count();
+        assert_eq!(marked, AUTH_RANGES.len());
     }
 
     #[test]
