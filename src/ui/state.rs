@@ -11,7 +11,7 @@
 
 use std::sync::{Mutex, OnceLock};
 
-use crate::core::config::{CloseAction, Palette, ThemeSetting};
+use crate::core::config::{CloseAction, Palette, Profile, ThemeSetting};
 use crate::core::i18n::t;
 use crate::core::logs::LogKind;
 use crate::core::{Config, Engine};
@@ -195,6 +195,77 @@ pub fn close_action() -> CloseAction {
     config()
         .map(|config| config.close_action)
         .unwrap_or(CloseAction::Ask)
+}
+
+// —— 代理配置 ——
+
+/// 切换到第 `index` 套配置（下次启动隧道用它）。
+pub fn select_profile(index: usize) -> bool {
+    with_config(|config| {
+        if config.active == index || index >= config.profiles.len() {
+            return false;
+        }
+        config.select(index);
+        true
+    })
+}
+
+/// 新建一套配置（默认参数起步），返回新下标。
+pub fn add_profile() -> Option<usize> {
+    let mut added = None;
+    with_config(|config| {
+        added = Some(config.add_profile());
+        true
+    });
+    added
+}
+
+/// 复制当前这套配置，返回新下标。
+pub fn duplicate_profile() -> Option<usize> {
+    let mut added = None;
+    with_config(|config| {
+        added = Some(config.duplicate_active());
+        true
+    });
+    added
+}
+
+/// 删除第 `index` 套配置；只剩一套时什么也不做，返回是否删掉了。
+pub fn remove_profile(index: usize) -> bool {
+    with_config(|config| config.remove(index))
+}
+
+/// 把改好的配置写回第 `index` 套并落盘。
+///
+/// 校验交给调用方（表单边输入边校验，错误显示在字段旁边）；这里只负责写，
+/// 写完返回是否成功，界面据此决定要不要退出编辑态。
+pub fn save_profile(index: usize, profile: Profile) -> bool {
+    with_config(|config| {
+        let Some(slot) = config.profiles.get_mut(index) else {
+            return false;
+        };
+        if *slot == profile {
+            // 一个字都没改：不写盘，但界面上「保存」也该算成功。
+            return true;
+        }
+        *slot = profile;
+        true
+    })
+}
+
+/// 改一次配置并落盘；`change` 返回「真的改了」才写盘。
+fn with_config(change: impl FnOnce(&mut Config) -> bool) -> bool {
+    let Some(config) = CONFIG.get() else {
+        return false;
+    };
+    let mut config = lock(config);
+    if !change(&mut config) {
+        return false;
+    }
+    if let Err(error) = config.save() {
+        log::warn!("保存配置失败：{error}");
+    }
+    true
 }
 
 /// 取锁；上一次持锁的线程 panic 了也照常用里面的值（配置不该因此失效）。

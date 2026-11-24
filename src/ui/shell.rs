@@ -37,7 +37,8 @@ use crate::tr_format;
 use super::live::{Live, bytes_text, rate_text};
 use super::page::Page;
 use super::state::LogFilter;
-use super::{palette, state};
+use super::widgets::{danger_color, direct_color, info_color, ok_color, proxy_color, warn_color};
+use super::{palette, profile, state};
 
 /// 顶栏高度。
 const TOP_BAR_HEIGHT: f32 = 52.0;
@@ -69,7 +70,7 @@ struct LogView {
     filter: Signal<LogFilter>,
     /// 新日志到了要不要自动滚到底。
     follow: Signal<bool>,
-    /// 刚复制了几行（按钮上回一句「已复制 N 行」，过一会儿自己消失）。
+    /// 刚复制了几行（按钮上回一句「已复制 N 行」，换档时复位）。
     copied: Signal<Option<usize>>,
     /// 列表的滚动句柄（「跟随」和「跳到最新」都用它）。
     listing: ElementRef,
@@ -84,6 +85,16 @@ impl LogView {
             listing: element_ref(),
         }
     }
+}
+
+/// 各页的界面状态。
+///
+/// 都建在 [`shell`] 里（根组件只跑一次），这样切页不会把「正在编辑的草稿」
+/// 「日志过滤档」这类东西冲掉。
+#[derive(Clone, Copy)]
+struct Ui {
+    logs: LogView,
+    profiles: profile::ProfileUi,
 }
 
 /// 整窗骨架。
@@ -102,7 +113,10 @@ pub fn shell() -> impl IntoElement {    let page = signal(Page::Dashboard);
         state::config().map(|config| config.theme).unwrap_or_default(),
     ));
     // 日志面板的过滤档 / 跟随开关 / 滚动句柄：跨页存活，所以在根组件建。
-    let log_view = LogView::new();
+    let ui = Ui {
+        logs: LogView::new(),
+        profiles: profile::ProfileUi::new(),
+    };
     // 根组件只跑一次，窗口属性也在这里设一次。
     hide_system_title_bar();
     // 之后所有「活起来」的部分都在这里挂上：每秒刷新、托盘、关闭策略、
@@ -111,7 +125,7 @@ pub fn shell() -> impl IntoElement {    let page = signal(Page::Dashboard);
     install_tray(live);
     intercept_close();
     handle_quit_request();
-    follow_logs(live, log_view);
+    follow_logs(live, ui.logs);
 
     view()
         .size_full()
@@ -123,7 +137,7 @@ pub fn shell() -> impl IntoElement {    let page = signal(Page::Dashboard);
                 .flex_1()
                 .flex_row()
                 .child(rail(page, live))
-                .child(content(page, live, error, log_view)),
+                .child(content(page, live, error, ui)),
         )
         // 启停蒙版：整窗盖住，带 spinner 和「在等哪一步」的文案。
         .child(busy_mask(live))
@@ -650,7 +664,7 @@ fn content(
     page: Signal<Page>,
     live: Signal<Live>,
     error: Signal<Option<String>>,
-    log_view: LogView,
+    ui: Ui,
 ) -> impl IntoElement {
     view()
         .flex_1()
@@ -659,7 +673,7 @@ fn content(
         .p_6()
         .gap_5()
         .child(header(page, live))
-        .child(dynamic(move || page_body(page.get(), live, error, log_view)))
+        .child(dynamic(move || page_body(page.get(), live, error, ui)))
 }
 
 /// 按当前页给出内容。
@@ -670,11 +684,12 @@ fn page_body(
     page: Page,
     live: Signal<Live>,
     error: Signal<Option<String>>,
-    log_view: LogView,
+    ui: Ui,
 ) -> AnyElement {
     match page {
         Page::Dashboard => dashboard(live, error).into_element(),
-        Page::Program => program(live, log_view).into_element(),
+        Page::Profiles => profile::page(ui.profiles).into_element(),
+        Page::Program => program(live, ui.logs).into_element(),
         other => pending_page(other).into_element(),
     }
 }
@@ -2167,34 +2182,4 @@ fn short_path(path: &std::path::Path) -> String {
 fn dot(color: AdaptiveColor, size: f32, pulse: bool) -> impl IntoElement {
     let dot = view().w(px(size)).h(px(size)).rounded_full().bg(color);
     if pulse { dot.animate_pulse() } else { dot }
-}
-
-/// 「直连」的颜色：主题里的 `direct` token，没有就退到 `chart-1`。
-fn direct_color() -> AdaptiveColor {
-    theme().color("direct").unwrap_or(theme().chart_1)
-}
-
-/// 「代理」的颜色：主题里的 `proxy` token，没有就退到 `chart-2`。
-fn proxy_color() -> AdaptiveColor {
-    theme().color("proxy").unwrap_or(theme().chart_2)
-}
-
-/// 「正常」的颜色：`success` token，没有就退到 `chart-3`。
-fn ok_color() -> AdaptiveColor {
-    theme().color("success").unwrap_or(theme().chart_3)
-}
-
-/// 「需注意」的颜色：`warning` token，没有就退到 `chart-4`。
-fn warn_color() -> AdaptiveColor {
-    theme().color("warning").unwrap_or(theme().chart_4)
-}
-
-/// 「点一下就好」的提示色：`info` token，没有就退到 `chart-5`。
-fn info_color() -> AdaptiveColor {
-    theme().color("info").unwrap_or(theme().chart_2)
-}
-
-/// 「危险 / 停止」的颜色：`destructive` token，没有就退到 `chart-4`。
-fn danger_color() -> AdaptiveColor {
-    theme().color("destructive").unwrap_or(theme().chart_4)
 }

@@ -200,7 +200,7 @@ pub const TUN_NAME_MAX: usize = 128;
 ///
 /// 字段默认值与 tun2proxy CLI 的默认值保持一致；反序列化时容忍缺字段
 /// （`#[serde(default)]`），这样旧版本配置文件升级后不会丢设置。
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Profile {
     /// 显示在配置列表里的名字，仅用于区分，不传给 tun2proxy。

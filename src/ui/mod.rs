@@ -14,8 +14,10 @@
 pub mod live;
 pub mod page;
 pub mod palette;
+pub mod profile;
 pub mod shell;
 pub mod state;
+pub mod widgets;
 
 /// 窗口最小尺寸（逻辑像素）。
 ///
