@@ -16,11 +16,12 @@
 //! | [`adapters`] | 启动前清理本程序留下、当前不在用的隧道网卡（Windows） |
 //! | [`orphans`] | 启动前结束上一次留下的孤儿 tun2proxy 进程（否则网卡清不掉，Windows） |
 //! | [`watchdog`] | 界面线程卡顿探针（假死时把「卡在哪一段」写进 stall.log） |
-//! | [`icon`] | 程序图标的唯一真源（exe 资源 / 标题栏 / 托盘共用一份字节） |
-//! | [`window`] | 主窗口句柄的查找与显隐（托盘唤回、最小化到托盘） |
 //! | [`single_instance`] | 只允许开一个实例：第二次启动请已有实例自己把窗口显出来 |
-//! | [`tray`] | 系统托盘图标（Windows）：状态提示、启停、显示窗口、退出 |
 //! | [`elevate`] | 管理员 / root 权限检测与 Windows 上的自动提权重启 |
+//!
+//! 托盘、窗口的显隐与关闭策略都在界面层用 nsh 的 `desktop` 接口实现
+//! （`ui::shell`），内核里只留「跨进程打个招呼」这一件事需要 Win32 的地方：
+//! 第二次启动怎么把话带给已经跑着的那个进程。
 //!
 //! 设计取舍：**不把 tun2proxy 编进程序，也不链接它的库**。用户首次运行时由
 //! [`binary`] 下载官方 Release，之后可随时检测更新并原地替换，这样 GUI 的
@@ -35,7 +36,6 @@ pub mod config;
 pub mod elevate;
 pub mod engine;
 pub mod i18n;
-pub mod icon;
 pub mod logs;
 pub mod orphans;
 pub mod paths;
@@ -44,9 +44,7 @@ pub mod probe;
 pub mod single_instance;
 pub mod split;
 pub mod traffic;
-pub mod tray;
 pub mod watchdog;
-pub mod window;
 
 pub use config::{CloseAction, Config, DnsMode, Profile, ThemeSetting, Verbosity};
 pub use engine::{Engine, Shared, Status, Update};
