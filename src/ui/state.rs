@@ -244,6 +244,13 @@ pub fn remember_language(setting: LangSetting) -> bool {
 
 // —— 代理配置 ——
 
+/// 后台检测一个上游地址通不通（最长 3 秒，结论由内核写进 `Shared::probes`）。
+pub fn check_proxy(url: &str) {
+    if let Some(engine) = ENGINE.get() {
+        engine.check_proxy(url.to_string());
+    }
+}
+
 /// 切换到第 `index` 套配置（下次启动隧道用它）。
 pub fn select_profile(index: usize) -> bool {
     with_config(|config| {

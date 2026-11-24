@@ -8,7 +8,7 @@
 //! 拿着内核的锁去渲染会把锁的持有时间拉长到整个布局过程；而且很多元素
 //! （比如图表里的每一列）只需要同一帧的一份数据，重复加锁只会让数字对不上。
 
-use crate::core::engine::{SplitRuntime, SplitUpdate, Status, Update};
+use crate::core::engine::{ProbeState, SplitRuntime, SplitUpdate, Status, Update};
 use crate::core::i18n::t;
 use crate::core::logs::LogLine;
 use crate::core::traffic::RouteTraffic;
@@ -52,6 +52,11 @@ pub struct Live {
     pub split: SplitRuntime,
     /// 清单在线更新的进度。
     pub split_update: SplitUpdate,
+    /// 上游代理的连通性检测结论，键是 [`crate::core::probe::key`] 归一后的地址。
+    ///
+    /// 检测要握手（最长 3 秒），所以是「发起 → 后台跑 → 结论回填」的三段式：
+    /// 界面上每一行按自己的地址查这张表。
+    pub probes: std::collections::BTreeMap<String, ProbeState>,
 }
 
 impl Live {
@@ -90,6 +95,7 @@ impl Live {
             sessions_full: guard.sessions_full,
             split: guard.split.clone(),
             split_update: guard.split_update.clone(),
+            probes: guard.probes.clone(),
         }
     }
 
@@ -108,6 +114,7 @@ impl Live {
             sessions_full: false,
             split: SplitRuntime::default(),
             split_update: SplitUpdate::Idle,
+            probes: std::collections::BTreeMap::new(),
         }
     }
 

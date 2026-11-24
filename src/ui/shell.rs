@@ -714,7 +714,7 @@ fn page_body(
 ) -> AnyElement {
     match page {
         Page::Dashboard => dashboard(live, error, page_signal, ui).into_element(),
-        Page::Profiles => profile::page(ui.profiles).into_element(),
+        Page::Profiles => profile::page(ui.profiles, live).into_element(),
         Page::Split => split::page(ui.splits, live).into_element(),
         Page::Network => network::page(ui.networks).into_element(),
         Page::Program => program(live, ui.logs, ui).into_element(),

@@ -12,15 +12,18 @@ use nsh_base::theme;
 use nsh_core::prelude::*;
 
 use crate::core::config::{DnsMode, Profile, Verbosity};
+use crate::core::engine::ProbeState;
 use crate::core::i18n::t;
 use crate::core::paths;
+use crate::core::probe;
 use crate::core::Config;
 use crate::tr_format;
 
+use super::live::Live;
 use super::state;
 use super::widgets::{
     action_row, card_head, card_shell, chip, chips, danger_color, field, ghost_button,
-    ghost_button_maybe, primary_button, text_area, text_field,
+    ghost_button_maybe, ok_color, primary_button, text_area, text_field,
 };
 
 /// 这一页的界面状态。
@@ -130,18 +133,18 @@ fn number(raw: &str, label: &'static str, low: u64, high: u64) -> Result<u64, St
 }
 
 /// 页面入口：列表态或编辑态。
-pub fn page(ui: ProfileUi) -> impl IntoElement {
+pub fn page(ui: ProfileUi, live: Signal<Live>) -> impl IntoElement {
     scroll().flex_1().child(dynamic(move || {
         match ui.editing.get() {
             Some(index) => editor(ui, index).into_element(),
-            None => list(ui).into_element(),
+            None => list(ui, live).into_element(),
         }
     }))
 }
 
 // —— 列表态 ——
 
-fn list(ui: ProfileUi) -> View {
+fn list(ui: ProfileUi, live: Signal<Live>) -> View {
     let config = ui.config();
     let count = config.profiles.len();
     card_shell()
@@ -152,24 +155,23 @@ fn list(ui: ProfileUi) -> View {
                 "{} profiles; click a row to switch. The tunnel starts with the one marked current.",
                 count
             )),
-            view()
-                .flex_row()
-                .items_center()
-                .gap_2()
-                .child(ghost_button(t("复制当前", "Duplicate"), move || {
-                    if let Some(index) = state::duplicate_profile() {
-                        ui.bump();
-                        begin_edit(ui, index);
-                    }
-                }))
-                .child(primary_button(t("新建", "New"), move || {
-                    if let Some(index) = state::add_profile() {
-                        ui.bump();
-                        begin_edit(ui, index);
-                    }
-                })),
+            view(),
         ))
-        .children((0..count).map(|index| row(ui, &config, index)))
+        .children((0..count).map(|index| row(ui, live, &config, index)))
+        .child(action_row(vec![
+            ghost_button(t("复制当前", "Duplicate"), move || {
+                if let Some(index) = state::duplicate_profile() {
+                    ui.bump();
+                    begin_edit(ui, index);
+                }
+            }),
+            primary_button(t("新建", "New"), move || {
+                if let Some(index) = state::add_profile() {
+                    ui.bump();
+                    begin_edit(ui, index);
+                }
+            }),
+        ]))
         .child(
             view().child(
                 text(tr_format!(
@@ -187,10 +189,12 @@ fn list(ui: ProfileUi) -> View {
 ///
 /// 点击只挂在**左边那块内容**上，不挂整行：右侧的「编辑 / 删除」是行内的
 /// 独立按钮，整行再接一个点击的话，两个都响（点删除会顺带切过去）。
-fn row(ui: ProfileUi, config: &Config, index: usize) -> View {
+fn row(ui: ProfileUi, live: Signal<Live>, config: &Config, index: usize) -> View {
     let profile = &config.profiles[index];
     let active = config.active == index;
     let only_one = config.profiles.len() <= 1;
+    let url = profile.proxy_url.clone();
+    let url_note = url.clone();
     view()
         .flex_row()
         .items_center()
@@ -232,7 +236,8 @@ fn row(ui: ProfileUi, config: &Config, index: usize) -> View {
                     text(profile.summary())
                         .text_xs()
                         .text_color(move || theme().muted_foreground),
-                );
+                )
+                .child(dynamic(move || probe_note(live, url_note.clone())));
             if !active {
                 body = body.cursor_pointer().on_press(move || {
                     if state::select_profile(index) {
@@ -247,6 +252,7 @@ fn row(ui: ProfileUi, config: &Config, index: usize) -> View {
                 .flex_row()
                 .items_center()
                 .gap_2()
+                .child(dynamic(move || probe_button(live, url.clone())))
                 .child(ghost_button(t("编辑", "Edit"), move || begin_edit(ui, index)))
                 .child(ghost_button_maybe(
                     t("删除", "Delete"),
@@ -258,6 +264,43 @@ fn row(ui: ProfileUi, config: &Config, index: usize) -> View {
                     },
                 )),
         )
+}
+
+/// 一行里那个「检测 / 结论」位。
+///
+/// 结论按**地址**存（内核的 `Shared::probes`，键是归一化后的地址），所以改过
+/// 地址之后旧结论自己就查不到了——不会出现「测过」的标签挂在没测过的新地址上。
+///
+/// 结论文字和按钮分两处画：结论可能很长（`连不上 192.168.10.121:1010：端口没有在监听`），
+/// 和按钮挤在同一行会把左边那列摘要压成两行，整行高度跟着跳。
+fn probe_note(live: Signal<Live>, url: String) -> AnyElement {
+    match probe_of(live, &url) {
+        Some(ProbeState::Done(report)) => text(report.detail.clone())
+            .text_xs()
+            .text_color(if report.ok {
+                ok_color()
+            } else {
+                danger_color()
+            })
+            .into_element(),
+        _ => view().into_element(),
+    }
+}
+
+/// 「检测 / 检测中…」按钮。
+fn probe_button(live: Signal<Live>, url: String) -> AnyElement {
+    let running = matches!(probe_of(live, &url), Some(ProbeState::Running));
+    let label = if running {
+        t("检测中…", "Checking…")
+    } else {
+        t("检测", "Check")
+    };
+    ghost_button_maybe(label, !running, move || state::check_proxy(&url)).into_element()
+}
+
+/// 某个地址当前的检测状态。
+fn probe_of(live: Signal<Live>, url: &str) -> Option<ProbeState> {
+    live.with(|snapshot| snapshot.probes.get(&probe::key(url)).cloned())
 }
 
 // —— 编辑态 ——
