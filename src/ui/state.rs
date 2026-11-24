@@ -9,13 +9,17 @@
 //! 悄悄覆盖回旧值（换配色时把刚选的明暗写回默认）。
 //! `Engine` 内部自己用 `Arc` + 锁维护状态，这里不用再包一层。
 
+use std::str::FromStr;
 use std::sync::{Mutex, OnceLock};
+
+use tproxy_config::IpCidr;
 
 use crate::core::config::{CloseAction, Palette, Profile, ThemeSetting};
 use crate::core::i18n::t;
 use crate::core::logs::LogKind;
 use crate::core::split::settings::SplitGroup;
 use crate::core::{Config, Engine};
+use crate::tr_format;
 
 static CONFIG: OnceLock<Mutex<Config>> = OnceLock::new();
 static ENGINE: OnceLock<Engine> = OnceLock::new();
@@ -366,6 +370,118 @@ pub fn update_split_lists() {
 pub fn split_counts() -> (usize, usize, usize) {
     let (local, ipv4, ipv6, domain) = crate::core::split::builtin::snapshot_size();
     (local, ipv4 + ipv6, domain)
+}
+
+// —— 网络与绕过（都改当前那套配置） ——
+
+/// 解析一个整数并检查范围（表单里的数字字段都走这里）。
+///
+/// 返回的错误是**给用户看的一句话**：哪一项、该填什么范围，直接摆在字段
+/// 旁边，不让他去猜「填错了」是哪一种错。
+pub fn parse_number(
+    raw: &str,
+    label: &'static str,
+    low: u64,
+    high: u64,
+) -> Result<u64, String> {
+    let value = raw
+        .trim()
+        .parse::<u64>()
+        .map_err(|_| tr_format!("{label} 需要填数字", "{label} must be a number"))?;
+    if value < low || value > high {
+        return Err(tr_format!(
+            "{label} 要在 {low} 到 {high} 之间",
+            "{label} must be between {low} and {high}"
+        ));
+    }
+    Ok(value)
+}
+
+/// 当前配置上的三个布尔开关。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProfileFlag {
+    /// 转发 IPv6（`--ipv6-enabled`）。
+    Ipv6,
+    /// 启动时自动配置系统路由。
+    Setup,
+    /// 卸载模式（`--unshare`）。
+    Unshare,
+}
+
+/// 改当前配置上的一个开关。
+pub fn set_profile_flag(flag: ProfileFlag, value: bool) -> bool {
+    with_config(|config| {
+        let profile = config.active_profile_mut();
+        let slot = match flag {
+            ProfileFlag::Ipv6 => &mut profile.ipv6,
+            ProfileFlag::Setup => &mut profile.setup,
+            ProfileFlag::Unshare => &mut profile.unshare,
+        };
+        if *slot == value {
+            return false;
+        }
+        *slot = value;
+        true
+    })
+}
+
+/// 存当前配置的 UDP 转发（udpgw）。服务器留空表示不用这个功能。
+///
+/// 服务器写错就**不写盘**：这三项是打包传给 tun2proxy 的，格式不对会让隧道
+/// 直接起不来，而错误原因藏在子进程的输出里。
+pub fn save_profile_udpgw(
+    server: String,
+    connections: usize,
+    keepalive: u64,
+) -> Result<(), String> {
+    let server = server.trim().to_string();
+    if !server.is_empty() && server.parse::<std::net::SocketAddr>().is_err() {
+        return Err(t(
+            "UDP 转发服务器要写成 host:port，例如 1.2.3.4:7300",
+            "The UDP relay server must be host:port, e.g. 1.2.3.4:7300",
+        )
+        .to_string());
+    }
+    with_config(|config| {
+        let profile = config.active_profile_mut();
+        if profile.udpgw_server == server
+            && profile.udpgw_connections == connections
+            && profile.udpgw_keepalive == keepalive
+        {
+            return false;
+        }
+        profile.udpgw_server = server;
+        profile.udpgw_connections = connections;
+        profile.udpgw_keepalive = keepalive;
+        true
+    });
+    Ok(())
+}
+
+/// 存当前配置的绕过列表。
+pub fn save_profile_bypass(bypass: String) -> Result<(), String> {
+    for line in bypass.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line.parse::<std::net::IpAddr>().is_err() && IpCidr::from_str(line).is_err() {
+            return Err(tr_format!(
+                "「{}」不是合法的 IP 或 CIDR",
+                "“{}” is not a valid IP or CIDR",
+                line
+            ));
+        }
+    }
+    with_config(|config| {
+        let profile = config.active_profile_mut();
+        if profile.bypass == bypass {
+            return false;
+        }
+        profile.bypass = bypass;
+        true
+    });
+    Ok(())
 }
 
 /// 取锁；上一次持锁的线程 panic 了也照常用里面的值（配置不该因此失效）。

@@ -19,8 +19,8 @@ use crate::tr_format;
 
 use super::state;
 use super::widgets::{
-    card_head, card_shell, chip, chips, danger_color, field, ghost_button, ghost_button_maybe,
-    primary_button, text_area, text_field,
+    action_row, card_head, card_shell, chip, chips, danger_color, field, ghost_button,
+    ghost_button_maybe, primary_button, text_area, text_field,
 };
 
 /// 这一页的界面状态。
@@ -126,17 +126,7 @@ impl ProfileDraft {
 
 /// 解析一个整数并检查范围，错误里带上字段名。
 fn number(raw: &str, label: &'static str, low: u64, high: u64) -> Result<u64, String> {
-    let value = raw
-        .trim()
-        .parse::<u64>()
-        .map_err(|_| tr_format!("{label} 需要填数字", "{label} must be a number"))?;
-    if value < low || value > high {
-        return Err(tr_format!(
-            "{label} 要在 {low} 到 {high} 之间",
-            "{label} must be between {low} and {high}"
-        ));
-    }
-    Ok(value)
+    state::parse_number(raw, label, low, high)
 }
 
 /// 页面入口：列表态或编辑态。
@@ -317,14 +307,16 @@ fn editor(ui: ProfileUi, index: usize) -> View {
         .child(card_head(
             t("编辑这套配置", "Edit this profile"),
             Some(tr_format!("正在改「{}」", "Editing “{}”", name)),
-            view()
-                .flex_row()
-                .items_center()
-                .gap_2()
-                .child(ghost_button(t("取消", "Cancel"), move || end_edit(ui)))
-                .child(primary_button(t("保存", "Save"), move || save(ui, index))),
+            view(),
         ))
-        // 校验失败的结论放在**顶部**：底部在长表单里要滚到最后才看得见，
+        // 「取消 / 保存」放在卡片头**下面一行**，而不是卡片头的动作区：那一行
+        // 在页面滚动之后的命中区还停在没滚动时的位置，点了没反应。放在内容流
+        // 里就能一直点得动，而且仍在顶部——长表单改一两个字段就能直接保存。
+        .child(action_row(vec![
+            ghost_button(t("取消", "Cancel"), move || end_edit(ui)),
+            primary_button(t("保存", "Save"), move || save(ui, index)),
+        ]))
+        // 校验失败的结论也放顶部：底部在长表单里要滚到最后才看得见，
         // 用户点完保存只会觉得「没反应」。
         .child(dynamic(move || match ui.error.get() {
             Some(error) => text(error)

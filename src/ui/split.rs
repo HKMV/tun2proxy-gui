@@ -21,16 +21,10 @@ use crate::tr_format;
 use super::live::Live;
 use super::state;
 use super::widgets::{
-    card_head, card_shell, danger_color, direct_color, field, field_wrapped, ghost_button_maybe,
-    note, ok_color, primary_button, proxy_color, text_area, text_field, toggle, warn_color,
+    action_row, card_head, card_shell, danger_color, direct_color, field, field_wrapped,
+    ghost_button_maybe, note, note_result, ok_color, primary_button, proxy_color, text_area,
+    text_field, toggle, warn_color, Note,
 };
-
-/// 保存按钮旁边那句结论：绿色是「存下了」，红色是「没存」。
-#[derive(Clone, PartialEq, Eq)]
-struct Note {
-    text: String,
-    bad: bool,
-}
 
 /// 这一页的界面状态。
 ///
@@ -244,17 +238,7 @@ fn custom_card(ui: SplitUi) -> View {
                 )
                 .to_string(),
             ),
-            primary_button(t("保存规则", "Save rules"), move || {
-                let verdict = state::save_split_custom(ui.custom.get());
-                ui.custom_note.set(Some(match verdict {
-                    Ok(()) => Note {
-                        text: t("已保存，重启隧道后生效", "Saved; applies after a restart")
-                            .to_string(),
-                        bad: false,
-                    },
-                    Err(error) => Note { text: error, bad: true },
-                }));
-            }),
+            view(),
         ))
         .child(text_area(
             move || ui.custom.get(),
@@ -269,18 +253,20 @@ fn custom_card(ui: SplitUi) -> View {
                 ui.custom_note.set(None);
             },
         ))
-        .child(dynamic(move || match ui.custom_note.get() {
-            Some(note_value) => note(
-                note_value.text,
-                if note_value.bad {
-                    danger_color()
-                } else {
-                    ok_color()
-                },
-            )
-            .into_element(),
-            None => view().into_element(),
-        }))
+        .child(action_row(vec![primary_button(
+            t("保存规则", "Save rules"),
+            move || {
+                let verdict = state::save_split_custom(ui.custom.get());
+                ui.custom_note.set(Some(match verdict {
+                    Ok(()) => Note::ok(t(
+                        "已保存，重启隧道后生效",
+                        "Saved; applies after a restart",
+                    )),
+                    Err(error) => Note::bad(error),
+                }));
+            },
+        )]))
+        .child(dynamic(move || note_result(ui.custom_note.get()).into_element()))
 }
 
 // —— 直连出口 ——
@@ -296,18 +282,7 @@ fn outlet_card(ui: SplitUi) -> View {
                 )
                 .to_string(),
             ),
-            primary_button(t("保存出口", "Save outlet"), move || {
-                let verdict =
-                    state::save_split_outlet(ui.direct_dns.get(), ui.direct_interface.get());
-                ui.outlet_note.set(Some(match verdict {
-                    Ok(()) => Note {
-                        text: t("已保存，重启隧道后生效", "Saved; applies after a restart")
-                            .to_string(),
-                        bad: false,
-                    },
-                    Err(error) => Note { text: error, bad: true },
-                }));
-            }),
+            view(),
         ))
         .child(field(
             t("直连 DNS", "Direct DNS"),
@@ -347,18 +322,21 @@ fn outlet_card(ui: SplitUi) -> View {
                 },
             ),
         ))
-        .child(dynamic(move || match ui.outlet_note.get() {
-            Some(note_value) => note(
-                note_value.text,
-                if note_value.bad {
-                    danger_color()
-                } else {
-                    ok_color()
-                },
-            )
-            .into_element(),
-            None => view().into_element(),
-        }))
+        .child(action_row(vec![primary_button(
+            t("保存出口", "Save outlet"),
+            move || {
+                let verdict =
+                    state::save_split_outlet(ui.direct_dns.get(), ui.direct_interface.get());
+                ui.outlet_note.set(Some(match verdict {
+                    Ok(()) => Note::ok(t(
+                        "已保存，重启隧道后生效",
+                        "Saved; applies after a restart",
+                    )),
+                    Err(error) => Note::bad(error),
+                }));
+            },
+        )]))
+        .child(dynamic(move || note_result(ui.outlet_note.get()).into_element()))
 }
 
 // —— 最近判定 ——

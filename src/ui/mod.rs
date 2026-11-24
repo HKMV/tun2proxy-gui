@@ -12,6 +12,7 @@
 //! | [`shell`] | 整窗骨架：侧边栏 + 内容区 |
 
 pub mod live;
+pub mod network;
 pub mod page;
 pub mod palette;
 pub mod profile;

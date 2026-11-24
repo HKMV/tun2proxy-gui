@@ -38,7 +38,7 @@ use super::live::{Live, bytes_text, rate_text};
 use super::page::Page;
 use super::state::LogFilter;
 use super::widgets::{danger_color, direct_color, info_color, ok_color, proxy_color, warn_color};
-use super::{palette, profile, split, state};
+use super::{network, palette, profile, split, state};
 
 /// 顶栏高度。
 const TOP_BAR_HEIGHT: f32 = 52.0;
@@ -96,6 +96,7 @@ struct Ui {
     logs: LogView,
     profiles: profile::ProfileUi,
     splits: split::SplitUi,
+    networks: network::NetworkUi,
 }
 
 /// 整窗骨架。
@@ -118,6 +119,7 @@ pub fn shell() -> impl IntoElement {    let page = signal(Page::Dashboard);
         logs: LogView::new(),
         profiles: profile::ProfileUi::new(),
         splits: split::SplitUi::new(),
+        networks: network::NetworkUi::new(),
     };
     // 根组件只跑一次，窗口属性也在这里设一次。
     hide_system_title_bar();
@@ -692,8 +694,8 @@ fn page_body(
         Page::Dashboard => dashboard(live, error).into_element(),
         Page::Profiles => profile::page(ui.profiles).into_element(),
         Page::Split => split::page(ui.splits, live).into_element(),
+        Page::Network => network::page(ui.networks).into_element(),
         Page::Program => program(live, ui.logs).into_element(),
-        other => pending_page(other).into_element(),
     }
 }
 
@@ -1859,34 +1861,6 @@ fn kind_color(kind: Option<LogKind>) -> AdaptiveColor {
         Some(LogKind::Output) => theme().muted_foreground,
         _ => theme().muted_foreground,
     }
-}
-
-/// 还没搬到 nsh 的页面：明确说「这一版还没有」，而不是给一片空白。
-fn pending_page(_page: Page) -> impl IntoElement {
-    // 不套 `card()`：那一页还没有内容，一张带边框的大卡片只会是一片空白，
-    // 标题还会和页头重复一次。给一块安静的无边框提示就够。
-    view()
-        .flex_col()
-        .gap_2()
-        .p_4()
-        .rounded_lg()
-        .bg(move || theme().muted)
-        .child(
-            text(t(
-                "这一版的界面还在搬迁中：代理配置、分流规则、网络参数三页还没有搬过来。",
-                "This page is still being ported: profiles, split rules and network settings are not here yet.",
-            ))
-            .text_xs()
-            .text_color(move || theme().secondary_foreground),
-        )
-        .child(
-            text(t(
-                "仪表盘与「程序与日志」已经可用。",
-                "The dashboard and “Program” pages work already.",
-            ))
-            .text_xs()
-            .text_color(move || theme().muted_foreground),
-        )
 }
 
 /// 启停蒙版：整窗盖住，中间 spinner + 「在等哪一步」。

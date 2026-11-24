@@ -394,7 +394,59 @@ pub fn toggle(on: bool, on_press: impl Fn() + 'static) -> View {
         )
 }
 
+/// 一行右对齐的操作按钮（保存这类动作用）。
+///
+/// **别把按钮放进 `card_head` 的 actions**：页面滚动之后，卡片头那一行的命中
+/// 区还停在没滚动时的位置，点了没反应（内容流里的控件不受影响）。按钮放在
+/// 输入框下面既能点得动，也更符合「改完再保存」的顺序。
+pub fn action_row(buttons: Vec<View>) -> View {
+    view()
+        .flex_row()
+        .items_center()
+        .justify_end()
+        .gap_2()
+        .children(buttons)
+}
+
 /// 一句提示条（错误红、成功绿、普通灰）。
 pub fn note(text_value: String, tone: AdaptiveColor) -> View {
     view().child(text(text_value).text_xs().text_color(move || tone))
+}
+
+/// 一次保存的结论：绿色是「存下了」，红色是「没存」。
+#[derive(Clone, PartialEq, Eq)]
+pub struct Note {
+    pub text: String,
+    pub bad: bool,
+}
+
+impl Note {
+    pub fn ok(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            bad: false,
+        }
+    }
+
+    pub fn bad(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            bad: true,
+        }
+    }
+}
+
+/// 把一次保存的结论画成一行（没有结论时什么都不画）。
+pub fn note_result(value: Option<Note>) -> View {
+    match value {
+        Some(result) => note(
+            result.text,
+            if result.bad {
+                danger_color()
+            } else {
+                ok_color()
+            },
+        ),
+        None => view(),
+    }
 }
