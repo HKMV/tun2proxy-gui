@@ -12,10 +12,53 @@
 use std::sync::{Mutex, OnceLock};
 
 use crate::core::config::{CloseAction, Palette, ThemeSetting};
+use crate::core::i18n::t;
+use crate::core::logs::LogKind;
 use crate::core::{Config, Engine};
 
 static CONFIG: OnceLock<Mutex<Config>> = OnceLock::new();
 static ENGINE: OnceLock<Engine> = OnceLock::new();
+
+/// 日志面板的过滤档位（只影响显示，不落盘）。
+///
+/// 子进程按连接打日志（一条连接两行），分流判定自己也是 INFO，两者很容易互相
+/// 冲掉：想确认「这几条连接走了哪边」时，得能把子进程那一层摘掉。文件里不用
+/// 管这件事——文件层本来就只留 WARN 以上。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LogFilter {
+    /// 全都显示。
+    All,
+    /// 摘掉 tun2proxy 子进程的输出，留下程序提示与分流判定。
+    NoOutput,
+    /// 只看分流判定。
+    SplitOnly,
+}
+
+impl LogFilter {
+    /// 分段控件里的顺序。
+    pub const ALL: [LogFilter; 3] = [
+        LogFilter::All,
+        LogFilter::NoOutput,
+        LogFilter::SplitOnly,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            LogFilter::All => t("全部", "All"),
+            LogFilter::NoOutput => t("隐藏 TUN 输出", "Hide TUN output"),
+            LogFilter::SplitOnly => t("仅分流", "Split only"),
+        }
+    }
+
+    /// 这一档要不要留下 `kind` 这种行。
+    pub fn keeps(self, kind: LogKind) -> bool {
+        match self {
+            LogFilter::All => true,
+            LogFilter::NoOutput => kind != LogKind::Output,
+            LogFilter::SplitOnly => kind == LogKind::Split,
+        }
+    }
+}
 
 /// 记下本次运行要用的配置与引擎（只在 `main` 里调一次）。
 pub fn install(config: Config, engine: Engine) {

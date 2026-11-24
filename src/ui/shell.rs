@@ -13,6 +13,7 @@
 //! 由一个每秒触发一次的 [`set_interval`] 重读内核；动作（启动 / 停止 / 清空
 //! 日志）全部经 [`state`]，界面从不直接碰 tun2proxy 子进程。
 
+use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -35,6 +36,7 @@ use crate::tr_format;
 
 use super::live::{Live, bytes_text, rate_text};
 use super::page::Page;
+use super::state::LogFilter;
 use super::{palette, state};
 
 /// 顶栏高度。
@@ -56,9 +58,36 @@ const CHART_HEIGHT: f32 = 72.0;
 /// 顶栏右侧要空出这段，否则配色选择器会被压在按钮底下。
 const CAPTION_BUTTONS_WIDTH: f32 = 138.0;
 
+/// 日志面板的界面状态：过滤档、是否跟随、滚动句柄。
+///
+/// 三样都不属于内核快照：`Live` 每秒重建，放进去会被下一帧冲掉；而切页时
+/// 这一页的元素会整棵重建，放在 `program()` 里又会一换页就回到默认档。所以
+/// 在 [`shell`] 里建一次，跟参数一路传下去。
+#[derive(Clone, Copy)]
+struct LogView {
+    /// 显示哪一档。
+    filter: Signal<LogFilter>,
+    /// 新日志到了要不要自动滚到底。
+    follow: Signal<bool>,
+    /// 刚复制了几行（按钮上回一句「已复制 N 行」，过一会儿自己消失）。
+    copied: Signal<Option<usize>>,
+    /// 列表的滚动句柄（「跟随」和「跳到最新」都用它）。
+    listing: ElementRef,
+}
+
+impl LogView {
+    fn new() -> Self {
+        Self {
+            filter: signal(LogFilter::All),
+            follow: signal(true),
+            copied: signal(Option::<usize>::None),
+            listing: element_ref(),
+        }
+    }
+}
+
 /// 整窗骨架。
-pub fn shell() -> impl IntoElement {
-    let page = signal(Page::Dashboard);
+pub fn shell() -> impl IntoElement {    let page = signal(Page::Dashboard);
     let live = signal(Live::now());
     // 本地校验的错误（「还没下载 tun2proxy」这种）走这里，内核给出的
     // 「上游不通」「会话打满」从快照里读，两条都显示在仪表盘的提示条上。
@@ -72,6 +101,8 @@ pub fn shell() -> impl IntoElement {
     let theme_setting = signal(palette::initial_setting(
         state::config().map(|config| config.theme).unwrap_or_default(),
     ));
+    // 日志面板的过滤档 / 跟随开关 / 滚动句柄：跨页存活，所以在根组件建。
+    let log_view = LogView::new();
     // 根组件只跑一次，窗口属性也在这里设一次。
     hide_system_title_bar();
     // 之后所有「活起来」的部分都在这里挂上：每秒刷新、托盘、关闭策略、
@@ -80,6 +111,7 @@ pub fn shell() -> impl IntoElement {
     install_tray(live);
     intercept_close();
     handle_quit_request();
+    follow_logs(live, log_view);
 
     view()
         .size_full()
@@ -91,7 +123,7 @@ pub fn shell() -> impl IntoElement {
                 .flex_1()
                 .flex_row()
                 .child(rail(page, live))
-                .child(content(page, live, error)),
+                .child(content(page, live, error, log_view)),
         )
         // 启停蒙版：整窗盖住，带 spinner 和「在等哪一步」的文案。
         .child(busy_mask(live))
@@ -614,7 +646,12 @@ fn rail_footer(live: Signal<Live>) -> impl IntoElement {
 }
 
 /// 内容区：页面标题 + 当前这一页。
-fn content(page: Signal<Page>, live: Signal<Live>, error: Signal<Option<String>>) -> impl IntoElement {
+fn content(
+    page: Signal<Page>,
+    live: Signal<Live>,
+    error: Signal<Option<String>>,
+    log_view: LogView,
+) -> impl IntoElement {
     view()
         .flex_1()
         .h_full()
@@ -622,17 +659,22 @@ fn content(page: Signal<Page>, live: Signal<Live>, error: Signal<Option<String>>
         .p_6()
         .gap_5()
         .child(header(page, live))
-        .child(dynamic(move || page_body(page.get(), live, error)))
+        .child(dynamic(move || page_body(page.get(), live, error, log_view)))
 }
 
 /// 按当前页给出内容。
 ///
 /// 每一页都写成函数、统一转成 `AnyElement`：`dynamic` 的闭包只能有一个返回
 /// 类型，`match` 出来的几个不同元素类型得先擦掉。
-fn page_body(page: Page, live: Signal<Live>, error: Signal<Option<String>>) -> AnyElement {
+fn page_body(
+    page: Page,
+    live: Signal<Live>,
+    error: Signal<Option<String>>,
+    log_view: LogView,
+) -> AnyElement {
     match page {
         Page::Dashboard => dashboard(live, error).into_element(),
-        Page::Program => program(live).into_element(),
+        Page::Program => program(live, log_view).into_element(),
         other => pending_page(other).into_element(),
     }
 }
@@ -1191,13 +1233,13 @@ fn env_card() -> impl IntoElement {
 }
 
 /// 程序与日志页：上面管内核，下面看日志。
-fn program(live: Signal<Live>) -> impl IntoElement {
+fn program(live: Signal<Live>, log_view: LogView) -> impl IntoElement {
     view()
         .flex_1()
         .flex_col()
         .gap_3()
         .child(core_card(live))
-        .child(log_card(live))
+        .child(log_card(live, log_view))
 }
 
 /// 内核卡：装没装、哪一版、要不要更新，以及那三个按钮。
@@ -1396,7 +1438,8 @@ fn core_progress(snapshot: Live) -> AnyElement {
 }
 
 /// 日志卡：标题 + 行数 + 清空，下面是虚拟列表。
-fn log_card(live: Signal<Live>) -> impl IntoElement {
+fn log_card(live: Signal<Live>, log_view: LogView) -> impl IntoElement {
+    let filter = log_view.filter;
     view()
         .flex_1()
         .flex_col()
@@ -1418,29 +1461,259 @@ fn log_card(live: Signal<Live>) -> impl IntoElement {
                         .text_color(move || theme().card_foreground),
                 )
                 .child(
+                    // 过滤开着的时候说清楚「现在看到的是几行里挑出来的几行」，
+                    // 否则用户会以为日志本身丢了。
                     dynamic(move || {
-                        text(move || {
-                            format!(
-                                "{} 行",
-                                live.with(|snapshot| snapshot.logs.len())
+                        let chosen = filter.get();
+                        let (kept, total) = live.with(|snapshot| {
+                            (
+                                snapshot
+                                    .logs
+                                    .iter()
+                                    .filter(|line| chosen.keeps(line.kind))
+                                    .count(),
+                                snapshot.logs.len(),
                             )
-                        })
-                        .text_xs()
-                        .tabular_nums()
-                        .text_color(move || theme().muted_foreground)
+                        });
+                        let caption = if chosen == LogFilter::All {
+                            tr_format!("{} 行", "{} lines", total)
+                        } else {
+                            tr_format!("{} / {} 行", "{} of {} lines", kept, total)
+                        };
+                        text(caption)
+                            .text_xs()
+                            .tabular_nums()
+                            .text_color(move || theme().muted_foreground)
                     }),
                 )
                 .child(view().flex_1())
-                .child(ghost_button(
-                    t("清空", "Clear"),
-                    || state::clear_logs(),
+                .child(copy_button(live, log_view))
+                .child(ghost_button(t("清空", "Clear"), || state::clear_logs())),
+        )
+        .child(log_pane(live, log_view))
+        // 工具条放底部：过滤和「跟随」都是「看日志时才会动」的东西，压在标题
+        // 边上会跟上面那张内核卡抢注意力，也会在窄窗口里把标题挤掉。
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .gap_3()
+                .child(filter_segments(log_view))
+                .child(view().flex_1())
+                .child(follow_toggle(log_view))
+                .child(ghost_button_with(
+                    t("跳到最新", "Jump to latest"),
+                    log_view.listing,
+                    move |listing| listing.scroll_to_end(false),
                 )),
         )
-        .child(log_pane(live))
+}
+
+/// 「跟随最新」开关：开着时每来一行新日志就滚到底。
+///
+/// 默认开——日志面板的默认问题是「刚发生了什么」。要看历史就先关掉，否则
+/// 每一次新行都会把视图拽回底部（滚动容器的位置读不回来，只能靠用户表明
+/// 意图）。
+fn follow_toggle(log_view: LogView) -> impl IntoElement {
+    let follow = log_view.follow;
+    dynamic(move || {
+        let on = follow.get();
+        view()
+            .h(px(26.0))
+            .px_3()
+            .rounded_full()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .transition_colors()
+            .duration(140.0)
+            .ease_out()
+            .when(!on, |this| this.hover(|state| state.bg(theme().accent)))
+            .bg(move || {
+                if follow.get() {
+                    theme().primary
+                } else {
+                    theme().muted
+                }
+            })
+            .on_press(move || {
+                let next = !follow.get();
+                follow.set(next);
+                if next {
+                    // 打开就立刻回到底部：用户点它的意思就是「带我去看最新的」。
+                    log_view.listing.scroll_to_end(false);
+                }
+            })
+            .child(
+                text(t("跟随最新", "Follow"))
+                    .text_xs()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(move || {
+                        if follow.get() {
+                            theme().primary_foreground
+                        } else {
+                            theme().muted_foreground
+                        }
+                    }),
+            )
+    })
+}
+
+/// 每来一行新日志就把列表滚到底（「跟随」关着时不动）。
+///
+/// 触发器是 `log_total` 而不是 `logs.len()`：后者涨到上限就不再变（见
+/// [`Live::log_total`] 的注释），跟随会在跑到上限时悄悄停掉。
+fn follow_logs(live: Signal<Live>, log_view: LogView) {
+    // 从 0 起算而不是从当前行数起算：`initial_scroll_at_end` 是首帧之前那次
+    // 布局里算的，行高还没定下来，经常停在半行上；让第一轮 effect 再滚一次，
+    // 打开的瞬间就一定贴底。
+    let seen = Cell::new(0u64);
+    effect(move || {
+        let total = live.get().log_total;
+        let follow = log_view.follow.get();
+        let previous = seen.replace(total);
+        if !follow || total == previous {
+            return;
+        }
+        log_view.listing.scroll_to_end(false);
+    });
+}
+
+/// 日志过滤的三段控件。
+fn filter_segments(log_view: LogView) -> impl IntoElement {
+    view()
+        .h(px(24.0))
+        .flex_row()
+        .items_center()
+        .gap_1()
+        .p_1()
+        .rounded_full()
+        .bg(move || theme().muted)
+        .children(LogFilter::ALL.iter().map(|choice| {
+            let choice = *choice;
+            filter_segment(choice, log_view)
+        }))
+}
+
+/// 过滤控件里的一格。
+fn filter_segment(choice: LogFilter, log_view: LogView) -> impl IntoElement {
+    let filter = log_view.filter;
+    dynamic(move || {
+        let chosen = filter.get() == choice;
+        view()
+            .h(px(18.0))
+            .px_2()
+            .rounded_full()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .when(!chosen, |this| this.hover(|state| state.bg(theme().accent)))
+            .transition_colors()
+            .duration(140.0)
+            .ease_out()
+            .bg(move || {
+                if filter.get() == choice {
+                    theme().primary
+                } else {
+                    AdaptiveColor::TRANSPARENT
+                }
+            })
+            .on_press(move || {
+                filter.set(choice);
+                // 换档后行数变了，上一次的「已复制 N 行」不再对得上。
+                log_view.copied.set(None);
+            })
+            .child(
+                text(choice.label())
+                    .text_xs()
+                    .font_weight(if chosen {
+                        FontWeight::MEDIUM
+                    } else {
+                        FontWeight::NORMAL
+                    })
+                    .text_color(move || {
+                        if filter.get() == choice {
+                            theme().primary_foreground
+                        } else {
+                            theme().muted_foreground
+                        }
+                    }),
+            )
+    })
+}
+
+/// 把当前这一档的日志整段放进剪贴板（报问题时粘得出去）。
+fn copy_logs(live: Signal<Live>, log_view: LogView) {
+    let chosen = log_view.filter.get();
+    let body = live.with(|snapshot| {
+        snapshot
+            .logs
+            .iter()
+            .filter(|line| chosen.keeps(line.kind))
+            .map(|line| format!("{:<5} {}", kind_tag(line.kind), line.text))
+            .collect::<Vec<_>>()
+            .join("\n")
+    });
+    if body.is_empty() {
+        return;
+    }
+    let count = body.lines().count();
+    set_clipboard(body);
+    // 这个动作没有别的可见结果：不回报一句，用户不知道到底成没成。
+    //
+    // 这里不用定时器让它自己消失：`set_timeout` 的任务挂在调用时的 owner 上，
+    // 而按下按钮后这一格会立刻重绘、旧 owner 随之销毁，定时器跟着被取消——
+    // 表现就是「已复制」一直挂着。改成「下一次复制或换档时才变」，行为是
+    // 确定的，也不需要额外的定时任务。
+    log_view.copied.set(Some(count));
+}
+
+/// 复制按钮：点完在按钮上回一句「已复制 N 行」，再点还是复制，换档时复位。
+fn copy_button(live: Signal<Live>, log_view: LogView) -> impl IntoElement {
+    dynamic(move || {
+        let copied = log_view.copied.get();
+        let label = match copied {
+            Some(count) => tr_format!("已复制 {} 行", "Copied {}", count),
+            None => t("复制", "Copy").to_string(),
+        };
+        view()
+            .h(px(26.0))
+            .px_3()
+            .rounded_full()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .transition_colors()
+            .duration(140.0)
+            .ease_out()
+            .hover(|this| this.bg(theme().accent))
+            .active(|this| this.scale(0.96))
+            .border_1()
+            .border_color(move || {
+                if copied.is_some() {
+                    theme().primary
+                } else {
+                    theme().border
+                }
+            })
+            .on_press(move || copy_logs(live, log_view))
+            .child(
+                text(label)
+                    .text_xs()
+                    .text_color(move || {
+                        if copied.is_some() {
+                            theme().primary
+                        } else {
+                            theme().muted_foreground
+                        }
+                    }),
+            )
+    })
 }
 
 /// 日志正文：虚拟列表，只在视野里那几十行存在。
-fn log_pane(live: Signal<Live>) -> impl IntoElement {
+fn log_pane(live: Signal<Live>, log_view: LogView) -> impl IntoElement {
+    let filter = log_view.filter;
     view()
         .flex_1()
         .rounded_lg()
@@ -1448,24 +1721,65 @@ fn log_pane(live: Signal<Live>) -> impl IntoElement {
         .bg(move || theme().background)
         .child(
             virtual_list(
-                move || live.with(|snapshot| snapshot.logs.len()),
-                move |at| log_row(live, at.index()),
+                move || visible_count(live, filter.get()),
+                move |at| log_row(live, filter, at.index()),
             )
+            .element_ref(&log_view.listing)
             // 打开就看最新的一行：日志面板默认关心「刚刚发生了什么」。
             // 列表自己不撑高度：不给它 `h_full` 时高度是 0，界面上就是
             // 「有行数、一片空白」。
             .initial_scroll_at_end()
             .h_full()
-            .empty(
-                view()
-                    .p_4()
-                    .child(
-                        text(t("还没有日志。", "No log yet."))
-                            .text_xs()
-                            .text_color(move || theme().muted_foreground),
-                    ),
-            ),
+            .empty(dynamic(move || {
+                // 两片空白长得一样但意思不同：真的是空的，还是这一档没匹配上。
+                // 说错一句用户就会以为记录停了。
+                let kept = visible_count(live, filter.get());
+                let total = live.with(|snapshot| snapshot.logs.len());
+                let caption = if total == 0 {
+                    t(
+                        "还没有日志。启动隧道后这里会实时显示，落盘的那份在日志目录里。",
+                        "No log yet. Start the tunnel and it shows up here; the file copy lives in the log folder.",
+                    )
+                } else if kept == 0 {
+                    t(
+                        "这一档没有匹配的行。换个过滤档看看。",
+                        "Nothing in this filter; try another one.",
+                    )
+                } else {
+                    ""
+                };
+                view().p_4().child(
+                    text(caption)
+                        .text_xs()
+                        .text_color(move || theme().muted_foreground),
+                )
+            })),
         )
+}
+
+/// 当前过滤档下有几行（虚拟列表的长度就用它）。
+fn visible_count(live: Signal<Live>, filter: LogFilter) -> usize {
+    live.with(|snapshot| {
+        snapshot
+            .logs
+            .iter()
+            .filter(|line| filter.keeps(line.kind))
+            .count()
+    })
+}
+
+/// 过滤后第 `index` 行在原始列表里的下标。
+///
+/// 虚拟列表拿到的是「过滤后的序号」，而行是按原始下标存的，所以每个可见行
+/// 都要换算一次。`LOG_TAIL` 只有 400 行、一屏也就几十行，这个 O(n) 查找比
+/// 每帧重建一份索引数组更省。
+fn visible_at(live: &Live, filter: LogFilter, index: usize) -> Option<usize> {
+    live.logs
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| filter.keeps(line.kind))
+        .map(|(at, _)| at)
+        .nth(index)
 }
 
 /// 一行日志：来源标签 + 正文（过长截断，完整内容在文件里）。
@@ -1473,7 +1787,15 @@ fn log_pane(live: Signal<Live>) -> impl IntoElement {
 /// 三处宽度都得写死：虚拟列表的 cell 宽度由内容决定，`truncate` 拿不到可用
 /// 宽度就会把整行压成 0 宽——表现是「有行数、一个字也看不见」。所以行是
 /// `w_full`、标签是固定宽、正文外面套一层 `flex_1` 的裁剪盒。
-fn log_row(live: Signal<Live>, index: usize) -> impl IntoElement {
+fn log_row(live: Signal<Live>, filter: Signal<LogFilter>, index: usize) -> impl IntoElement {
+    // 行是按原始下标存的，`index` 是过滤后的序号，先换算成原始行。
+    let at = move || {
+        live.with(|snapshot| {
+            visible_at(snapshot, filter.get(), index)
+                .and_then(|at| snapshot.logs.get(at))
+                .cloned()
+        })
+    };
     view()
         .w_full()
         .h(px(18.0))
@@ -1482,38 +1804,20 @@ fn log_row(live: Signal<Live>, index: usize) -> impl IntoElement {
         .gap_2()
         .px_3()
         .child(
-            text(move || {
-                live.with(|snapshot| {
-                    snapshot
-                        .logs
-                        .get(index)
-                        .map(|line| kind_tag(line.kind))
-                        .unwrap_or_default()
-                })
-            })
-            .w(px(46.0))
-            .text_xs()
-            .font_weight(FontWeight::MEDIUM)
-            .text_color(move || {
-                live.with(|snapshot| kind_color(snapshot.logs.get(index).map(|line| line.kind)))
-            }),
+            text(move || at().map(|line| kind_tag(line.kind)).unwrap_or_default())
+                .w(px(46.0))
+                .text_xs()
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(move || kind_color(at().map(|line| line.kind))),
         )
         .child(
             view().flex_1().overflow_hidden().child(
-                text(move || {
-                    live.with(|snapshot| {
-                        snapshot
-                            .logs
-                            .get(index)
-                            .map(|line| line.text.clone())
-                            .unwrap_or_default()
-                    })
-                })
-                .w_full()
-                .text_xs()
-                .truncate()
-                .tabular_nums()
-                .text_color(move || theme().secondary_foreground),
+                text(move || at().map(|line| line.text).unwrap_or_default())
+                    .w_full()
+                    .text_xs()
+                    .truncate()
+                    .tabular_nums()
+                    .text_color(move || theme().secondary_foreground),
             ),
         )
 }
@@ -1667,6 +1971,34 @@ fn ghost_button(label: &'static str, on_press: impl Fn() + 'static) -> impl Into
         .border_1()
         .border_color(move || theme().border)
         .on_press(on_press)
+        .child(
+            text(label)
+                .text_xs()
+                .text_color(move || theme().muted_foreground),
+        )
+}
+
+/// 次要按钮，点击交给调用方处理（这里要的是「点一下让某个元素滚到底」）。
+fn ghost_button_with(
+    label: &'static str,
+    target: ElementRef,
+    on_press: impl Fn(ElementRef) + 'static,
+) -> impl IntoElement {
+    view()
+        .h(px(26.0))
+        .px_3()
+        .rounded_full()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .transition_colors()
+        .duration(140.0)
+        .ease_out()
+        .hover(|this| this.bg(theme().accent))
+        .active(|this| this.scale(0.96))
+        .border_1()
+        .border_color(move || theme().border)
+        .on_press(move || on_press(target))
         .child(
             text(label)
                 .text_xs()

@@ -39,6 +39,11 @@ pub struct Live {
     pub history: Vec<RouteTraffic>,
     /// 最近的日志行（最后 [`LOG_TAIL`] 行）。
     pub logs: Vec<LogLine>,
+    /// 累计写入过多少行（不随上面的裁剪回退）。
+    ///
+    /// 日志面板要靠它判断「有没有新行」：`logs.len()` 涨到 [`LOG_TAIL`] 就不再
+    /// 变，用它的话跟随会停在半路，看起来就是「日志不滚了」。
+    pub log_total: u64,
     /// 「启动被拦下」的原因：上游探测没通过时由内核写入。
     pub blocked: Option<String>,
     /// 会话名额被打满过（tun2proxy 在日志里报了 `dropping new session`）。
@@ -76,6 +81,7 @@ impl Live {
             proxy: (guard.rate.proxy.up, guard.rate.proxy.down),
             history,
             logs,
+            log_total: guard.log_total,
             blocked: guard.start_blocked.clone(),
             sessions_full: guard.sessions_full,
         }
@@ -91,6 +97,7 @@ impl Live {
             proxy: (0, 0),
             history: Vec::new(),
             logs: Vec::new(),
+            log_total: 0,
             blocked: None,
             sessions_full: false,
         }
