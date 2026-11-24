@@ -39,6 +39,8 @@ pub struct SplitUi {
     direct_dns: Signal<String>,
     direct_interface: Signal<String>,
     outlet_note: Signal<Option<Note>>,
+    /// 规则明细的查找框（只影响显示，不落盘）。
+    filter: Signal<String>,
 }
 
 impl SplitUi {
@@ -51,6 +53,7 @@ impl SplitUi {
             direct_dns: signal(settings.direct_dns),
             direct_interface: signal(settings.direct_interface),
             outlet_note: signal(None),
+            filter: signal(String::new()),
         }
     }
 
@@ -74,6 +77,7 @@ pub fn page(ui: SplitUi, live: Signal<Live>) -> impl IntoElement {
             .child(switch_card(ui, live))
             .child(lists_card(ui))
             .child(custom_card(ui))
+            .child(detail_card(ui))
             .child(outlet_card(ui))
             .child(decisions_card(live))
             .child(update_card(live)),
@@ -267,6 +271,153 @@ fn custom_card(ui: SplitUi) -> View {
             },
         )]))
         .child(dynamic(move || note_result(ui.custom_note.get()).into_element()))
+}
+
+// —— 规则明细 ——
+
+/// 明细里最多列多少条。
+///
+/// 域名清单一万六千多条，全画出来既没必要（谁也不会一行行翻）也会让页面卡死；
+/// 前 100 条配上查找框足够定位到想关的那一条。
+const DETAIL_ROWS_SHOWN: usize = 100;
+
+fn detail_card(ui: SplitUi) -> View {
+    card_shell()
+        .child(card_head(
+            t("规则明细", "Rule details"),
+            Some(
+                t(
+                    "内置清单展开成一条条规则；关掉的那条不再直连。改完要重启隧道才生效。",
+                    "The built-in lists expanded rule by rule; a disabled rule stops going direct. A restart applies changes.",
+                )
+                .to_string(),
+            ),
+            view(),
+        ))
+        .child(field(
+            t("查找", "Find"),
+            Some(
+                t(
+                    "输入域名或地址的一部分，只影响这里的显示",
+                    "Type part of a domain or address; this filters the list only",
+                )
+                .to_string(),
+            ),
+            text_field(
+                move || ui.filter.get(),
+                t("例如 qq.com", "e.g. qq.com"),
+                true,
+                move |text| ui.filter.set(text),
+            ),
+        ))
+        .child(dynamic(move || detail_rows(ui)))
+}
+
+/// 明细列表本体：按组顺序摊开，跳过的组不占位。
+fn detail_rows(ui: SplitUi) -> AnyElement {
+    let settings = current(ui);
+    let filter = ui.filter.get().trim().to_lowercase();
+
+    state::with_split_library(|library| {
+        let mut rows: Vec<AnyElement> = Vec::new();
+        let mut shown = 0usize;
+        let mut truncated = false;
+
+        'groups: for group in SplitGroup::ALL {
+            if !settings.group_enabled(group) {
+                continue;
+            }
+            for rule in library.group_rules(group) {
+                let label = rule.matcher.text();
+                if !filter.is_empty() && !label.to_lowercase().contains(&filter) {
+                    continue;
+                }
+                if shown >= DETAIL_ROWS_SHOWN {
+                    truncated = true;
+                    break 'groups;
+                }
+                let key = rule.key();
+                let enabled = settings.row_enabled(&key);
+                rows.push(
+                    view()
+                        .flex_row()
+                        .items_center()
+                        .gap_3()
+                        .py_1()
+                        // 右边留一点：开关贴到卡片内边缘会显得被裁掉半个。
+                        .pr_1()
+                        .child(
+                            text(label)
+                                .flex_1()
+                                .truncate()
+                                .text_xs()
+                                .text_color(move || {
+                                    if enabled {
+                                        theme().secondary_foreground
+                                    } else {
+                                        theme().muted_foreground
+                                    }
+                                }),
+                        )
+                        .child(
+                            text(rule.matcher.kind().label())
+                                .w(px(56.0))
+                                .text_xs()
+                                .text_color(move || theme().muted_foreground),
+                        )
+                        .child(
+                            text(rule.source.clone())
+                                .w(px(96.0))
+                                .truncate()
+                                .text_xs()
+                                .text_color(move || theme().muted_foreground),
+                        )
+                        .child(toggle(enabled, move || {
+                            state::toggle_split_row(&key);
+                            ui.bump();
+                        }))
+                        .into_element(),
+                );
+                shown += 1;
+            }
+        }
+
+        let footer = if shown == 0 {
+            text(if filter.is_empty() {
+                t("没有可显示的规则", "No rules to show")
+            } else {
+                t("没有匹配的规则", "No rule matches")
+            })
+            .text_xs()
+            .text_color(theme().muted_foreground)
+            .into_element()
+        } else if truncated {
+            text(tr_format!(
+                "只显示前 {} 条，用上面的查找框定位更靠后的规则",
+                "Showing the first {}; use the search field to reach later rules",
+                DETAIL_ROWS_SHOWN
+            ))
+            .text_xs()
+            .text_color(theme().muted_foreground)
+            .into_element()
+        } else {
+            text(tr_format!(
+                "共 {} 条，已全部列出",
+                "All {} rules are listed",
+                shown
+            ))
+            .text_xs()
+            .text_color(theme().muted_foreground)
+            .into_element()
+        };
+
+        view()
+            .flex_col()
+            .gap_1()
+            .children(rows)
+            .child(view().pt_2().child(footer))
+            .into_element()
+    })
 }
 
 // —— 直连出口 ——

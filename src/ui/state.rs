@@ -15,14 +15,22 @@ use std::sync::{Mutex, OnceLock};
 use tproxy_config::IpCidr;
 
 use crate::core::config::{CloseAction, Palette, Profile, ThemeSetting};
-use crate::core::i18n::t;
+use crate::core::i18n::{LangSetting, t};
 use crate::core::logs::LogKind;
+use crate::core::split::Library;
+use crate::core::split::library::snapshot_dir;
 use crate::core::split::settings::SplitGroup;
 use crate::core::{Config, Engine};
 use crate::tr_format;
 
 static CONFIG: OnceLock<Mutex<Config>> = OnceLock::new();
 static ENGINE: OnceLock<Engine> = OnceLock::new();
+
+/// 三份清单，外加「解析它们时三份文件的最后修改时间」。
+///
+/// 域名清单一万六千多条，每次渲染都从磁盘解析一遍会让筛选框敲一下卡一次；
+/// 但清单在线更新完必须能看到新内容，所以缓存按文件时间失效，而不是一存到底。
+static LIBRARY: OnceLock<Mutex<Option<(Option<std::time::SystemTime>, Library)>>> = OnceLock::new();
 
 /// 日志面板的过滤档位（只影响显示，不落盘）。
 ///
@@ -202,6 +210,38 @@ pub fn close_action() -> CloseAction {
         .unwrap_or(CloseAction::Ask)
 }
 
+/// 记住关窗口的行为，并写回配置文件。
+///
+/// 只在下次关窗口时生效，不用重启：`intercept_close` 每次回调都现读配置。
+pub fn remember_close_action(action: CloseAction) {
+    log::info!("关闭按钮的行为改为：{}", action.label());
+    with_config(|config| {
+        if config.close_action == action {
+            return false;
+        }
+        config.close_action = action;
+        true
+    });
+}
+
+/// 记住界面语言并立刻切过去。
+///
+/// 语言是进程级的全局量（[`i18n`](crate::core::i18n)），已经画出来的文字不会
+/// 自己变——界面文字是构建期取值的。所以调用方拿到返回值后还要 bump 一下整窗
+/// 重建的信号，让所有 `t()` 重新取一遍。
+pub fn remember_language(setting: LangSetting) -> bool {
+    log::info!("界面语言改为：{}", setting.label());
+    let saved = with_config(|config| {
+        if config.language == setting {
+            return false;
+        }
+        config.language = setting;
+        true
+    });
+    crate::core::i18n::apply(setting);
+    saved
+}
+
 // —— 代理配置 ——
 
 /// 切换到第 `index` 套配置（下次启动隧道用它）。
@@ -370,6 +410,46 @@ pub fn update_split_lists() {
 pub fn split_counts() -> (usize, usize, usize) {
     let (local, ipv4, ipv6, domain) = crate::core::split::builtin::snapshot_size();
     (local, ipv4 + ipv6, domain)
+}
+
+/// 三份清单（进程内缓存，文件改过就重新解析）。
+///
+/// 走「传一个读闭包进来」而不是把 `&Library` 返回出去：缓存藏在锁里，
+/// 返回引用要么泄漏、要么得把锁一起交出去；闭包让锁只在这几百微秒里被持有。
+pub fn with_split_library<T>(read: impl FnOnce(&Library) -> T) -> T {
+    let cell = LIBRARY.get_or_init(|| Mutex::new(None));
+    let mut guard = cell.lock().unwrap_or_else(|error| error.into_inner());
+    let stamp = library_stamp();
+    let stale = match guard.as_ref() {
+        Some((cached, _)) => *cached != stamp,
+        None => true,
+    };
+    if stale {
+        *guard = Some((stamp, Library::load()));
+    }
+    match guard.as_ref() {
+        Some((_, library)) => read(library),
+        // 上面刚填过，走不到这里；真到了也退回内置快照而不是 panic。
+        None => read(&Library::builtin()),
+    }
+}
+
+/// 三份清单文件的最后修改时间；一份都没有时是 `None`（用的是内置快照）。
+fn library_stamp() -> Option<std::time::SystemTime> {
+    let dir = snapshot_dir();
+    ["china-ipv4.txt", "china-ipv6.txt", "china-domain.txt"]
+        .iter()
+        .filter_map(|name| std::fs::metadata(dir.join(name)).ok()?.modified().ok())
+        .max()
+}
+
+/// 关掉 / 打开清单里的某一条规则（键形如 `suffix:qq.com`）。
+pub fn toggle_split_row(key: &str) -> bool {
+    let key = key.to_string();
+    with_config(move |config| {
+        config.split.toggle_row(&key);
+        true
+    })
 }
 
 // —— 网络与绕过（都改当前那套配置） ——

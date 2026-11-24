@@ -27,10 +27,11 @@ use nsh_core::prelude::*;
 use crate::core::APP_VERSION;
 use crate::core::config::{CloseAction, Palette, ThemeSetting};
 use crate::core::engine::Update;
-use crate::core::i18n::t;
+use crate::core::i18n::{LangSetting, t};
 use crate::core::logs::LogKind;
 use crate::core::paths;
 use crate::core::single_instance;
+use crate::core::split::service::TrendBucket;
 use crate::core::traffic::RouteTraffic;
 use crate::tr_format;
 
@@ -38,7 +39,10 @@ use super::live::{Live, bytes_text, rate_text};
 use super::page::Page;
 use super::state::LogFilter;
 use super::widgets::{danger_color, direct_color, info_color, ok_color, proxy_color, warn_color};
-use super::{network, palette, profile, split, state};
+use super::widgets::{action_row, card_head, card_shell, chip, chips, field};
+use super::{
+    network, palette, profile, split, state, widgets,
+};
 
 /// 顶栏高度。
 const TOP_BAR_HEIGHT: f32 = 52.0;
@@ -97,6 +101,13 @@ struct Ui {
     profiles: profile::ProfileUi,
     splits: split::SplitUi,
     networks: network::NetworkUi,
+    /// 整窗重建的计数器：切界面语言时 +1。
+    ///
+    /// 颜色走响应式的 `theme()`，改一个 token 全窗自己换；界面文字不是——
+    /// `t()` 在构建那一刻就取定了。换语言想让顶栏、导航、卡片标题一起换掉，
+    /// 只能把整棵树重新建一遍，所以留这一个计数器给 [`shell`] 顶层的
+    /// `dynamic` 订阅。
+    rebuild: Signal<u64>,
 }
 
 /// 整窗骨架。
@@ -115,11 +126,13 @@ pub fn shell() -> impl IntoElement {    let page = signal(Page::Dashboard);
         state::config().map(|config| config.theme).unwrap_or_default(),
     ));
     // 日志面板的过滤档 / 跟随开关 / 滚动句柄：跨页存活，所以在根组件建。
+    let rebuild = signal(0u64);
     let ui = Ui {
         logs: LogView::new(),
         profiles: profile::ProfileUi::new(),
         splits: split::SplitUi::new(),
         networks: network::NetworkUi::new(),
+        rebuild,
     };
     // 根组件只跑一次，窗口属性也在这里设一次。
     hide_system_title_bar();
@@ -135,16 +148,24 @@ pub fn shell() -> impl IntoElement {    let page = signal(Page::Dashboard);
         .size_full()
         .flex_col()
         .bg(move || theme().background)
-        .child(top_bar(live, palette, theme_setting))
-        .child(
+        // 整窗套一层 `dynamic`：只为了换语言时把文字重新取一遍（见 `Ui::rebuild`）。
+        // 颜色是响应式的，文字不是——`t()` 在构建那一刻就取定了，换语言只能整棵重建。
+        .child(dynamic(move || {
+            let _ = ui.rebuild.get();
             view()
-                .flex_1()
-                .flex_row()
-                .child(rail(page, live))
-                .child(content(page, live, error, ui)),
-        )
-        // 启停蒙版：整窗盖住，带 spinner 和「在等哪一步」的文案。
-        .child(busy_mask(live))
+                .size_full()
+                .flex_col()
+                .child(top_bar(live, palette, theme_setting))
+                .child(
+                    view()
+                        .flex_1()
+                        .flex_row()
+                        .child(rail(page, live))
+                        .child(content(page, live, error, ui)),
+                )
+                // 启停蒙版：整窗盖住，带 spinner 和「在等哪一步」的文案。
+                .child(busy_mask(live))
+        }))
 }
 
 /// 每秒重读一次内核。
@@ -677,7 +698,7 @@ fn content(
         .p_6()
         .gap_5()
         .child(header(page, live))
-        .child(dynamic(move || page_body(page.get(), live, error, ui)))
+        .child(dynamic(move || page_body(page.get(), page, live, error, ui)))
 }
 
 /// 按当前页给出内容。
@@ -686,16 +707,17 @@ fn content(
 /// 类型，`match` 出来的几个不同元素类型得先擦掉。
 fn page_body(
     page: Page,
+    page_signal: Signal<Page>,
     live: Signal<Live>,
     error: Signal<Option<String>>,
     ui: Ui,
 ) -> AnyElement {
     match page {
-        Page::Dashboard => dashboard(live, error).into_element(),
+        Page::Dashboard => dashboard(live, error, page_signal, ui).into_element(),
         Page::Profiles => profile::page(ui.profiles).into_element(),
         Page::Split => split::page(ui.splits, live).into_element(),
         Page::Network => network::page(ui.networks).into_element(),
-        Page::Program => program(live, ui.logs).into_element(),
+        Page::Program => program(live, ui.logs, ui).into_element(),
     }
 }
 
@@ -739,11 +761,16 @@ fn header(page: Signal<Page>, live: Signal<Live>) -> impl IntoElement {
         )
 }
 
-/// 仪表盘：提示条 + 状态卡 + 流量图 + 两张信息卡。
+/// 仪表盘：提示条 + 状态卡 + 两张趋势图 + 当前配置 + 两张信息卡 + 日志预览。
 ///
-/// 外面套一层滚动：默认窗口（900×650）下一屏正好放得下，但用户把窗口拉小
-/// 或加了提示条以后就不够了——不滚的话 flex 会把卡片压扁、互相盖住。
-fn dashboard(live: Signal<Live>, error: Signal<Option<String>>) -> impl IntoElement {
+/// 外面套一层滚动：默认窗口（900×650）下装不下这么多卡了，用户也可能把窗口
+/// 拉小——不滚的话 flex 会把卡片压扁、互相盖住。
+fn dashboard(
+    live: Signal<Live>,
+    error: Signal<Option<String>>,
+    page: Signal<Page>,
+    ui: Ui,
+) -> impl IntoElement {
     scroll()
         .flex_1()
         .child(
@@ -753,13 +780,16 @@ fn dashboard(live: Signal<Live>, error: Signal<Option<String>>) -> impl IntoElem
                 .child(banners(live, error))
                 .child(hero(live, error))
                 .child(traffic_card(live))
+                .child(routing_card(live))
+                .child(profile_card(ui, page))
                 .child(
                     view()
                         .flex_row()
                         .gap_3()
                         .child(split_card())
                         .child(env_card()),
-                ),
+                )
+                .child(log_preview_card(live, page)),
         )
 }
 
@@ -1252,14 +1282,516 @@ fn env_card() -> impl IntoElement {
     )
 }
 
+/// 连接去向：最近两分钟每个连接被判到哪一边。
+///
+/// 单独一张卡而不是塞进流量图：流量图回答「多快」（字节/秒），这张回答
+/// 「去了哪」（条数）。两者单位不同，画在同一个刻度上只会互相误导。
+fn routing_card(live: Signal<Live>) -> impl IntoElement {
+    card_shell()
+        .child(card_head(
+            t("连接去向", "Where traffic goes"),
+            Some(
+                t(
+                    "最近两分钟，每 2 秒一格；直连在下、代理在上、失败在最顶。",
+                    "The last two minutes in 2-second steps: direct at the bottom, proxied above it, failures on top.",
+                )
+                .to_string(),
+            ),
+            view(),
+        ))
+        .child(
+            view()
+                .w_full()
+                .h(px(CHART_HEIGHT))
+                .rounded_lg()
+                .overflow_hidden()
+                .bg(move || theme().muted)
+                .child(routing_plot(live)),
+        )
+        .child(dynamic(move || routing_legend(live.get())))
+}
+
+/// 去向图：60 格柱状面积，每格按「直连 / 代理 / 失败」的条数分段。
+fn routing_plot(live: Signal<Live>) -> impl IntoElement {
+    dynamic(move || {
+        let snapshot = live.get();
+        let trend = &snapshot.split.trend;
+        if trend.iter().all(|bucket| bucket.is_empty()) {
+            return view()
+                .size_full()
+                .items_center()
+                .justify_center()
+                .child(
+                    text(t(
+                        "隧道启动后这里会画出每个连接的去向。",
+                        "Once the tunnel starts this shows where each connection went.",
+                    ))
+                    .text_xs()
+                    .text_color(move || theme().muted_foreground),
+                )
+                .into_element();
+        }
+        let peak = trend
+            .iter()
+            .map(|bucket| bucket.peak())
+            .max()
+            .unwrap_or(0)
+            .max(1) as f32;
+        view()
+            .size_full()
+            .flex_row()
+            .items_end()
+            .children(
+                trend
+                    .iter()
+                    .map(|bucket| routing_column(bucket, peak))
+                    .collect::<Vec<_>>(),
+            )
+            .into_element()
+    })
+}
+
+/// 一格里的一段柱子。
+fn routing_column(bucket: &TrendBucket, peak: f32) -> AnyElement {
+    let scaled = |count: u64| {
+        let height = count as f32 / peak * CHART_HEIGHT;
+        // 有一条就至少画 1dp，否则低速时段整张图看起来是空的。
+        let floor = if count > 0 { 1.0 } else { 0.0 };
+        px(height.max(floor))
+    };
+    view()
+        .flex_1()
+        .h_full()
+        .flex_col()
+        .justify_end()
+        .child(
+            view()
+                .w_full()
+                .h(scaled(bucket.failed))
+                .bg(danger_color()),
+        )
+        .child(
+            view()
+                .w_full()
+                .h(scaled(bucket.proxy))
+                .bg(proxy_color()),
+        )
+        .child(
+            view()
+                .w_full()
+                .h(scaled(bucket.direct))
+                .bg(direct_color()),
+        )
+        .into_element()
+}
+
+/// 去向图下面那行：三条计数（带百分比）+ 一句「这些数字是什么口径」。
+fn routing_legend(snapshot: Live) -> AnyElement {
+    let runtime = &snapshot.split;
+    let routed = runtime.direct + runtime.proxy;
+    // 百分比只算「真的走了哪条路」的两条，失败不进分母：分母里混进一批既没
+    // 直连也没代理成功的连接，两段加起来不到 100%，看着像算错了。
+    let pct = |value: u64| -> String {
+        if routed == 0 {
+            String::new()
+        } else {
+            format!("{}%", (value as f64 / routed as f64 * 100.0).round() as u64)
+        }
+    };
+    let enabled = state::config()
+        .map(|config| config.split.enabled)
+        .unwrap_or(false);
+    let caption = if !enabled {
+        t(
+            "「国内流量直连」已关闭：所有连接照常走上游代理，这里不会有直连曲线。",
+            "“Route China traffic directly” is off: everything goes through the proxy, so there is no direct line here.",
+        )
+        .to_string()
+    } else if runtime.sessions == 0 {
+        t(
+            "还没有连接经过分流器。没有流量时它什么也不做，这属于正常。",
+            "No connection has reached the splitter yet. That is normal while idle.",
+        )
+        .to_string()
+    } else {
+        tr_format!(
+            "折线是最近 2 分钟、每 2 秒一格；数字是本次运行累计（共 {} 条连接）。",
+            "The chart covers the last 2 minutes in 2-second steps; the numbers are this run's totals ({} connections).",
+            runtime.sessions
+        )
+    };
+
+    view()
+        .flex_col()
+        .gap_2()
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .gap_4()
+                .child(count_legend(
+                    direct_color(),
+                    t("直连", "Direct"),
+                    count_text(runtime.direct, pct(runtime.direct)),
+                ))
+                .child(count_legend(
+                    proxy_color(),
+                    t("走代理", "Proxied"),
+                    count_text(runtime.proxy, pct(runtime.proxy)),
+                ))
+                .child(count_legend(
+                    danger_color(),
+                    t("失败", "Failed"),
+                    count_text(runtime.failed, String::new()),
+                )),
+        )
+        .child(
+            text(caption)
+                .text_xs()
+                .text_color(move || theme().muted_foreground),
+        )
+        .into_element()
+}
+
+/// 「12 条（34%）」这种人读的写法。
+fn count_text(value: u64, percent: String) -> String {
+    if percent.is_empty() {
+        format!("{value}")
+    } else {
+        format!("{value}（{percent}）")
+    }
+}
+
+/// 图例一项：色块 + 名字 + 数字。
+fn count_legend(accent: AdaptiveColor, label: &'static str, value: String) -> View {
+    view()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .child(view().w(px(8.0)).h(px(8.0)).rounded_full().bg(accent))
+        .child(
+            text(label)
+                .text_xs()
+                .text_color(move || theme().muted_foreground),
+        )
+        .child(
+            text(value)
+                .text_xs()
+                .font_weight(FontWeight::MEDIUM)
+                .tabular_nums()
+                .text_color(accent),
+        )
+}
+
+/// 当前配置：这一套叫什么、连哪儿，以及换一套。
+///
+/// 换配置放在仪表盘而不是只放在「代理配置」页：启动隧道用的就是这一套，
+/// 而「换一套再启动」是每天要做的动作，不该先去另一页翻列表。
+fn profile_card(ui: Ui, page: Signal<Page>) -> impl IntoElement {
+    card_shell()
+        .child(card_head(
+            t("当前配置", "Current profile"),
+            Some(
+                t(
+                    "隧道用这一套启动，切换后下次启动生效。",
+                    "The tunnel starts with this profile; switching applies on the next start.",
+                )
+                .to_string(),
+            ),
+            view(),
+        ))
+        .child(dynamic(move || profile_body(ui, page)))
+}
+
+/// 当前配置卡的内容：名字 + 上游摘要 + 换配置 + 两个去处。
+fn profile_body(ui: Ui, page: Signal<Page>) -> AnyElement {
+    let Some(config) = state::config() else {
+        return view().into_element();
+    };
+    let Some(profile) = config.profiles.get(config.active) else {
+        return view().into_element();
+    };
+    let empty_proxy = profile.proxy_url.trim().is_empty();
+
+    let switcher = if config.profiles.len() > 1 {
+        Some(field(
+            t("换一套", "Switch"),
+            None,
+            chips(
+                config
+                    .profiles
+                    .iter()
+                    .enumerate()
+                    .map(|(index, item)| {
+                        let chosen = index == config.active;
+                        // chip 的 label 是 `&'static str`，配置名却是运行时读的，
+                        // 所以这里按序号给一份固定文案；真名在上面那行标题里
+                        // （那里能截断，也不受 `'static` 限制）。
+                        let _ = &item.name;
+                        chip(profile_slot_label(index), chosen, move || {
+                            state::select_profile(index);
+                            ui.rebuild.set(ui.rebuild.get() + 1);
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+            ),
+        ))
+    } else {
+        None
+    };
+
+    let mut body = view()
+        .flex_col()
+        .gap_3()
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .gap_3()
+                .child(
+                    text(profile.name.clone())
+                        .text_base()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(move || theme().card_foreground),
+                )
+                .child(
+                    text(profile.summary())
+                        .text_xs()
+                        .truncate()
+                        .text_color(move || theme().secondary_foreground),
+                )
+                .child(view().flex_1())
+                .child(widgets::ghost_button(t("编辑", "Edit"), move || {
+                    page.set(Page::Profiles);
+                })),
+        );
+    if let Some(switcher) = switcher {
+        body = body.child(switcher);
+    }
+    if empty_proxy {
+        body = body.child(
+            text(t(
+                "这套配置还没填代理地址，启动会立刻失败——点「编辑」补上。",
+                "This profile has no proxy address yet, so starting will fail; use “Edit” to fill it in.",
+            ))
+            .text_xs()
+            .text_color(warn_color()),
+        );
+    }
+    body.into_element()
+}
+
+/// 配置切换 chip 的固定文案（chip 只收 `&'static str`）。
+fn profile_slot_label(index: usize) -> &'static str {
+    match index {
+        0 => t("配置 1", "Profile 1"),
+        1 => t("配置 2", "Profile 2"),
+        2 => t("配置 3", "Profile 3"),
+        3 => t("配置 4", "Profile 4"),
+        4 => t("配置 5", "Profile 5"),
+        5 => t("配置 6", "Profile 6"),
+        6 => t("配置 7", "Profile 7"),
+        7 => t("配置 8", "Profile 8"),
+        _ => "…",
+    }
+}
+
+/// 最近日志：仪表盘上扫一眼「刚才发生了什么」，完整列表在程序页。
+fn log_preview_card(live: Signal<Live>, page: Signal<Page>) -> impl IntoElement {
+    card_shell()
+        .child(card_head(
+            t("最近日志", "Recent log"),
+            Some(
+                t(
+                    "最后 5 行；完整的日志和过滤在「程序与日志」页。",
+                    "The last 5 lines; the full list and filters are on the Program page.",
+                )
+                .to_string(),
+            ),
+            view(),
+        ))
+        .child(dynamic(move || log_preview_body(live)))
+        .child(action_row(vec![widgets::ghost_button(
+            t("查看全部", "See all"),
+            move || page.set(Page::Program),
+        )]))
+}
+
+/// 最后 5 行日志（新 → 旧倒过来，读起来还是时间正序）。
+fn log_preview_body(live: Signal<Live>) -> AnyElement {
+    let snapshot = live.get();
+    if snapshot.logs.is_empty() {
+        return view()
+            .child(
+                text(t(
+                    "还没有日志。启动隧道后这里会显示最近的几行。",
+                    "No log yet. The latest lines show up here once the tunnel starts.",
+                ))
+                .text_xs()
+                .text_color(move || theme().muted_foreground),
+            )
+            .into_element();
+    }
+    let start = snapshot.logs.len().saturating_sub(5);
+    let rows = snapshot.logs[start..]
+        .iter()
+        .map(|line| {
+            view()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .py_1()
+                .child(
+                    text(kind_tag(line.kind))
+                        .w(px(46.0))
+                        .text_xs()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(kind_color(Some(line.kind))),
+                )
+                .child(
+                    text(line.text.clone())
+                        .flex_1()
+                        .truncate()
+                        .text_xs()
+                        .tabular_nums()
+                        .text_color(move || theme().secondary_foreground),
+                )
+                .into_element()
+        })
+        .collect::<Vec<_>>();
+    view().flex_col().children(rows).into_element()
+}
+
 /// 程序与日志页：上面管内核，下面看日志。
-fn program(live: Signal<Live>, log_view: LogView) -> impl IntoElement {
+fn program(live: Signal<Live>, log_view: LogView, ui: Ui) -> impl IntoElement {
     view()
         .flex_1()
         .flex_col()
         .gap_3()
         .child(core_card(live))
+        .child(window_card(ui))
+        .child(about_card())
         .child(log_card(live, log_view))
+}
+
+/// 窗口与界面：关窗口怎么办、界面用哪种语言、以及「藏进托盘」这个动作。
+///
+/// 三样都是「设一次就不动」的选项，所以做成一行一项的 chips，不做下拉框：
+/// 三个选项全都摆在眼前，选中的那格是实心的，扫一眼就知道当前是什么。
+fn window_card(ui: Ui) -> impl IntoElement {
+    let close = state::close_action();
+    let language = state::config()
+        .map(|config| config.language)
+        .unwrap_or_default();
+
+    card_shell()
+        .child(card_head(
+            t("窗口与界面", "Window and appearance"),
+            Some(
+                t(
+                    "点关闭按钮时怎么处理，以及界面用哪种语言",
+                    "What the close button does, and which language the interface uses",
+                )
+                .to_string(),
+            ),
+            view(),
+        ))
+        .child(field(
+            t("关闭按钮", "Close button"),
+            Some(
+                t(
+                    "tun2proxy 是常驻服务，误关窗口会把正在跑的隧道一起带走",
+                    "tun2proxy is a background service; closing the window would take the tunnel with it",
+                )
+                .to_string(),
+            ),
+            chips(CloseAction::ALL.into_iter().map(|item| {
+                chip(item.label(), item == close, move || {
+                    state::remember_close_action(item);
+                    ui.rebuild.set(ui.rebuild.get() + 1);
+                })
+            })),
+        ))
+        .child(field(
+            t("界面语言", "Language"),
+            Some(
+                t(
+                    "「跟随系统」按系统语言决定；改完立刻生效",
+                    "“System” follows the OS language; changes apply immediately",
+                )
+                .to_string(),
+            ),
+            chips(LangSetting::ALL.into_iter().map(|item| {
+                chip(item.label(), item == language, move || {
+                    state::remember_language(item);
+                    ui.rebuild.set(ui.rebuild.get() + 1);
+                })
+            })),
+        ))
+        .child(field(
+            t("托盘", "Tray"),
+            Some(
+                t(
+                    "隧道在后台跑着的时候，可以把窗口收进托盘，图标点一下就能叫回来",
+                    "While the tunnel runs in the background you can hide the window to the tray and click the icon to bring it back",
+                )
+                .to_string(),
+            ),
+            // 走 `action_row`：按钮放进裸 `view()` 里点不动（实测毫无反应），
+            // 这层右对齐的容器是各页按钮统一用的、验证过能收点击的那一种。
+            action_row(vec![widgets::ghost_button(
+                t("最小化到托盘", "Hide to tray"),
+                || {
+                    log::info!("窗口收进托盘");
+                    current_window().hide();
+                },
+            )]),
+        ))
+}
+
+/// 关于：程序叫什么、哪一版、跑在哪。
+fn about_card() -> impl IntoElement {
+    card_shell()
+        .child(card_head(
+            t("关于", "About"),
+            Some(t("这个前端本身的信息", "About this front end").to_string()),
+            view(),
+        ))
+        .child(field(
+            t("程序", "Program"),
+            Some(
+                t(
+                    "官方 tun2proxy 二进制的图形前端，Rust + nsh 原生界面",
+                    "A native front end for the official tun2proxy binary, built with Rust + nsh",
+                )
+                .to_string(),
+            ),
+            view().child(
+                text(tr_format!("Tun2Proxy GUI {}", "Tun2Proxy GUI {}", APP_VERSION))
+                    .text_sm()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(move || theme().foreground),
+            ),
+        ))
+        .child(field(
+            t("权限", "Permissions"),
+            Some(
+                t(
+                    "Windows 需管理员权限，macOS 需 root，Linux 可免 root",
+                    "Administrator on Windows, root on macOS, root-free on Linux",
+                )
+                .to_string(),
+            ),
+            view(),
+        ))
+        .child(
+            view()
+                .flex_col()
+                .gap_2()
+                .pt_1()
+                .child(path_row_full(t("配置", "Config"), paths::config_path()))
+                .child(path_row_full(t("数据", "Data"), paths::app_dir())),
+        )
 }
 
 /// 内核卡：装没装、哪一版、要不要更新，以及那三个按钮。
