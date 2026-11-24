@@ -136,7 +136,7 @@ fn number(raw: &str, label: &'static str, low: u64, high: u64) -> Result<u64, St
 pub fn page(ui: ProfileUi, live: Signal<Live>) -> impl IntoElement {
     scroll().flex_1().child(dynamic(move || {
         match ui.editing.get() {
-            Some(index) => editor(ui, index).into_element(),
+            Some(index) => editor(ui, index, live).into_element(),
             None => list(ui, live).into_element(),
         }
     }))
@@ -333,7 +333,7 @@ fn edit(ui: ProfileUi, change: impl FnOnce(&mut ProfileDraft)) {
     ui.error.set(None);
 }
 
-fn editor(ui: ProfileUi, index: usize) -> View {
+fn editor(ui: ProfileUi, index: usize, live: Signal<Live>) -> View {
     let Some(draft) = ui.draft.get() else {
         return card_shell();
     };
@@ -395,6 +395,24 @@ fn editor(ui: ProfileUi, index: usize) -> View {
                 move |text| edit(ui, |draft| draft.proxy_url = text),
             ),
         ))
+        // 填完地址就地测一次：这里才是「刚输完」的位置，回列表再测要多跳一步。
+        // 测的是**草稿里**的地址，改了地址结论自己就消失（结论按地址存）。
+        .child(action_row(vec![ghost_button(
+            t("检测这个地址", "Test this address"),
+            move || {
+                if let Some(draft) = ui.draft.get() {
+                    state::check_proxy(draft.proxy_url.trim());
+                }
+            },
+        )]))
+        .child(dynamic(move || {
+            let url = ui
+                .draft
+                .get()
+                .map(|draft| draft.proxy_url)
+                .unwrap_or_default();
+            probe_note(live, url)
+        }))
         // —— DNS ——
         .child(field(
             t("DNS 模式", "DNS mode"),
