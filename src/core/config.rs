@@ -498,6 +498,64 @@ impl ThemeSetting {
     }
 }
 
+/// 配色方案：同一套界面，几族不同的颜色。
+///
+/// 与 [`ThemeSetting`] 正交：那个决定「浅色还是深色」（还要不要跟随系统），
+/// 这个决定「用哪族色」。每套配色在 `themes/<id>.json` 里都同时写了 light /
+/// dark 两份值，所以任意组合都成立，界面代码一行不用改。
+///
+/// 和 [`ThemeSetting`] 一样放在 `core`：它只是配置里的一个名字，与 UI 框架
+/// 无关；真正的色值在 `ui::palette` 里解析。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Palette {
+    /// 赛博青：深空蓝 + 青色直连 / 紫色代理（第一版控台的配色）。
+    #[default]
+    Cyber,
+    /// 矩阵绿：近黑 + 荧光绿，像终端里跑出来的。
+    Matrix,
+    /// 熔岩橙：炭黑 + 橙红。
+    Ember,
+    /// 极光紫：深紫 + 紫粉。
+    Aurora,
+}
+
+impl Palette {
+    pub const ALL: [Palette; 4] = [Self::Cyber, Self::Matrix, Self::Ember, Self::Aurora];
+
+    /// 配置文件里存的名字，同时也是 `themes/<id>.json` 的文件名。
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Cyber => "cyber",
+            Self::Matrix => "matrix",
+            Self::Ember => "ember",
+            Self::Aurora => "aurora",
+        }
+    }
+
+    /// 从配置（或环境变量）里的名字找回配色。
+    ///
+    /// 认不出来就回到默认那套：手工改错的配置文件不该让程序起不来。
+    pub fn from_id(id: &str) -> Self {
+        match id.trim().to_ascii_lowercase().as_str() {
+            "matrix" => Self::Matrix,
+            "ember" => Self::Ember,
+            "aurora" => Self::Aurora,
+            _ => Self::Cyber,
+        }
+    }
+
+    /// 界面上的名字。
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Cyber => t("赛博青", "Cyber"),
+            Self::Matrix => t("矩阵绿", "Matrix"),
+            Self::Ember => t("熔岩橙", "Ember"),
+            Self::Aurora => t("极光紫", "Aurora"),
+        }
+    }
+}
+
 /// 点标题栏的叉时怎么办。
 ///
 /// 三态而不是「问不问」一个布尔：关窗弹窗里勾了「记住这个选择」之后，程序
@@ -541,6 +599,8 @@ pub struct Config {
     pub language: LangSetting,
     /// 界面主题：跟随系统 / 浅色 / 深色。
     pub theme: ThemeSetting,
+    /// 配色方案：赛博青 / 矩阵绿 / 熔岩橙 / 极光紫。
+    pub palette: Palette,
     /// 点标题栏的叉时怎么办。
     ///
     /// 默认「每次询问」：tun2proxy 是常驻服务，误关窗口会把正在跑的隧道一起
@@ -611,6 +671,7 @@ impl Default for Config {
             release_repo: "tun2proxy/tun2proxy".to_string(),
             language: LangSetting::Auto,
             theme: ThemeSetting::Auto,
+            palette: Palette::default(),
             close_action: CloseAction::Ask,
             split: SplitSettings::default(),
             config_version: CONFIG_VERSION,
