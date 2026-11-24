@@ -295,8 +295,6 @@ fn top_bar(
                 .items_center()
                 .justify_center()
                 .bg(move || theme().muted)
-                .border_1()
-                .border_color(move || theme().border)
                 .child(
                     text(move || format!("v{APP_VERSION}"))
                         .text_xs()
@@ -332,9 +330,11 @@ fn status_pill(live: Signal<Live>) -> impl IntoElement {
         let active = snapshot.is_active();
         // 未启动时让光点呼吸：nsh 的 `animate-pulse`，不用自己起定时器；
         // 启动 / 停止这两个过渡态改成快一点的双闪，和呼吸区分开。
+        // 尺寸都取 4 的倍数：125% 缩放下 6dp 是 7.5 个物理像素，圆点边缘
+        // 会被抗锯齿拉成毛边；8dp 正好落在 10 个物理像素上。
         let light = view()
-            .w(px(6.0))
-            .h(px(6.0))
+            .w(px(8.0))
+            .h(px(8.0))
             .rounded_full()
             .bg(if active { ok_color() } else { warn_color() });
         let light = if snapshot.is_busy() {
@@ -353,8 +353,6 @@ fn status_pill(live: Signal<Live>) -> impl IntoElement {
             .pr_3()
             .rounded_full()
             .bg(move || theme().muted)
-            .border_1()
-            .border_color(move || theme().border)
             .child(light)
             .child(
                 text(snapshot.status_label())
@@ -378,8 +376,6 @@ fn appearance_segments(theme_setting: Signal<ThemeSetting>) -> impl IntoElement 
         .p_1()
         .rounded_full()
         .bg(move || theme().muted)
-        .border_1()
-        .border_color(move || theme().border)
         .child(segment(ThemeSetting::Auto, theme_setting))
         .child(segment(ThemeSetting::Light, theme_setting))
         .child(segment(ThemeSetting::Dark, theme_setting))
@@ -453,8 +449,6 @@ fn palette_picker(palette: Signal<Palette>) -> impl IntoElement {
         .px_2()
         .rounded_full()
         .bg(move || theme().muted)
-        .border_1()
-        .border_color(move || theme().border)
         .child(
             text(move || palette.get().label())
                 .text_xs()
@@ -481,7 +475,7 @@ fn swatch(item: Palette, palette: Signal<Palette>) -> impl IntoElement {
             .h(px(16.0))
             .rounded_sm()
             .bg(palette::swatch(item))
-            .border_2()
+            .border_1()
             .border_color(move || {
                 if palette.get() == item {
                     theme().foreground
@@ -540,7 +534,7 @@ fn rail(page: Signal<Page>, live: Signal<Live>) -> impl IntoElement {
 fn nav_item(page_item: Page, page: Signal<Page>) -> impl IntoElement {
     dynamic(move || {
         let chosen = page.get() == page_item;
-        let bar = view().w(px(3.0)).h(px(16.0)).rounded_full();
+        let bar = view().w(px(4.0)).h(px(16.0)).rounded_full();
         let bar = if chosen {
             bar.bg(theme().primary)
         } else {
@@ -596,8 +590,6 @@ fn rail_footer(live: Signal<Live>) -> impl IntoElement {
             .p_3()
             .rounded_lg()
             .bg(move || theme().muted)
-            .border_1()
-            .border_color(move || theme().border)
             .child(
                 text(t("隧道内核", "Tunnel core"))
                     .text_xs()
@@ -772,7 +764,7 @@ fn banner(
         .bg(move || theme().card)
         .border_1()
         .border_color(move || theme().border)
-        .child(view().w(px(3.0)).h(px(28.0)).rounded_full().bg(accent))
+        .child(view().w(px(4.0)).h(px(28.0)).rounded_full().bg(accent))
         .child(
             view()
                 .flex_1()
@@ -826,9 +818,11 @@ fn hero(live: Signal<Live>, error: Signal<Option<String>>) -> impl IntoElement {
             .bg(move || theme().card)
             .child(
                 // 状态色带：直连（青）→ 代理（紫），整个界面的「信号灯」。
+                // 高度 4dp：3dp 在 125% 缩放下是 3.75 个物理像素，渐变边缘
+                // 会压在半透明像素上，看着像脏了一条。
                 view()
                     .w_full()
-                    .h(px(3.0))
+                    .h(px(4.0))
                     .bg_linear_to_r()
                     .gradient_from(theme().chart_1)
                     .gradient_to(theme().chart_2),
@@ -1017,8 +1011,6 @@ fn traffic_card(live: Signal<Live>) -> impl IntoElement {
                     .rounded_lg()
                     .overflow_hidden()
                     .bg(move || theme().muted)
-                    .border_1()
-                    .border_color(move || theme().border)
                     .child(traffic_plot(live)),
             )
             .child(
@@ -1069,7 +1061,7 @@ fn legend(
         .flex_row()
         .items_center()
         .gap_2()
-        .child(view().w(px(8.0)).h(px(8.0)).rounded_sm().bg(accent))
+        .child(view().w(px(8.0)).h(px(8.0)).rounded_full().bg(accent))
         .child(
             text(label)
                 .text_xs()
@@ -1241,8 +1233,6 @@ fn log_pane(live: Signal<Live>) -> impl IntoElement {
         .rounded_lg()
         .overflow_hidden()
         .bg(move || theme().background)
-        .border_1()
-        .border_color(move || theme().border)
         .child(
             virtual_list(
                 move || live.with(|snapshot| snapshot.logs.len()),
@@ -1337,30 +1327,31 @@ fn kind_color(kind: Option<LogKind>) -> AdaptiveColor {
 }
 
 /// 还没搬到 nsh 的页面：明确说「这一版还没有」，而不是给一片空白。
-fn pending_page(page: Page) -> impl IntoElement {
-    card(
-        page.label(),
-        page.subtitle(),
-        view()
-            .flex_col()
-            .gap_2()
-            .child(
-                text(t(
-                    "这一版的界面还在搬迁中：代理配置、分流规则、网络参数三页还没有搬过来。",
-                    "This page is still being ported: profiles, split rules and network settings are not here yet.",
-                ))
-                .text_xs()
-                .text_color(move || theme().secondary_foreground),
-            )
-            .child(
-                text(t(
-                    "仪表盘与「程序与日志」已经可用。",
-                    "The dashboard and “Program” pages work already.",
-                ))
-                .text_xs()
-                .text_color(move || theme().muted_foreground),
-            ),
-    )
+fn pending_page(_page: Page) -> impl IntoElement {
+    // 不套 `card()`：那一页还没有内容，一张带边框的大卡片只会是一片空白，
+    // 标题还会和页头重复一次。给一块安静的无边框提示就够。
+    view()
+        .flex_col()
+        .gap_2()
+        .p_4()
+        .rounded_lg()
+        .bg(move || theme().muted)
+        .child(
+            text(t(
+                "这一版的界面还在搬迁中：代理配置、分流规则、网络参数三页还没有搬过来。",
+                "This page is still being ported: profiles, split rules and network settings are not here yet.",
+            ))
+            .text_xs()
+            .text_color(move || theme().secondary_foreground),
+        )
+        .child(
+            text(t(
+                "仪表盘与「程序与日志」已经可用。",
+                "The dashboard and “Program” pages work already.",
+            ))
+            .text_xs()
+            .text_color(move || theme().muted_foreground),
+        )
 }
 
 /// 启停蒙版：整窗盖住，中间 spinner + 「在等哪一步」。
