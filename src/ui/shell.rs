@@ -294,7 +294,7 @@ fn top_bar(
                 .rounded_full()
                 .items_center()
                 .justify_center()
-                .bg(move || theme().muted)
+                .bg(move || theme().accent)
                 .child(
                     text(move || format!("v{APP_VERSION}"))
                         .text_xs()
@@ -352,7 +352,10 @@ fn status_pill(live: Signal<Live>) -> impl IntoElement {
             .pl_2()
             .pr_3()
             .rounded_full()
-            .bg(move || theme().muted)
+            // 胶囊底用 `accent` 而不是 `muted`：四套主题里浅色的 muted 和顶栏
+            // 的 sidebar 只差一两个色阶，没描边之后整块看不出来；accent 比
+            // sidebar 深一档，深色下又比 muted 亮一档，两种明暗都站得住。
+            .bg(move || theme().accent)
             .child(light)
             .child(
                 text(snapshot.status_label())
@@ -375,7 +378,7 @@ fn appearance_segments(theme_setting: Signal<ThemeSetting>) -> impl IntoElement 
         .gap_1()
         .p_1()
         .rounded_full()
-        .bg(move || theme().muted)
+        .bg(move || theme().accent)
         .child(segment(ThemeSetting::Auto, theme_setting))
         .child(segment(ThemeSetting::Light, theme_setting))
         .child(segment(ThemeSetting::Dark, theme_setting))
@@ -396,7 +399,10 @@ fn segment(setting: ThemeSetting, theme_setting: Signal<ThemeSetting>) -> impl I
             .justify_center()
             .cursor_pointer()
             // 没选中的格子悬停时先浮出一层底色，按下去再缩一点点。
-            .when(!chosen, |this| this.hover(|state| state.bg(theme().accent)))
+            // 悬停色用 `secondary`：胶囊底已经是 `accent`，再用 accent 就看不
+            // 出变化；secondary 在各套主题里都比 accent 浅一点（深色下是浅一
+            // 档的灰），两种明暗都看得出鼠标在哪。
+            .when(!chosen, |this| this.hover(|state| state.bg(theme().secondary)))
             .transition_colors()
             .transition_transform()
             .duration(140.0)
@@ -448,7 +454,7 @@ fn palette_picker(palette: Signal<Palette>) -> impl IntoElement {
         .gap_2()
         .px_2()
         .rounded_full()
-        .bg(move || theme().muted)
+        .bg(move || theme().accent)
         .child(
             text(move || palette.get().label())
                 .text_xs()
