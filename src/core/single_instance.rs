@@ -4,7 +4,7 @@
 //!
 //! 最早那版就是那样写的：枚举窗口 → `ShowWindow` + `SetForegroundWindow`。
 //! 同权限下它确实让窗口「可见」了（`IsWindowVisible` 变成真），但用户看到的
-//! 是**一帧白窗口**——GPUI 的渲染由它自己的循环驱动，被别的进程从外面
+//! 是**一帧白窗口**——界面由进程自己的渲染循环驱动，被别的进程从外面
 //! `ShowWindow` 之后没有人让它重绘。而对方提权时（正常启动就是这样）连这
 //! 一点都做不到，UIPI 把窗口消息挡在门外，表现就是「双击了没反应」。
 //!
@@ -12,9 +12,9 @@
 //!
 //! * [`create_show_event`] —— 第一个实例开一个命名事件；
 //! * [`request_show`] —— 第二个实例 `SetEvent` 一下就走，完全不碰对方的窗口；
-//! * [`take_show_request`] —— 第一个实例的托盘线程每 200ms 看一眼这个事件，
-//!   有请求就走它自己的「显示窗口」那条路（和双击托盘图标是同一段代码），
-//!   GPUI 照常重绘、照常抢焦点。
+//! * [`take_show_request`] —— 第一个实例的界面线程每 400ms 看一眼这个事件
+//!   （`ui::shell` 里的 `set_interval`），有请求就调 nsh 的
+//!   `WindowRef::show()/focus()`，走的是和托盘点击完全一样的一条路。
 //!
 //! 为什么宁可绕这一圈也不用 `PostMessage`：命名内核对象只受 DACL 限制，同一
 //! 个用户的中完整性进程能拿到事件的 `EVENT_MODIFY_STATE`；而窗口消息那边，
@@ -29,9 +29,8 @@
 //! [`request_show`]——那个「已经有实例」正是还没退干净的旧进程，请它反而会
 //! 把新进程自己关掉。
 //!
-//! 非 Windows 平台暂时没有这套东西（托盘、窗口显隐也一样）：[`request_show`]
-//! 与 [`take_show_request`] 恒为 `false`、[`claim`] 恒为 `true`，也就是
-//! 「允许开多个」。
+//! 非 Windows 平台暂时没有这套东西：[`request_show`] 与 [`take_show_request`]
+//! 恒为 `false`、[`claim`] 恒为 `true`，也就是「允许开多个」。
 
 /// 「我是接手的那一个」标记。
 ///
@@ -42,14 +41,10 @@
 pub const TAKEOVER_ARG: &str = "--takeover";
 
 #[cfg(windows)]
-pub use imp::{
-    claim, create_show_event, focus_window, release, request_show, take_show_request,
-};
+pub use imp::{claim, create_show_event, release, request_show, take_show_request};
 
 #[cfg(not(windows))]
-pub use other::{
-    claim, create_show_event, focus_window, release, request_show, take_show_request,
-};
+pub use other::{claim, create_show_event, release, request_show, take_show_request};
 
 #[cfg(windows)]
 mod imp {
@@ -58,18 +53,11 @@ mod imp {
     use std::sync::atomic::{AtomicIsize, Ordering};
 
     use windows_sys::Win32::Foundation::{
-        CloseHandle, GetLastError, BOOL, ERROR_ALREADY_EXISTS, HANDLE, HWND, LPARAM, TRUE,
-        WAIT_OBJECT_0,
+        CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, WAIT_OBJECT_0,
     };
     use windows_sys::Win32::System::Threading::{
-        CreateEventW, CreateMutexW, GetCurrentProcessId, OpenEventW, OpenProcess,
-        QueryFullProcessImageNameW, ResetEvent, SetEvent, WaitForSingleObject,
-        EVENT_MODIFY_STATE, PROCESS_QUERY_LIMITED_INFORMATION,
-    };
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        BringWindowToTop, EnumWindows, GetWindowTextLengthW, GetWindowTextW,
-        GetWindowThreadProcessId, IsIconic, IsWindowVisible, SetForegroundWindow, ShowWindow,
-        SwitchToThisWindow, SW_RESTORE, SW_SHOW,
+        CreateEventW, CreateMutexW, OpenEventW, ResetEvent, SetEvent, WaitForSingleObject,
+        EVENT_MODIFY_STATE,
     };
 
     use super::TAKEOVER_ARG;
@@ -179,9 +167,9 @@ mod imp {
         ok
     }
 
-    /// 托盘线程问一句：「有人请我们显示窗口吗？」有就顺手清掉。
+    /// 界面线程问一句：「有人请我们显示窗口吗？」有就顺手清掉。
     ///
-    /// 用 0 超时：这只是消息循环里的一瞥，绝不能卡住托盘线程。
+    /// 用 0 超时：这只是界面线程每 400ms 的一瞥，绝不能卡住它。
     pub fn take_show_request() -> bool {
         let raw = SHOW_EVENT.load(Ordering::SeqCst);
         if raw == 0 {
@@ -195,154 +183,6 @@ mod imp {
         // SAFETY: 同上。
         unsafe { ResetEvent(handle) };
         true
-    }
-
-    /// 最后兜底：直接显示并前置**别的进程**的主窗口。
-    ///
-    /// 只有在「事件信号打不出去」时才走这里（典型是托盘没装上、没人看事件），
-    /// 而这条路的显示是不可靠的：对方的 GPUI 不会因为外部 `ShowWindow` 重绘，
-    /// 很可能只露出一帧白窗口。有事件就该用事件。
-    pub fn focus_window(title: &str) -> bool {
-        // 接手的那一个（提权重启出来的）不要动旧进程的窗口。
-        if std::env::args().any(|arg| arg == TAKEOVER_ARG) {
-            return false;
-        }
-        let Some(hwnd) = find_other_main(title) else {
-            return false;
-        };
-        // SAFETY: `hwnd` 来自 `EnumWindows` 的枚举结果，调用期间有效；这些
-        // 都是对它的常规窗口操作（最小化的先 RESTORE，藏进托盘的 SHOW 就够）。
-        unsafe {
-            let command = if IsIconic(hwnd) != 0 {
-                SW_RESTORE
-            } else {
-                SW_SHOW
-            };
-            ShowWindow(hwnd, command);
-            BringWindowToTop(hwnd);
-            // 前台锁经常让 `SetForegroundWindow` 直接失败（本进程没有前台
-            // 权限时它只闪一下任务栏）。`SwitchToThisWindow` 是系统给「用户
-            // 明确要求切过去」留的后门，两条一起用才不会出现「窗口显示了但
-            // 还在别的窗口后面」。
-            if SetForegroundWindow(hwnd) == 0 {
-                SwitchToThisWindow(hwnd, TRUE);
-            }
-        }
-        true
-    }
-
-    /// `EnumWindows` 回调用的上下文。
-    struct Probe {
-        /// 本进程 pid：自己的窗口不算「已经有一个实例」。
-        me: u32,
-        /// 本进程 exe 文件名（小写），用来排除「标题碰巧一样」的别的程序。
-        exe: String,
-        /// 主窗口标题。
-        title: String,
-        found: Option<HWND>,
-    }
-
-    fn find_other_main(title: &str) -> Option<HWND> {
-        let exe = std::env::current_exe()
-            .ok()
-            .and_then(|path| {
-                path.file_name()
-                    .map(|name| name.to_string_lossy().to_lowercase())
-            })
-            .unwrap_or_default();
-        let mut probe = Probe {
-            // SAFETY: 无参数，总是成功。
-            me: unsafe { GetCurrentProcessId() },
-            exe,
-            title: title.to_string(),
-            found: None,
-        };
-        // SAFETY: 回调只在本调用期间被 user32 调用，`context` 指向本栈上的
-        // `probe`，回调里只做只读查询与写入该指针。
-        unsafe {
-            EnumWindows(Some(collect), &mut probe as *mut Probe as LPARAM);
-        }
-        probe.found
-    }
-
-    /// 挑别的进程里那个**主窗口**，可见的优先。
-    ///
-    /// 判据是「标题等于主窗口标题」，不是「同一个 exe」：托盘那个自建窗口
-    /// （标题就是它的类名 `Tun2ProxyTrayWindow`）和 GPUI 的输入法辅助窗口
-    /// （`MSCTFIME UI` / `Default IME`）都挂在同一个进程里、也都有标题，按 exe
-    /// 名字认会认出一堆「主窗口」，最后很可能把托盘那个藏起来的空窗口当成
-    /// 目标——`ShowWindow` 它当然什么也不会发生。
-    unsafe extern "system" fn collect(hwnd: HWND, context: LPARAM) -> BOOL {
-        // SAFETY: `context` 是 `find_other_main` 里 `&mut probe` 的地址。
-        let probe = unsafe { &mut *(context as *mut Probe) };
-        let mut pid = 0u32;
-        // SAFETY: `hwnd` 由 user32 传入，`pid` 是本栈上的有效地址。
-        unsafe {
-            GetWindowThreadProcessId(hwnd, &mut pid);
-        }
-        if pid == probe.me {
-            return TRUE;
-        }
-        // SAFETY: 都是对系统句柄的只读查询。
-        let len = unsafe { GetWindowTextLengthW(hwnd) };
-        if len == 0 || !title_is(hwnd, len, &probe.title) {
-            return TRUE;
-        }
-        // exe 名字读得出来就必须一致（同名的另一个程序不该被我们接管）；
-        // 读不出来（对方提权了、`OpenProcess` 被拒）就只按标题认。
-        if same_exe(pid, &probe.exe) == Some(false) {
-            return TRUE;
-        }
-        // 已经拿到一个可见窗口就不再改（枚举顺序不保证，但可见性比顺序重要）。
-        if let Some(existing) = probe.found {
-            // SAFETY: `existing` 是上一次枚举拿到的有效句柄。
-            if unsafe { IsWindowVisible(existing) } != 0 {
-                return TRUE;
-            }
-        }
-        probe.found = Some(hwnd);
-        TRUE
-    }
-
-    /// 目标进程的 exe 文件名是不是 `want`（都是小写）。
-    ///
-    /// `None` 表示**读不出来**（对方提权、句柄被拒），这时不能据此排除它。
-    ///
-    /// `OpenProcess` 用 `PROCESS_QUERY_LIMITED_INFORMATION`：它在中完整性级别
-    /// 也能问高完整性级别的进程，正好是「普通启动的第二个实例去认提权实例」
-    /// 这个场景。
-    fn same_exe(pid: u32, want: &str) -> Option<bool> {
-        if want.is_empty() {
-            return None;
-        }
-        // SAFETY: `pid` 来自 `GetWindowThreadProcessId`，句柄用完即关。
-        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
-        if handle.is_null() {
-            return None;
-        }
-        let mut buffer = [0u16; 1024];
-        let mut size = buffer.len() as u32;
-        // SAFETY: 缓冲区是本栈上的数组，`size` 是它的容量。
-        let ok = unsafe { QueryFullProcessImageNameW(handle, 0, buffer.as_mut_ptr(), &mut size) };
-        // SAFETY: 句柄只在这里用一次，随后关闭。
-        unsafe { CloseHandle(handle) };
-        if ok == 0 {
-            return None;
-        }
-        let path = String::from_utf16_lossy(&buffer[..size as usize]);
-        let name = path.rsplit(['\\', '/']).next().unwrap_or(&path).to_lowercase();
-        Some(name == want)
-    }
-
-    /// 窗口标题是不是 `want`。
-    fn title_is(hwnd: HWND, len: i32, want: &str) -> bool {
-        let mut buffer = vec![0u16; len as usize + 1];
-        // SAFETY: 缓冲区长度由 `GetWindowTextLengthW` 给出（+1 给结尾的 NUL）。
-        let copied = unsafe { GetWindowTextW(hwnd, buffer.as_mut_ptr(), buffer.len() as i32) };
-        if copied <= 0 {
-            return false;
-        }
-        String::from_utf16_lossy(&buffer[..copied as usize]) == want
     }
 
     fn wide(text: &OsStr) -> Vec<u16> {
@@ -360,10 +200,6 @@ mod other {
     pub fn create_show_event() {}
 
     pub fn take_show_request() -> bool {
-        false
-    }
-
-    pub fn focus_window(_title: &str) -> bool {
         false
     }
 

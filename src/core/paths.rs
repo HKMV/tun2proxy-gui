@@ -64,3 +64,27 @@ pub fn bin_dir() -> PathBuf {
 pub fn logs_dir() -> PathBuf {
     app_dir().join("logs")
 }
+
+/// 只读资源（图标、分流规则）所在目录。
+///
+/// 两个候选，按顺序看：
+///
+/// 1. exe 同级的 `assets/`——发布版就是它（打包时把整个 `assets/` 放在 exe 旁边）；
+/// 2. 源码树里的 `assets/`——`cargo run` 和 `target\debug\*.exe` 走这条。
+///
+/// 都不存在时返回第 1 个。
+pub fn assets_dir() -> PathBuf {
+    let beside_exe = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("assets")));
+    if let Some(dir) = &beside_exe {
+        if dir.is_dir() {
+            return dir.clone();
+        }
+    }
+    let in_tree = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
+    if in_tree.is_dir() {
+        return in_tree;
+    }
+    beside_exe.unwrap_or(in_tree)
+}

@@ -11,7 +11,7 @@
 
 use std::sync::{Mutex, OnceLock};
 
-use crate::core::config::{Palette, ThemeSetting};
+use crate::core::config::{CloseAction, Palette, ThemeSetting};
 use crate::core::{Config, Engine};
 
 static CONFIG: OnceLock<Mutex<Config>> = OnceLock::new();
@@ -64,6 +64,67 @@ pub fn remember_theme(setting: ThemeSetting) {
     if let Err(error) = config.save() {
         log::warn!("保存明暗设置失败：{error}");
     }
+}
+
+/// 启动隧道：先补齐配置、校验，再交给内核去探上游、起子进程。
+///
+/// 返回的错误是**本地校验**的结论（比如还没下载 tun2proxy），可以当场显示；
+/// 「上游不通」这类结论要等后台探测，会由内核写进 `Shared::start_blocked`，
+/// 界面从快照里读。从托盘菜单调到它时没有提示条可用，所以失败也写一行日志。
+pub fn start() -> Result<(), String> {
+    let Some(engine) = ENGINE.get() else {
+        return Err("引擎还没准备好".to_string());
+    };
+    let Some(config) = CONFIG.get() else {
+        return Err("配置还没读进来".to_string());
+    };
+    let mut config = lock(config);
+    // 名字被清空过的话在这里补回来，否则界面上会留着一个没有名字的配置。
+    config.normalize();
+    let profile = config.active_profile().clone();
+    let split = config.split.clone();
+    let result = engine.start_with_precheck(&profile, &split);
+    if result.is_ok() {
+        // 启动成功才落盘：名字是 `normalize()` 补的，用户会以为它本来就在。
+        if let Err(error) = config.save() {
+            log::warn!("保存配置失败：{error}");
+        }
+    }
+    if let Err(error) = &result {
+        engine.log_line(error.clone());
+    }
+    result
+}
+
+/// 停止隧道。
+///
+/// `stop()` 只发中断信号，状态立刻变成「正在停止」；子进程真正退出、虚拟网卡
+/// 回收由内核的监督线程负责，界面靠每秒刷新看到结果。
+pub fn stop() {
+    if let Some(engine) = ENGINE.get() {
+        engine.stop();
+    }
+}
+
+/// 清空界面上的日志（内存里的那份；按天写的文件保留，那是事后要查的证据）。
+pub fn clear_logs() {
+    if let Some(engine) = ENGINE.get() {
+        engine.clear_logs();
+    }
+}
+
+/// 写一行本程序自己的提示（托盘菜单这类没有提示条的地方用）。
+pub fn log_line(line: impl Into<String>) {
+    if let Some(engine) = ENGINE.get() {
+        engine.log_line(line.into());
+    }
+}
+
+/// 用户点关闭按钮时想干什么（配置里的 `close_action`）。
+pub fn close_action() -> CloseAction {
+    config()
+        .map(|config| config.close_action)
+        .unwrap_or(CloseAction::Ask)
 }
 
 /// 取锁；上一次持锁的线程 panic 了也照常用里面的值（配置不该因此失效）。

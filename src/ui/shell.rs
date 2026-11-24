@@ -1,21 +1,35 @@
 //! 整窗骨架：顶部状态栏 + 左侧导航 + 内容区。
 //!
 //! 视觉取向是「隧道控制台」而不是设置向导：深空蓝底、青色主色（直连）配
-//! 紫色（代理）、状态光点、等宽数字。所有颜色都从 `theme.json` 的语义 token
+//! 紫色（代理）、状态光点、等宽数字。所有颜色都从 `themes/*.json` 的语义 token
 //! 取，浅色 / 深色各一套，切换外观时不用改一行代码。
 //!
 //! 组件只跑一次：读信号的地方一律写成闭包（`.bg(move || …)`）或包进
 //! `dynamic(move || …)`，否则切页、状态变化时界面不会跟着变。
+//!
+//! # 这一层和内核的关系
+//!
+//! 界面不自己算任何东西：状态、速率、流量历史、日志全部来自 [`Live`] 快照，
+//! 由一个每秒触发一次的 [`set_interval`] 重读内核；动作（启动 / 停止 / 清空
+//! 日志）全部经 [`state`]，界面从不直接碰 tun2proxy 子进程。
+
+use std::rc::Rc;
+use std::time::Duration;
 
 use nsh_base::theme;
 use nsh_core::desktop::{TitleBarOptions, TitleBarStyle, WindowAttributes};
-use nsh_core::element::desktop::current_window;
+use nsh_core::element::desktop::{
+    MenuItem, TrayClickEvent, current_window, on_quit_request, quit, set_tray, tray,
+};
 use nsh_core::prelude::*;
 
-use crate::core::config::{Palette, ThemeSetting};
 use crate::core::APP_VERSION;
+use crate::core::config::{CloseAction, Palette, ThemeSetting};
 use crate::core::i18n::t;
+use crate::core::logs::LogKind;
 use crate::core::paths;
+use crate::core::single_instance;
+use crate::core::traffic::RouteTraffic;
 
 use super::live::{Live, rate_text};
 use super::page::Page;
@@ -27,6 +41,11 @@ const TOP_BAR_HEIGHT: f32 = 52.0;
 const RAIL_WIDTH: f32 = 196.0;
 /// 导航行高。
 const NAV_ROW_HEIGHT: f32 = 36.0;
+/// 流量图的高度（不含图例与刻度）。
+///
+/// 72dp 是「900×650 的默认窗口里，仪表盘一屏放得下」的结果：状态卡 + 这张图
+/// + 下面两张信息卡加起来刚好不滚。窗口拉小的时候整页可以滚（见 [`dashboard`]）。
+const CHART_HEIGHT: f32 = 72.0;
 
 /// 窗口右上角留给系统最小化 / 最大化 / 关闭三个按钮的宽度。
 ///
@@ -39,6 +58,9 @@ const CAPTION_BUTTONS_WIDTH: f32 = 138.0;
 pub fn shell() -> impl IntoElement {
     let page = signal(Page::Dashboard);
     let live = signal(Live::now());
+    // 本地校验的错误（「还没下载 tun2proxy」这种）走这里，内核给出的
+    // 「上游不通」「会话打满」从快照里读，两条都显示在仪表盘的提示条上。
+    let error = signal(Option::<String>::None);
     // 配色是整窗共用的一个值：顶栏上的选择器改它，`palette::apply` 顺手把
     // 新的 token 换上去，整窗按 token 重绘。
     let palette = signal(palette::initial(
@@ -50,6 +72,13 @@ pub fn shell() -> impl IntoElement {
     ));
     // 根组件只跑一次，窗口属性也在这里设一次。
     hide_system_title_bar();
+    // 之后所有「活起来」的部分都在这里挂上：每秒刷新、托盘、关闭策略、
+    // 单实例唤回。
+    start_polling(live);
+    install_tray(live);
+    intercept_close();
+    handle_quit_request();
+
     view()
         .size_full()
         .flex_col()
@@ -60,8 +89,129 @@ pub fn shell() -> impl IntoElement {
                 .flex_1()
                 .flex_row()
                 .child(rail(page, live))
-                .child(content(page, live)),
+                .child(content(page, live, error)),
         )
+        // 启停蒙版：整窗盖住，带 spinner 和「在等哪一步」的文案。
+        .child(busy_mask(live))
+}
+
+/// 每秒重读一次内核。
+///
+/// `set_interval` 的回调在界面线程上跑（nsh 的 `owner.run`），所以可以直接写
+/// 信号；写进去值没变时信号不会通知，界面也不会重绘——空闲时每秒一次读操作
+/// 而已，不会让窗口一直重画。
+fn start_polling(live: Signal<Live>) {
+    set_interval(Duration::from_millis(1000), move || {
+        live.set(Live::now());
+    });
+    // 单实例唤回：第二个进程只能给「显示窗口」的事件置位，真正把窗口叫到
+    // 前台必须由本进程在界面线程上做（`WindowRef` 不是跨线程的东西）。
+    // 400ms 轮询一次，双击图标到窗口浮出来的延迟用户感觉不到。
+    set_interval(Duration::from_millis(400), || {
+        if single_instance::take_show_request() {
+            show_window();
+        }
+    });
+}
+
+/// 把主窗口显出来并聚焦（托盘点击、单实例唤回、托盘菜单共用）。
+fn show_window() {
+    let window = current_window();
+    window.show();
+    window.focus();
+}
+
+/// 托盘图标：程序自带的 `icon.png`，用绝对路径交给 nsh 的图片加载器。
+///
+/// 不用 `asset!("icon.png")`：那个宏编出来是 `asset:/@<包名>/icon.png`，
+/// 运行时要在 `AssetBase` 里登记一个和包名对应的目录才解得开，我们没走那套
+/// 打包流程，结果就是图标静默加载失败（只留一条 WARN，托盘空白）。
+/// 平台认绝对路径，见 `nsh_core::image::loader::resolve`。
+fn tray_icon() -> String {
+    crate::core::paths::assets_dir()
+        .join("icon.png")
+        .display()
+        .to_string()
+}
+
+/// 系统托盘：图标 + 状态提示 + 显示窗口 / 启停 / 退出。
+///
+/// 放在 `effect` 里：托盘要跟着服务状态重画（提示语和第二项菜单的文案都读
+/// `live`），`effect` 会把读过的东西记成依赖，状态一变就重设一次。
+fn install_tray(live: Signal<Live>) {
+    effect(move || {
+        let snapshot = live.get();
+        let active = snapshot.is_active();
+        let toggle = if active {
+            t("停止隧道", "Stop tunnel")
+        } else {
+            t("启动隧道", "Start tunnel")
+        };
+        set_tray(
+            tray()
+                .icon(tray_icon())
+                .tooltip(format!("Tun2Proxy · {}", snapshot.status_label()))
+                .menu([
+                    MenuItem::new(t("显示窗口", "Show window")).on_select(show_window),
+                    MenuItem::new(t("隐藏到托盘", "Hide to tray"))
+                        .on_select(|| current_window().hide()),
+                    MenuItem::separator(),
+                    MenuItem::new(toggle).on_select(toggle_tunnel),
+                    MenuItem::separator(),
+                    MenuItem::new(t("退出", "Quit")).on_select(quit_app),
+                ])
+                .on_click(|_: &TrayClickEvent| show_window()),
+        );
+    });
+}
+
+/// 托盘菜单里的「启动 / 停止」。
+///
+/// 走的是和界面上按钮同一条路（[`state::start`] / [`state::stop`]），所以托盘
+/// 起停和界面起停的行为完全一致；失败没有提示条可显示，写一行日志。
+fn toggle_tunnel() {
+    if state::engine().is_some_and(|engine| engine.is_active()) {
+        state::stop();
+        return;
+    }
+    if let Err(error) = state::start() {
+        state::log_line(error);
+    }
+}
+
+/// 真正退出：先把隧道收掉，免得留下 TUN 网卡和路由。
+fn quit_app() {
+    state::stop();
+    quit();
+}
+
+/// 点窗口的关闭按钮：按配置退出或收进托盘。
+///
+/// 光注册 [`on_quit_request`] 不够——那条只管「退出请求」（菜单 Quit、⌘Q /
+/// Ctrl+Q，且 macOS 上才是全的）。右键点右上角那个 ×、Alt+F4、任务栏关闭
+/// 走的都是「关窗」，nsh 在 `close_on_press: true`（默认）时直接销毁窗口，
+/// 窗口没了 app 就结束，`on_quit_request` 根本收不到（Windows 上实测：
+/// 进程随 WM_CLOSE 一起没了）。所以这里做两件事：
+///
+/// 1. [`hide_system_title_bar`] 里把 `close_on_press` 设成 false，关窗先问
+///    我们；
+/// 2. 用 `on_close_press` 接住这个请求，按配置决定隐藏还是真退。
+fn intercept_close() {
+    current_window().on_close_press(|_reason| match state::close_action() {
+        CloseAction::Quit => quit_app(),
+        _ => current_window().hide(),
+    });
+}
+
+/// 用户点关闭按钮时按配置决定：[`CloseAction::Quit`] 退出，其余收进托盘。
+///
+/// 收进托盘而不是退出，是「隧道在跑，窗口只是看板」的用法：关掉看板不该
+/// 顺手把网也断了。托盘菜单里还有「退出」，要真离开时走那一条。
+fn handle_quit_request() {
+    on_quit_request(|| match state::close_action() {
+        CloseAction::Quit => quit_app(),
+        _ => current_window().hide(),
+    });
 }
 
 /// 去掉系统标题栏，让顶栏从窗口最上沿开始画。
@@ -76,10 +226,23 @@ fn hide_system_title_bar() {
     title_bar.height = Some(px(TOP_BAR_HEIGHT));
     let mut attributes = WindowAttributes::default();
     attributes.title_bar = Some(title_bar);
+    // 关窗由 [`intercept_close`] 决定，不让 nsh 直接销毁窗口。
+    attributes.close_on_press = Some(false);
     current_window().set(attributes);
 }
 
 /// 顶栏：品牌、状态灯、明暗切换、配色选择器、版本号。
+///
+/// 拖动区只覆盖**左半区**（品牌方块 + 名字 + 中间空白），右侧那串控件不在拖动
+/// 区里。这是实测出来的边界，不是偏好：
+///
+/// * 拖动区如果只给「中间那段空白」，窗口一窄空白就被挤没，用户拖着标题栏
+///   纹丝不动；
+/// * 反过来把整条顶栏标成拖动区也不行——Windows 后端按下时先按标题栏处理，
+///   里面那几个用 `dynamic()` 包着的色块和分段开关收不到 `on_press`，点了
+///   没反应（`window_drag(false)` 标在容器上也没能救回来）。
+///
+/// 所以左边的牌子负责拖，右边的控件保持「普通元素」，两边都不吃亏。
 fn top_bar(
     live: Signal<Live>,
     palette: Signal<Palette>,
@@ -92,32 +255,35 @@ fn top_bar(
         .gap_3()
         .pl_4()
         .pr(px(CAPTION_BUTTONS_WIDTH))
-        .shadow_sm()
         .bg(move || theme().sidebar)
         .border_b_1()
         .border_color(move || theme().sidebar_border)
-        .child(brand_mark())
         .child(
             view()
-                .flex_col()
-                .gap_1()
+                .flex_1()
+                .h_full()
+                .flex_row()
+                .items_center()
+                .gap_3()
+                .window_drag(true)
+                .child(brand_mark())
                 .child(
-                    text("Tun2Proxy")
-                        .text_sm()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(move || theme().foreground),
-                )
-                .child(
-                    text(t("隧道控制台", "Tunnel console"))
-                        .text_xs()
-                        .text_color(move || theme().muted_foreground),
+                    view()
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            text("Tun2Proxy")
+                                .text_sm()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(move || theme().foreground),
+                        )
+                        .child(
+                            text(t("隧道控制台", "Tunnel console"))
+                                .text_xs()
+                                .text_color(move || theme().muted_foreground),
+                        ),
                 ),
         )
-        // 顶栏就是标题栏：系统标题栏已经藏起来，中间这段空白负责拖窗口。
-        //
-        // `window_drag` 只加在空白占位上，不加整条顶栏：整条加会把状态胶囊、
-        // 明暗开关、色块一起变成拖动区，点上去只剩拖窗，什么都点不动。
-        .child(view().flex_1().window_drag(true))
         .child(status_pill(live))
         .child(appearance_segments(theme_setting))
         .child(palette_picker(palette))
@@ -151,9 +317,6 @@ fn brand_mark() -> impl IntoElement {
         .bg_linear_to_br()
         .gradient_from(theme().chart_1)
         .gradient_to(theme().chart_2)
-        // 品牌方块用自己的颜色发光：整个界面里最"抬头"的一块。
-        .shadow_md()
-        .shadow_color(theme().chart_1)
         .child(
             text("T")
                 .text_sm()
@@ -167,13 +330,20 @@ fn status_pill(live: Signal<Live>) -> impl IntoElement {
     dynamic(move || {
         let snapshot = live.get();
         let active = snapshot.is_active();
-        // 未启动时让光点呼吸：nsh 的 `animate-pulse`，不用自己起定时器。
+        // 未启动时让光点呼吸：nsh 的 `animate-pulse`，不用自己起定时器；
+        // 启动 / 停止这两个过渡态改成快一点的双闪，和呼吸区分开。
         let light = view()
             .w(px(6.0))
             .h(px(6.0))
             .rounded_full()
             .bg(if active { ok_color() } else { warn_color() });
-        let light = if active { light } else { light.animate_pulse() };
+        let light = if snapshot.is_busy() {
+            light.animate_ping()
+        } else if active {
+            light
+        } else {
+            light.animate_pulse()
+        };
         view()
             .h(px(26.0))
             .flex_row()
@@ -182,7 +352,6 @@ fn status_pill(live: Signal<Live>) -> impl IntoElement {
             .pl_2()
             .pr_3()
             .rounded_full()
-            .shadow_xs()
             .bg(move || theme().muted)
             .border_1()
             .border_color(move || theme().border)
@@ -208,7 +377,6 @@ fn appearance_segments(theme_setting: Signal<ThemeSetting>) -> impl IntoElement 
         .gap_1()
         .p_1()
         .rounded_full()
-        .shadow_xs()
         .bg(move || theme().muted)
         .border_1()
         .border_color(move || theme().border)
@@ -231,10 +399,6 @@ fn segment(setting: ThemeSetting, theme_setting: Signal<ThemeSetting>) -> impl I
             .items_center()
             .justify_center()
             .cursor_pointer()
-            // 选中的那一格自带主色光晕，像从胶囊里浮起来。
-            .when(chosen, |this| {
-                this.shadow_xs().shadow_color(theme().primary)
-            })
             // 没选中的格子悬停时先浮出一层底色，按下去再缩一点点。
             .when(!chosen, |this| this.hover(|state| state.bg(theme().accent)))
             .transition_colors()
@@ -288,7 +452,6 @@ fn palette_picker(palette: Signal<Palette>) -> impl IntoElement {
         .gap_2()
         .px_2()
         .rounded_full()
-        .shadow_xs()
         .bg(move || theme().muted)
         .border_1()
         .border_color(move || theme().border)
@@ -318,11 +481,6 @@ fn swatch(item: Palette, palette: Signal<Palette>) -> impl IntoElement {
             .h(px(16.0))
             .rounded_sm()
             .bg(palette::swatch(item))
-            .shadow_2xs()
-            // 选中的那块用自己的颜色发光，一眼看出当前配色。
-            .when(palette.get() == item, |this| {
-                this.shadow_sm().shadow_color(palette::swatch(item))
-            })
             .border_2()
             .border_color(move || {
                 if palette.get() == item {
@@ -332,17 +490,12 @@ fn swatch(item: Palette, palette: Signal<Palette>) -> impl IntoElement {
                 }
             })
             .cursor_pointer()
-            // 悬停放大 + 自己的颜色发光，按下缩回去：手指能摸到的反馈。
+            // 悬停放大、按下缩回去：手指能摸到的反馈。
             // 140ms + ease-out：够快，跟得上手；有收尾，不像硬切。
             .transition_transform()
-            .transition_shadow()
             .duration(140.0)
             .ease_out()
-            .hover(|this| {
-                this.scale(1.18)
-                    .shadow_sm()
-                    .shadow_color(palette::swatch(item))
-            })
+            .hover(|this| this.scale(1.18))
             .active(|this| this.scale(0.9))
             .on_press(move || {
                 if palette.get() == item {
@@ -363,7 +516,6 @@ fn rail(page: Signal<Page>, live: Signal<Live>) -> impl IntoElement {
         .gap_1()
         .py_4()
         .px_3()
-        .shadow_sm()
         .bg(move || theme().sidebar)
         .border_r_1()
         .border_color(move || theme().sidebar_border)
@@ -387,9 +539,9 @@ fn rail(page: Signal<Page>, live: Signal<Live>) -> impl IntoElement {
 /// 一个导航项：选中时左侧亮起一条竖线。
 fn nav_item(page_item: Page, page: Signal<Page>) -> impl IntoElement {
     dynamic(move || {
-        let selected = page.get() == page_item;
+        let chosen = page.get() == page_item;
         let bar = view().w(px(3.0)).h(px(16.0)).rounded_full();
-        let bar = if selected {
+        let bar = if chosen {
             bar.bg(theme().primary)
         } else {
             bar.bg(theme().sidebar)
@@ -410,15 +562,15 @@ fn nav_item(page_item: Page, page: Signal<Page>) -> impl IntoElement {
             .hover(|state| state.bg(theme().sidebar_accent).translate_x(px(2.0)))
             .active(|state| state.translate_y(px(1.0)))
             .on_press(move || page.set(page_item));
-        let row = if selected {
-            row.bg(theme().sidebar_accent).shadow_xs()
+        let row = if chosen {
+            row.bg(theme().sidebar_accent)
         } else {
             row
         };
         row.child(bar).child(
             text(page_item.label())
                 .text_sm()
-                .font_weight(if selected {
+                .font_weight(if chosen {
                     FontWeight::MEDIUM
                 } else {
                     FontWeight::NORMAL
@@ -443,11 +595,6 @@ fn rail_footer(live: Signal<Live>) -> impl IntoElement {
             .gap_1()
             .p_3()
             .rounded_lg()
-            .shadow_md()
-            .transition_shadow()
-            .duration(200.0)
-            .ease_out()
-            .hover(|this| this.shadow_lg())
             .bg(move || theme().muted)
             .border_1()
             .border_color(move || theme().border)
@@ -466,8 +613,8 @@ fn rail_footer(live: Signal<Live>) -> impl IntoElement {
     })
 }
 
-/// 内容区：页面标题 + 状态卡 + 两张信息卡。
-fn content(page: Signal<Page>, live: Signal<Live>) -> impl IntoElement {
+/// 内容区：页面标题 + 当前这一页。
+fn content(page: Signal<Page>, live: Signal<Live>, error: Signal<Option<String>>) -> impl IntoElement {
     view()
         .flex_1()
         .h_full()
@@ -475,14 +622,19 @@ fn content(page: Signal<Page>, live: Signal<Live>) -> impl IntoElement {
         .p_6()
         .gap_5()
         .child(header(page, live))
-        .child(hero(live))
-        .child(
-            view()
-                .flex_row()
-                .gap_4()
-                .child(split_card())
-                .child(env_card()),
-        )
+        .child(dynamic(move || page_body(page.get(), live, error)))
+}
+
+/// 按当前页给出内容。
+///
+/// 每一页都写成函数、统一转成 `AnyElement`：`dynamic` 的闭包只能有一个返回
+/// 类型，`match` 出来的几个不同元素类型得先擦掉。
+fn page_body(page: Page, live: Signal<Live>, error: Signal<Option<String>>) -> AnyElement {
+    match page {
+        Page::Dashboard => dashboard(live, error).into_element(),
+        Page::Program => program(live).into_element(),
+        other => pending_page(other).into_element(),
+    }
 }
 
 /// 页面标题 + 右侧一句实时读数。
@@ -511,16 +663,156 @@ fn header(page: Signal<Page>, live: Signal<Live>) -> impl IntoElement {
         .child(
             dynamic(move || {
                 let snapshot = live.get();
-                text(move || format!("{} · {}", snapshot.status_label(), live.get().binary_label()))
-                    .text_xs()
-                    .tabular_nums()
-                    .text_color(move || theme().muted_foreground)
+                text(move || {
+                    format!(
+                        "{} · {}",
+                        snapshot.status_label(),
+                        live.get().binary_label()
+                    )
+                })
+                .text_xs()
+                .tabular_nums()
+                .text_color(move || theme().muted_foreground)
             }),
         )
 }
 
-/// 状态卡：顶上一条霓虹色带 + 大号状态 + 两路当前速率。
-fn hero(live: Signal<Live>) -> impl IntoElement {
+/// 仪表盘：提示条 + 状态卡 + 流量图 + 两张信息卡。
+///
+/// 外面套一层滚动：默认窗口（900×650）下一屏正好放得下，但用户把窗口拉小
+/// 或加了提示条以后就不够了——不滚的话 flex 会把卡片压扁、互相盖住。
+fn dashboard(live: Signal<Live>, error: Signal<Option<String>>) -> impl IntoElement {
+    scroll()
+        .flex_1()
+        .child(
+            view()
+                .flex_col()
+                .gap_3()
+                .child(banners(live, error))
+                .child(hero(live, error))
+                .child(traffic_card(live))
+                .child(
+                    view()
+                        .flex_row()
+                        .gap_3()
+                        .child(split_card())
+                        .child(env_card()),
+                ),
+        )
+}
+
+/// 提示条：内核给的「启动被拦下」「会话打满」，以及本地校验的错误。
+///
+/// 三条都可能同时存在，各自一行；没有就完全不占位置（`when` 里什么都不给）。
+fn banners(live: Signal<Live>, error: Signal<Option<String>>) -> impl IntoElement {
+    view()
+        .flex_col()
+        .gap_2()
+        .child(
+            when(
+                move || error.get().is_some(),
+                move || {
+                    let text_value = error.get().unwrap_or_default();
+                    banner(
+                        warn_color(),
+                        t("启动没有成功", "Could not start"),
+                        text_value,
+                        Some(Rc::new(move || error.set(None))),
+                    )
+                },
+            ),
+        )
+        .child(
+            when(
+                move || live.get().blocked.is_some(),
+                move || {
+                    let reason = live.with(|snapshot| snapshot.blocked.clone()).unwrap_or_default();
+                    banner(
+                        warn_color(),
+                        t("上游代理连不通", "The upstream proxy is unreachable"),
+                        reason,
+                        None,
+                    )
+                },
+            ),
+        )
+        .child(
+            when(
+                move || live.get().sessions_full,
+                || {
+                    banner(
+                        info_color(),
+                        t("会话名额已打满", "Session limit reached"),
+                        t(
+                            "新连接被丢弃，去「代理配置」页把「最大会话数」调大。",
+                            "New connections are dropped; raise “max sessions” on the Profiles page.",
+                        )
+                        .to_string(),
+                        None,
+                    )
+                },
+            ),
+        )
+}
+
+/// 一条提示：左边一道色条，右边标题 + 说明（+ 可选关闭）。
+fn banner(
+    accent: AdaptiveColor,
+    title: &'static str,
+    detail: String,
+    dismiss: Option<Rc<dyn Fn()>>,
+) -> impl IntoElement {
+    let row = view()
+        .w_full()
+        .flex_row()
+        .items_center()
+        .gap_3()
+        .p_3()
+        .rounded_lg()
+        .bg(move || theme().card)
+        .border_1()
+        .border_color(move || theme().border)
+        .child(view().w(px(3.0)).h(px(28.0)).rounded_full().bg(accent))
+        .child(
+            view()
+                .flex_1()
+                .flex_col()
+                .gap_1()
+                .child(
+                    text(title)
+                        .text_xs()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(accent),
+                )
+                .child(
+                    text(detail)
+                        .text_xs()
+                        .text_color(move || theme().muted_foreground),
+                ),
+        );
+    match dismiss {
+        Some(dismiss) => row.child(
+            view()
+                .w(px(22.0))
+                .h(px(22.0))
+                .rounded_full()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .hover(|this| this.bg(theme().accent))
+                .on_press(move || dismiss())
+                .child(
+                    text("×")
+                        .text_sm()
+                        .text_color(move || theme().muted_foreground),
+                ),
+        ),
+        None => row,
+    }
+}
+
+/// 状态卡：顶上一条霓虹色带 + 大号状态 + 启动按钮 + 两路当前速率。
+fn hero(live: Signal<Live>, error: Signal<Option<String>>) -> impl IntoElement {
     dynamic(move || {
         let snapshot = live.get();
         let active = snapshot.is_active();
@@ -529,13 +821,6 @@ fn hero(live: Signal<Live>) -> impl IntoElement {
             .flex_col()
             .rounded_xl()
             .overflow_hidden()
-            // 整窗最重的一块：主色光晕 + 大阴影，托起"当前状态"。
-            .shadow_lg()
-            .shadow_color(theme().chart_1)
-            .transition_shadow()
-            .duration(240.0)
-            .ease_out()
-            .hover(|this| this.shadow_xl().shadow_color(theme().chart_1))
             .border_1()
             .border_color(move || theme().border)
             .bg(move || theme().card)
@@ -554,7 +839,7 @@ fn hero(live: Signal<Live>) -> impl IntoElement {
                     .flex_row()
                     .items_center()
                     .gap_6()
-                    .p_6()
+                    .p_5()
                     .child(
                         view()
                             .flex_col()
@@ -578,7 +863,7 @@ fn hero(live: Signal<Live>) -> impl IntoElement {
                             )
                             .child(
                                 text(snapshot.status_label())
-                                    .text_3xl()
+                                    .text_2xl()
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(move || theme().foreground),
                             )
@@ -615,7 +900,74 @@ fn hero(live: Signal<Live>) -> impl IntoElement {
                         t("代理 ↑", "Proxy ↑"),
                         rate_text(snapshot.proxy.0),
                         proxy_color(),
-                    )),
+                    ))
+                    .child(tunnel_button(live, error)),
+            )
+    })
+}
+
+/// 主按钮：未运行时「启动」，运行中「停止」。
+///
+/// 启动 / 停止中不接点击：内核那两次调用都不是幂等的（连点会起两条检测线程，
+/// 后一条必然回一句「服务已经在运行」，把前一条的结论盖掉）；这期间整窗还有
+/// 蒙版挡着。
+fn tunnel_button(live: Signal<Live>, error: Signal<Option<String>>) -> impl IntoElement {
+    dynamic(move || {
+        let snapshot = live.get();
+        let busy = snapshot.is_busy();
+        let active = snapshot.is_active();
+        let label = if active {
+            t("停止", "Stop")
+        } else {
+            t("启动", "Start")
+        };
+        view()
+            .h(px(38.0))
+            .px_6()
+            .rounded_full()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .transition_transform()
+            .transition_colors()
+            .duration(150.0)
+            .ease_out()
+            // 悬停再抬一点，按下缩回去；不可点时保持原样，别骗用户的手指。
+            .when(!busy, |this| this.hover(|this| this.scale(1.04)).active(|this| this.scale(0.96)))
+            .bg(move || {
+                if busy {
+                    theme().muted
+                } else if live.get().is_active() {
+                    danger_color()
+                } else {
+                    theme().primary
+                }
+            })
+            .on_press(move || {
+                let snapshot = live.get();
+                if snapshot.is_busy() {
+                    return;
+                }
+                if snapshot.is_active() {
+                    state::stop();
+                    return;
+                }
+                match state::start() {
+                    Ok(()) => error.set(None),
+                    Err(message) => error.set(Some(message)),
+                }
+            })
+            .child(
+                text(label)
+                    .text_sm()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(move || {
+                        if live.get().is_busy() {
+                            theme().muted_foreground
+                        } else {
+                            theme().primary_foreground
+                        }
+                    }),
             )
     })
 }
@@ -638,6 +990,163 @@ fn metric(label: &'static str, value: String, accent: AdaptiveColor) -> impl Int
                 .tabular_nums()
                 .text_color(accent),
         )
+}
+
+/// 流量图卡：两路下行速率堆叠面积（直连在下、代理在上）+ 图例。
+///
+/// 为什么是堆叠面积而不是两条折线：这张图回答的是「总流量里直连占多少、
+/// 代理占多少」，堆叠面积把两者的比例画在同一个高度里，一眼看得出分流有没有
+/// 在干活；两条折线要来回对比纵轴。
+///
+/// 每根柱子就是一列（1 秒一个点，窗口 120 秒），两段高度按同一刻度算，
+/// 所以总高永远是「这一秒的总下行」。
+fn traffic_card(live: Signal<Live>) -> impl IntoElement {
+    card(
+        t("实时流量", "Live traffic"),
+        t(
+            "最近两分钟，每秒一个点；直连在下、代理在上，两路合起来就是总下行。",
+            "The last two minutes, one point per second: direct at the bottom, proxied on top.",
+        ),
+        view()
+            .flex_col()
+            .gap_3()
+            .child(
+                view()
+                    .w_full()
+                    .h(px(CHART_HEIGHT))
+                    .rounded_lg()
+                    .overflow_hidden()
+                    .bg(move || theme().muted)
+                    .border_1()
+                    .border_color(move || theme().border)
+                    .child(traffic_plot(live)),
+            )
+            .child(
+                view()
+                    .flex_row()
+                    .items_center()
+                    .gap_4()
+                    .child(legend(
+                        direct_color(),
+                        t("直连 ↓", "Direct ↓"),
+                        live,
+                        true,
+                    ))
+                    .child(legend(
+                        proxy_color(),
+                        t("代理 ↓", "Proxy ↓"),
+                        live,
+                        false,
+                    ))
+                    .child(view().flex_1())
+                    .child(
+                        dynamic(move || {
+                            let peak = live.get().peak();
+                            text(move || {
+                                format!(
+                                    "{} {}",
+                                    t("峰值", "peak"),
+                                    rate_text(live.get().peak().max(peak))
+                                )
+                            })
+                            .text_xs()
+                            .tabular_nums()
+                            .text_color(move || theme().muted_foreground)
+                        }),
+                    ),
+            ),
+    )
+}
+
+/// 图例：色块 + 名字 + 当前速率。
+fn legend(
+    accent: AdaptiveColor,
+    label: &'static str,
+    live: Signal<Live>,
+    direct: bool,
+) -> impl IntoElement {
+    view()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .child(view().w(px(8.0)).h(px(8.0)).rounded_sm().bg(accent))
+        .child(
+            text(label)
+                .text_xs()
+                .text_color(move || theme().muted_foreground),
+        )
+        .child(
+            text(move || {
+                let snapshot = live.get();
+                let value = if direct {
+                    snapshot.direct.1
+                } else {
+                    snapshot.proxy.1
+                };
+                rate_text(value)
+            })
+            .text_xs()
+            .font_weight(FontWeight::MEDIUM)
+            .tabular_nums()
+            .text_color(accent),
+        )
+}
+
+/// 图本身：一列一列叠出来的面积。
+fn traffic_plot(live: Signal<Live>) -> impl IntoElement {
+    dynamic(move || {
+        let snapshot = live.get();
+        if snapshot.history.is_empty() {
+            return view()
+                .size_full()
+                .items_center()
+                .justify_center()
+                .child(
+                    text(t(
+                        "开始运行后这里会画出两分钟内的流量。",
+                        "Traffic for the last two minutes appears here once it runs.",
+                    ))
+                    .text_xs()
+                    .text_color(move || theme().muted_foreground),
+                );
+        }
+        // 纵轴取两路之和的峰值：两段高度相加不超过图高，比例才是真的。
+        let peak = snapshot.peak().max(1) as f32;
+        let columns = snapshot
+            .history
+            .iter()
+            .map(|sample| plot_column(sample, peak))
+            .collect::<Vec<_>>();
+        view().size_full().flex_row().items_end().children(columns)
+    })
+}
+
+/// 一秒的柱子：下面直连、上面代理。
+fn plot_column(sample: &RouteTraffic, peak: f32) -> AnyElement {
+    let scaled = |bytes: u64| {
+        let height = bytes as f32 / peak * CHART_HEIGHT;
+        // 有一点流量就至少画 1dp，否则低速时整张图看起来是空的。
+        let floor = if bytes > 0 { 1.0 } else { 0.0 };
+        px(height.max(floor))
+    };
+    view()
+        .flex_1()
+        .h_full()
+        .flex_col()
+        .justify_end()
+        .child(
+            view()
+                .w_full()
+                .h(scaled(sample.proxy.down))
+                .bg(proxy_color()),
+        )
+        .child(
+            view()
+                .w_full()
+                .h(scaled(sample.direct.down))
+                .bg(direct_color()),
+        )
+        .into_element()
 }
 
 /// 分流策略卡：两条路各自的颜色与含义。
@@ -681,20 +1190,245 @@ fn env_card() -> impl IntoElement {
     )
 }
 
+/// 程序与日志页：日志面板（虚拟列表，跟着最新一行走）。
+fn program(live: Signal<Live>) -> impl IntoElement {
+    view()
+        .flex_1()
+        .flex_col()
+        .gap_3()
+        .rounded_xl()
+        .p_4()
+        .bg(move || theme().card)
+        .border_1()
+        .border_color(move || theme().border)
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .gap_3()
+                .child(
+                    text(t("运行日志", "Runtime log"))
+                        .text_sm()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(move || theme().card_foreground),
+                )
+                .child(
+                    dynamic(move || {
+                        text(move || {
+                            format!(
+                                "{} 行",
+                                live.with(|snapshot| snapshot.logs.len())
+                            )
+                        })
+                        .text_xs()
+                        .tabular_nums()
+                        .text_color(move || theme().muted_foreground)
+                    }),
+                )
+                .child(view().flex_1())
+                .child(ghost_button(
+                    t("清空", "Clear"),
+                    || state::clear_logs(),
+                )),
+        )
+        .child(log_pane(live))
+}
+
+/// 日志正文：虚拟列表，只在视野里那几十行存在。
+fn log_pane(live: Signal<Live>) -> impl IntoElement {
+    view()
+        .flex_1()
+        .rounded_lg()
+        .overflow_hidden()
+        .bg(move || theme().background)
+        .border_1()
+        .border_color(move || theme().border)
+        .child(
+            virtual_list(
+                move || live.with(|snapshot| snapshot.logs.len()),
+                move |at| log_row(live, at.index()),
+            )
+            // 打开就看最新的一行：日志面板默认关心「刚刚发生了什么」。
+            // 列表自己不撑高度：不给它 `h_full` 时高度是 0，界面上就是
+            // 「有行数、一片空白」。
+            .initial_scroll_at_end()
+            .h_full()
+            .empty(
+                view()
+                    .p_4()
+                    .child(
+                        text(t("还没有日志。", "No log yet."))
+                            .text_xs()
+                            .text_color(move || theme().muted_foreground),
+                    ),
+            ),
+        )
+}
+
+/// 一行日志：来源标签 + 正文（过长截断，完整内容在文件里）。
+///
+/// 三处宽度都得写死：虚拟列表的 cell 宽度由内容决定，`truncate` 拿不到可用
+/// 宽度就会把整行压成 0 宽——表现是「有行数、一个字也看不见」。所以行是
+/// `w_full`、标签是固定宽、正文外面套一层 `flex_1` 的裁剪盒。
+fn log_row(live: Signal<Live>, index: usize) -> impl IntoElement {
+    view()
+        .w_full()
+        .h(px(18.0))
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .px_3()
+        .child(
+            text(move || {
+                live.with(|snapshot| {
+                    snapshot
+                        .logs
+                        .get(index)
+                        .map(|line| kind_tag(line.kind))
+                        .unwrap_or_default()
+                })
+            })
+            .w(px(46.0))
+            .text_xs()
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(move || {
+                live.with(|snapshot| kind_color(snapshot.logs.get(index).map(|line| line.kind)))
+            }),
+        )
+        .child(
+            view().flex_1().overflow_hidden().child(
+                text(move || {
+                    live.with(|snapshot| {
+                        snapshot
+                            .logs
+                            .get(index)
+                            .map(|line| line.text.clone())
+                            .unwrap_or_default()
+                    })
+                })
+                .w_full()
+                .text_xs()
+                .truncate()
+                .tabular_nums()
+                .text_color(move || theme().secondary_foreground),
+            ),
+        )
+}
+
+/// 日志来源的短标签。
+fn kind_tag(kind: LogKind) -> String {
+    match kind {
+        LogKind::App => "APP",
+        LogKind::Split => "SPLIT",
+        LogKind::Output => "TUN",
+        LogKind::Other => "···",
+    }
+    .to_string()
+}
+
+/// 日志来源的颜色：子进程输出最淡（量最大），分流判定用代理色。
+fn kind_color(kind: Option<LogKind>) -> AdaptiveColor {
+    match kind {
+        Some(LogKind::Split) => proxy_color(),
+        Some(LogKind::App) => direct_color(),
+        Some(LogKind::Output) => theme().muted_foreground,
+        _ => theme().muted_foreground,
+    }
+}
+
+/// 还没搬到 nsh 的页面：明确说「这一版还没有」，而不是给一片空白。
+fn pending_page(page: Page) -> impl IntoElement {
+    card(
+        page.label(),
+        page.subtitle(),
+        view()
+            .flex_col()
+            .gap_2()
+            .child(
+                text(t(
+                    "这一版的界面还在搬迁中：代理配置、分流规则、网络参数三页还没有搬过来。",
+                    "This page is still being ported: profiles, split rules and network settings are not here yet.",
+                ))
+                .text_xs()
+                .text_color(move || theme().secondary_foreground),
+            )
+            .child(
+                text(t(
+                    "仪表盘与「程序与日志」已经可用。",
+                    "The dashboard and “Program” pages work already.",
+                ))
+                .text_xs()
+                .text_color(move || theme().muted_foreground),
+            ),
+    )
+}
+
+/// 启停蒙版：整窗盖住，中间 spinner + 「在等哪一步」。
+///
+/// 必须能等得住：启动要走「探上游 → 清残留网卡 → 起分流器 → 拉子进程」，
+/// 停止要等子进程退出和网卡回收，都是几秒级的。只把按钮变灰的话，用户会以为
+/// 程序没反应而反复点。
+fn busy_mask(live: Signal<Live>) -> impl IntoElement {
+    when(move || live.get().is_busy(), move || {
+        overlay()
+            .absolute()
+            .size_full()
+            .items_center()
+            .justify_center()
+            // 半透明深色：看得到后面的界面，但读不出细节，焦点落在中间那张卡上。
+            .bg(rgba(0x04060E_C8))
+            .child(
+                view()
+                    .flex_col()
+                    .items_center()
+                    .gap_4()
+                    .p_6()
+                    .rounded_xl()
+                    .bg(move || theme().card)
+                    .border_1()
+                    .border_color(move || theme().border)
+                    .child(spinner())
+                    .child(
+                        text(live.get().busy_label())
+                            .text_sm()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(move || theme().foreground),
+                    )
+                    .child(
+                        text(t(
+                            "这一步会清理残留网卡与进程，请稍等。",
+                            "This cleans up leftover adapters and processes; it takes a few seconds.",
+                        ))
+                        .text_xs()
+                        .text_color(move || theme().muted_foreground),
+                    ),
+            )
+    })
+}
+
+/// 转圈：一个渐变圆环原地旋转（nsh 的 `animate-spin`）。
+///
+/// 没有画「缺口」——nsh 的圆靠 `border` 画，四边不同色要额外属性；渐变
+/// 从主色转到 `muted`，转起来一眼就是「在动」，够用且不挑主题。
+fn spinner() -> impl IntoElement {
+    view()
+        .w(px(30.0))
+        .h(px(30.0))
+        .rounded_full()
+        .bg_linear_to_r()
+        .gradient_from(theme().primary)
+        .gradient_to(theme().muted)
+        .animate_spin()
+}
+
 /// 一张信息卡：标题、说明，加一块调用方拼好的内容。
 fn card(title: &'static str, hint: &'static str, rows: impl IntoElement) -> impl IntoElement {
     view()
         .flex_1()
         .flex_col()
-        .gap_3()
-        .p_5()
+        .gap_2()
+        .p_4()
         .rounded_xl()
-        .shadow_lg()
-        // 鼠标经过时抬高一层：卡片本身不可点，但界面因此"活"着。
-        .transition_shadow()
-        .duration(220.0)
-        .ease_out()
-        .hover(|this| this.shadow_xl())
         .bg(move || theme().card)
         .border_1()
         .border_color(move || theme().border)
@@ -710,6 +1444,30 @@ fn card(title: &'static str, hint: &'static str, rows: impl IntoElement) -> impl
                 .text_color(move || theme().muted_foreground),
         )
         .child(rows)
+}
+
+/// 次要按钮：只有描边，没有底色。
+fn ghost_button(label: &'static str, on_press: impl Fn() + 'static) -> impl IntoElement {
+    view()
+        .h(px(26.0))
+        .px_3()
+        .rounded_full()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .transition_colors()
+        .duration(140.0)
+        .ease_out()
+        .hover(|this| this.bg(theme().accent))
+        .active(|this| this.scale(0.96))
+        .border_1()
+        .border_color(move || theme().border)
+        .on_press(on_press)
+        .child(
+            text(label)
+                .text_xs()
+                .text_color(move || theme().muted_foreground),
+        )
 }
 
 /// 规则行：颜色点 + 谁 + 走向。
@@ -733,16 +1491,21 @@ fn rule_row(who: &'static str, target: &'static str, accent: AdaptiveColor) -> i
         )
 }
 
-/// 路径行：左边名字，右边路径（过长截断）。
+/// 路径行：一行放下「名字 + 路径」（过长截断）。
+///
+/// 原先名字在上、路径在下，三份路径就是六行，默认窗口里放不下；路径尾巴才是
+/// 有用的部分（`config.json` / `bin` / `logs`），挤在一行里反而更好认。
 fn path_row(label: &'static str, path: std::path::PathBuf) -> impl IntoElement {
     view()
-        .flex_col()
-        .gap_1()
+        .flex_row()
+        .items_center()
+        .gap_2()
         .child(
             text(label)
                 .text_xs()
                 .text_color(move || theme().muted_foreground),
         )
+        .child(view().flex_1())
         .child(
             text(short_path(&path))
                 .text_xs()
@@ -793,4 +1556,14 @@ fn ok_color() -> AdaptiveColor {
 /// 「需注意」的颜色：`warning` token，没有就退到 `chart-4`。
 fn warn_color() -> AdaptiveColor {
     theme().color("warning").unwrap_or(theme().chart_4)
+}
+
+/// 「点一下就好」的提示色：`info` token，没有就退到 `chart-5`。
+fn info_color() -> AdaptiveColor {
+    theme().color("info").unwrap_or(theme().chart_2)
+}
+
+/// 「危险 / 停止」的颜色：`destructive` token，没有就退到 `chart-4`。
+fn danger_color() -> AdaptiveColor {
+    theme().color("destructive").unwrap_or(theme().chart_4)
 }
