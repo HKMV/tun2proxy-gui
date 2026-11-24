@@ -8,7 +8,7 @@
 //! 拿着内核的锁去渲染会把锁的持有时间拉长到整个布局过程；而且很多元素
 //! （比如图表里的每一列）只需要同一帧的一份数据，重复加锁只会让数字对不上。
 
-use crate::core::engine::Status;
+use crate::core::engine::{Status, Update};
 use crate::core::i18n::t;
 use crate::core::logs::LogLine;
 use crate::core::traffic::RouteTraffic;
@@ -29,6 +29,8 @@ pub struct Live {
     pub status: Status,
     /// 已安装的 tun2proxy 版本；还没下载时是 `None`。
     pub binary: Option<String>,
+    /// 内核的版本检查 / 下载安装进度（程序页的按钮和进度条读它）。
+    pub update: Update,
     /// 直连方向当前的上下行字节/秒（`(up, down)`）。
     pub direct: (u64, u64),
     /// 代理方向当前的上下行字节/秒。
@@ -69,6 +71,7 @@ impl Live {
         Self {
             status,
             binary: guard.version.clone(),
+            update: guard.update.clone(),
             direct: (guard.rate.direct.up, guard.rate.direct.down),
             proxy: (guard.rate.proxy.up, guard.rate.proxy.down),
             history,
@@ -83,6 +86,7 @@ impl Live {
         Self {
             status: Status::Stopped,
             binary: None,
+            update: Update::Idle,
             direct: (0, 0),
             proxy: (0, 0),
             history: Vec::new(),
@@ -143,6 +147,25 @@ impl Live {
             .unwrap_or_else(|| t("未安装", "not installed").to_string())
     }
 
+    /// 内核二进制在不在（程序页据此决定按钮文案）。
+    pub fn installed(&self) -> bool {
+        self.binary.is_some()
+    }
+
+    /// 下载进度（0..=1）；未知总长或不在下载阶段时给 `None`。
+    ///
+    /// `total` 是 GitHub 给的 `content-length`，个别镜像不给，这时界面显示
+    /// 「已下载 3.2 MB」而不是一条假装在走的进度条。
+    pub fn update_progress(&self) -> Option<f32> {
+        match &self.update {
+            Update::Downloading {
+                got,
+                total: Some(total),
+            } if *total > 0 => Some((*got as f32 / *total as f32).clamp(0.0, 1.0)),
+            _ => None,
+        }
+    }
+
     /// 两路下行速率之和：图表按它定纵轴，两路一起画在同一个刻度上。
     pub fn peak(&self) -> u64 {
         self.history
@@ -158,18 +181,26 @@ impl Live {
 /// 和旧界面的图表标注统一：不足 1 KB 直接给字节，其余按 1024 进制走
 /// KB / MB / GB，保留一位小数。
 pub fn rate_text(bytes: u64) -> String {
+    format!("{}/s", bytes_text(bytes))
+}
+
+/// 字节数 → `12.3 MB`（不带 /s）。
+///
+/// 下载进度用的是它：那是「已经下了多少」，不是速率，写成 `8.5 MB/s` 会说
+/// 反意思。
+pub fn bytes_text(bytes: u64) -> String {
     const KB: f64 = 1024.0;
     const MB: f64 = KB * 1024.0;
     const GB: f64 = MB * 1024.0;
 
     let value = bytes as f64;
     if value < KB {
-        format!("{bytes} B/s")
+        format!("{bytes} B")
     } else if value < MB {
-        format!("{:.1} KB/s", value / KB)
+        format!("{:.1} KB", value / KB)
     } else if value < GB {
-        format!("{:.1} MB/s", value / MB)
+        format!("{:.1} MB", value / MB)
     } else {
-        format!("{:.2} GB/s", value / GB)
+        format!("{:.2} GB", value / GB)
     }
 }

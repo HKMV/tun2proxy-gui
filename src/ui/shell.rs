@@ -25,13 +25,15 @@ use nsh_core::prelude::*;
 
 use crate::core::APP_VERSION;
 use crate::core::config::{CloseAction, Palette, ThemeSetting};
+use crate::core::engine::Update;
 use crate::core::i18n::t;
 use crate::core::logs::LogKind;
 use crate::core::paths;
 use crate::core::single_instance;
 use crate::core::traffic::RouteTraffic;
+use crate::tr_format;
 
-use super::live::{Live, rate_text};
+use super::live::{Live, bytes_text, rate_text};
 use super::page::Page;
 use super::{palette, state};
 
@@ -1188,8 +1190,213 @@ fn env_card() -> impl IntoElement {
     )
 }
 
-/// 程序与日志页：日志面板（虚拟列表，跟着最新一行走）。
+/// 程序与日志页：上面管内核，下面看日志。
 fn program(live: Signal<Live>) -> impl IntoElement {
+    view()
+        .flex_1()
+        .flex_col()
+        .gap_3()
+        .child(core_card(live))
+        .child(log_card(live))
+}
+
+/// 内核卡：装没装、哪一版、要不要更新，以及那三个按钮。
+///
+/// 这一页的存在意义就是让「还没装 tun2proxy」的人能自己把事办完：启动失败时
+/// 仪表盘的提示条会说「点下载并安装」，然后用户得能在这一页找到那个按钮。
+fn core_card(live: Signal<Live>) -> impl IntoElement {
+    view()
+        .flex_col()
+        .gap_3()
+        .rounded_xl()
+        .p_4()
+        .bg(move || theme().card)
+        .border_1()
+        .border_color(move || theme().border)
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .gap_4()
+                .child(
+                    view()
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            text(t("tun2proxy 内核", "tun2proxy core"))
+                                .text_sm()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(move || theme().card_foreground),
+                        )
+                        .child(dynamic(move || core_summary(live.get()))),
+                )
+                .child(view().flex_1())
+                .child(dynamic(move || core_actions(live.get()))),
+        )
+        .child(dynamic(move || core_progress(live.get())))
+        .child(
+            view()
+                .flex_col()
+                .gap_2()
+                .pt_1()
+                .child(path_row_full(t("二进制", "Binaries"), paths::bin_dir()))
+                .child(path_row_full(t("日志", "Logs"), paths::logs_dir())),
+        )
+}
+
+/// 内核那一行的说明：版本 + 更新结论。
+fn core_summary(snapshot: Live) -> AnyElement {
+    let installed = snapshot.installed();
+    let (text_value, tone) = match &snapshot.update {
+        Update::Available { latest } => (
+            tr_format!(
+                "有新版本 {} 可装（当前 {}）",
+                "{} is available (now {})",
+                latest,
+                snapshot.binary_label()
+            ),
+            warn_color(),
+        ),
+        Update::Latest { version } => (
+            tr_format!("已是最新（{}）", "up to date ({})", version),
+            ok_color(),
+        ),
+        Update::Done { version } => (
+            tr_format!("已更新到 {}", "updated to {}", version),
+            ok_color(),
+        ),
+        Update::Failed(reason) => (reason.clone(), danger_color()),
+        Update::Checking | Update::Downloading { .. } | Update::Installing => (
+            snippet(snapshot.update.clone()),
+            theme().muted_foreground,
+        ),
+        Update::Idle => {
+            if installed {
+                (
+                    tr_format!(
+                        "{}，点「检查更新」看看有没有新版",
+                        "{}, press “Check for updates”",
+                        snapshot.binary_label()
+                    ),
+                    theme().muted_foreground,
+                )
+            } else {
+                (
+                    t(
+                        "还没装。首次使用先点「下载并安装」，装完就能启动隧道。",
+                        "Not installed yet. Press “Download and install” first.",
+                    )
+                    .to_string(),
+                    theme().muted_foreground,
+                )
+            }
+        }
+    };
+    text(text_value)
+        .text_xs()
+        .text_color(tone)
+        .into_element()
+}
+
+/// 正在忙时那一行文案。
+fn snippet(update: Update) -> String {
+    match update {
+        Update::Checking => t("正在查询最新版本…", "Checking the latest release…").to_string(),
+        Update::Downloading { got, total } => match total {
+            Some(total) if total > 0 => tr_format!(
+                "正在下载：{} / {}",
+                "Downloading: {} / {}",
+                bytes_text(got),
+                bytes_text(total)
+            ),
+            _ => tr_format!(
+                "正在下载：已下载 {}",
+                "Downloading: {} so far",
+                bytes_text(got)
+            ),
+        },
+        Update::Installing => t("正在解压安装…", "Unpacking and installing…").to_string(),
+        _ => String::new(),
+    }
+}
+
+/// 内核卡右侧的按钮组。
+fn core_actions(snapshot: Live) -> AnyElement {
+    let busy = snapshot.update.is_busy();
+    let running = snapshot.is_active();
+    let can_install = !busy && !running;
+    let install_label = match &snapshot.update {
+        Update::Available { .. } => t("下载并安装", "Download and install"),
+        _ if snapshot.installed() => t("重新安装", "Reinstall"),
+        _ => t("下载并安装", "Download and install"),
+    };
+    view()
+        .flex_row()
+        .items_center()
+        .gap_3()
+        // 隧道在跑时按钮是灰的，原因写在这里：不写的话用户只会觉得按钮坏了。
+        .child(dynamic(move || {
+            if running {
+                text(t(
+                    "隧道运行中，先停止才能换内核",
+                    "Stop the tunnel before replacing the core",
+                ))
+                .text_xs()
+                .text_color(move || theme().muted_foreground)
+                .into_element()
+            } else {
+                view().into_element()
+            }
+        }))
+        .child(ghost_button_maybe(
+            t("检查更新", "Check for updates"),
+            !busy,
+            || state::check_update(),
+        ))
+        .child(primary_button_maybe(install_label, can_install, || {
+            state::install_update()
+        }))
+        .into_element()
+}
+
+/// 下载进度条 / 安装提示；不忙时完全不占位置。
+fn core_progress(snapshot: Live) -> AnyElement {
+    if !snapshot.update.is_busy() {
+        return view().into_element();
+    }
+    let ratio = snapshot.update_progress();
+    view()
+        .flex_col()
+        .gap_2()
+        .child(
+            view()
+                .w_full()
+                .h(px(8.0))
+                .rounded_full()
+                .overflow_hidden()
+                .bg(move || theme().muted)
+                .child(match ratio {
+                    Some(ratio) => view()
+                        .w(relative(ratio))
+                        .h_full()
+                        .rounded_full()
+                        .bg(move || theme().primary)
+                        .into_element(),
+                    // 没有总长时就给一条在动的，别让用户以为卡住了。
+                    None => view()
+                        .w(relative(0.35))
+                        .h_full()
+                        .rounded_full()
+                        .bg(move || theme().primary)
+                        .animate_pulse()
+                        .into_element(),
+                }),
+        )
+        .into_element()
+}
+
+/// 日志卡：标题 + 行数 + 清空，下面是虚拟列表。
+fn log_card(live: Signal<Live>) -> impl IntoElement {
     view()
         .flex_1()
         .flex_col()
@@ -1467,6 +1674,88 @@ fn ghost_button(label: &'static str, on_press: impl Fn() + 'static) -> impl Into
         )
 }
 
+/// 次要按钮的可禁用版本：不接点击、颜色变灰、不给悬停反馈。
+///
+/// 「灰着但还能点」是最容易让人点半天没反应的做法，所以禁用时连 `on_press`
+/// 都不挂——点了什么也不会发生。
+fn ghost_button_maybe(
+    label: &'static str,
+    enabled: bool,
+    on_press: impl Fn() + 'static + Clone,
+) -> impl IntoElement {
+    let mut button = view()
+        .h(px(26.0))
+        .px_3()
+        .rounded_full()
+        .items_center()
+        .justify_center()
+        .border_1()
+        .border_color(move || theme().border)
+        .child(
+            text(label)
+                .text_xs()
+                .text_color(move || theme().muted_foreground),
+        );
+    if enabled {
+        let handler = on_press.clone();
+        button = button
+            .cursor_pointer()
+            .transition_colors()
+            .duration(140.0)
+            .ease_out()
+            .hover(|this| this.bg(theme().accent))
+            .active(|this| this.scale(0.96))
+            .on_press(move || handler());
+    }
+    button
+}
+
+/// 主按钮的可禁用版本：实色底，禁用时变灰并且不接点击。
+fn primary_button_maybe(
+    label: &'static str,
+    enabled: bool,
+    on_press: impl Fn() + 'static + Clone,
+) -> impl IntoElement {
+    let mut button = view()
+        .h(px(30.0))
+        .px_4()
+        .rounded_full()
+        .items_center()
+        .justify_center()
+        .bg(move || {
+            if enabled {
+                theme().primary
+            } else {
+                theme().muted
+            }
+        })
+        .child(
+            text(label)
+                .text_xs()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(move || {
+                    if enabled {
+                        theme().primary_foreground
+                    } else {
+                        theme().muted_foreground
+                    }
+                }),
+        );
+    if enabled {
+        let handler = on_press.clone();
+        button = button
+            .cursor_pointer()
+            .transition_colors()
+            .transition_transform()
+            .duration(140.0)
+            .ease_out()
+            .hover(|this| this.scale(1.03))
+            .active(|this| this.scale(0.96))
+            .on_press(move || handler());
+    }
+    button
+}
+
 /// 规则行：颜色点 + 谁 + 走向。
 fn rule_row(who: &'static str, target: &'static str, accent: AdaptiveColor) -> impl IntoElement {
     view()
@@ -1493,6 +1782,19 @@ fn rule_row(who: &'static str, target: &'static str, accent: AdaptiveColor) -> i
 /// 原先名字在上、路径在下，三份路径就是六行，默认窗口里放不下；路径尾巴才是
 /// 有用的部分（`config.json` / `bin` / `logs`），挤在一行里反而更好认。
 fn path_row(label: &'static str, path: std::path::PathBuf) -> impl IntoElement {
+    path_line(label, short_path(&path))
+}
+
+/// 和 [`path_row`] 一样，但要完整路径。
+///
+/// 程序页的用途不同：用户会照着这几行去文件管理器里找 tun2proxy.exe 和今天的
+/// 日志，`…\bin` 这种缩写在那里等于没说。
+fn path_row_full(label: &'static str, path: std::path::PathBuf) -> impl IntoElement {
+    path_line(label, path.display().to_string())
+}
+
+/// 路径行的实际排版：名字靠左、路径贴右、过长截断。
+fn path_line(label: &'static str, value: String) -> impl IntoElement {
     view()
         .flex_row()
         .items_center()
@@ -1504,7 +1806,7 @@ fn path_row(label: &'static str, path: std::path::PathBuf) -> impl IntoElement {
         )
         .child(view().flex_1())
         .child(
-            text(short_path(&path))
+            text(value)
                 .text_xs()
                 .truncate()
                 .text_color(move || theme().secondary_foreground),

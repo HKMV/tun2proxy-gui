@@ -113,6 +113,33 @@ pub fn clear_logs() {
     }
 }
 
+/// 去 GitHub 查一下 tun2proxy 有没有新版本。
+///
+/// 走后台线程，结论写进共享状态（[`crate::core::engine::Update`]），界面每秒
+/// 从快照里读到——所以这里不返回任何东西，也不该在调用后阻塞。
+pub fn check_update() {
+    if let Some(engine) = ENGINE.get() {
+        engine.check_update(release_repo());
+    }
+}
+
+/// 下载并安装最新版 tun2proxy。
+///
+/// 隧道在跑的时候内核会直接拒绝（Windows 上换不了正在运行的 exe），这个结论
+/// 同样以 `Update::Failed` 的形式回到界面。
+pub fn install_update() {
+    if let Some(engine) = ENGINE.get() {
+        engine.install_update(release_repo());
+    }
+}
+
+/// Release 从哪个仓库取：配置里可改（`release_repo`），默认官方仓库。
+fn release_repo() -> String {
+    config()
+        .map(|config| config.release_repo)
+        .unwrap_or_else(|| "tun2proxy/tun2proxy".to_string())
+}
+
 /// 写一行本程序自己的提示（托盘菜单这类没有提示条的地方用）。
 pub fn log_line(line: impl Into<String>) {
     if let Some(engine) = ENGINE.get() {
