@@ -16,6 +16,7 @@ pub mod page;
 pub mod palette;
 pub mod profile;
 pub mod shell;
+pub mod split;
 pub mod state;
 pub mod widgets;
 

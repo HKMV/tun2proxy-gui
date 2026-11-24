@@ -81,6 +81,29 @@ pub fn card_head(title: &'static str, hint: Option<String>, actions: impl IntoEl
 /// 成三行，把整行的行高撑开、右边的输入框跟着上下不齐。放在控件下面能占满
 /// 剩余宽度，一行说完。
 pub fn field(label: &'static str, hint: Option<String>, control: impl IntoElement) -> View {
+    field_with(label, hint, control, true)
+}
+
+/// 和 [`field`] 一样，但说明**不截断**：允许多行。
+///
+/// 给那些「一句说完会丢信息」的说明用（比如内置清单每一组到底包含什么）。
+/// 截断的单行说明适合短提示，长文案被切一半比换行更难看懂。
+pub fn field_wrapped(label: &'static str, hint: Option<String>, control: impl IntoElement) -> View {
+    field_with(label, hint, control, false)
+}
+
+fn field_with(
+    label: &'static str,
+    hint: Option<String>,
+    control: impl IntoElement,
+    truncate_hint: bool,
+) -> View {
+    let mut hint_text = text(hint.unwrap_or_default())
+        .text_xs()
+        .text_color(move || theme().muted_foreground);
+    if truncate_hint {
+        hint_text = hint_text.truncate();
+    }
     view()
         .flex_row()
         .items_start()
@@ -99,12 +122,7 @@ pub fn field(label: &'static str, hint: Option<String>, control: impl IntoElemen
                 .flex_col()
                 .gap_1()
                 .child(control)
-                .child(
-                    text(hint.unwrap_or_default())
-                        .text_xs()
-                        .truncate()
-                        .text_color(move || theme().muted_foreground),
-                ),
+                .child(hint_text),
         )
 }
 
@@ -328,6 +346,51 @@ pub fn primary_button(label: &'static str, on_press: impl Fn() + 'static) -> Vie
                 .text_xs()
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(move || theme().primary_foreground),
+        )
+}
+
+/// 开关：一条胶囊，圆点靠左（关）或靠右（开）。
+///
+/// 没有用「开 / 关」两个字的按钮：这一页有几处开关是**组**级别的（三组内置
+/// 清单），一排「开」字读下来分不清哪个是哪个，圆点的位置一眼就能扫。
+pub fn toggle(on: bool, on_press: impl Fn() + 'static) -> View {
+    view()
+        .w(px(40.0))
+        .h(px(22.0))
+        .p(px(3.0))
+        .flex_row()
+        .items_center()
+        .rounded_full()
+        .cursor_pointer()
+        .transition_colors()
+        .transition_transform()
+        .duration(160.0)
+        .ease_out()
+        .active(|this| this.scale(0.94))
+        .bg(move || {
+            if on {
+                theme().primary
+            } else {
+                // 关态用 `border` 而不是 `muted`：`muted` 在深色主题下与卡片底
+                // 几乎同色，胶囊会整个消失，只剩一个飘着的灰点。
+                theme().border
+            }
+        })
+        .justify_start()
+        .when(on, |this| this.justify_end())
+        .on_press(on_press)
+        .child(
+            view()
+                .w(px(16.0))
+                .h(px(16.0))
+                .rounded_full()
+                .bg(move || {
+                    if on {
+                        theme().primary_foreground
+                    } else {
+                        theme().muted_foreground
+                    }
+                }),
         )
 }
 

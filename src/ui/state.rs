@@ -14,6 +14,7 @@ use std::sync::{Mutex, OnceLock};
 use crate::core::config::{CloseAction, Palette, Profile, ThemeSetting};
 use crate::core::i18n::t;
 use crate::core::logs::LogKind;
+use crate::core::split::settings::SplitGroup;
 use crate::core::{Config, Engine};
 
 static CONFIG: OnceLock<Mutex<Config>> = OnceLock::new();
@@ -266,6 +267,105 @@ fn with_config(change: impl FnOnce(&mut Config) -> bool) -> bool {
         log::warn!("保存配置失败：{error}");
     }
     true
+}
+
+// —— 分流规则 ——
+
+/// 分流总开关。
+///
+/// 关掉时引擎**完全不起分流器**，与没有这个功能时一字不差；开着的改动要等
+/// 下次启动隧道才生效，界面上那句状态说明就是这么写的。
+pub fn set_split_enabled(enabled: bool) -> bool {
+    with_config(|config| {
+        if config.split.enabled == enabled {
+            return false;
+        }
+        config.split.enabled = enabled;
+        true
+    })
+}
+
+/// 打开 / 关掉某一组内置清单。
+pub fn set_split_group(group: SplitGroup, enabled: bool) -> bool {
+    with_config(|config| {
+        if config.split.group_enabled(group) == enabled {
+            return false;
+        }
+        config.split.set_group(group, enabled);
+        true
+    })
+}
+
+/// 存自定义规则（整段文本），写完返回校验结论。
+///
+/// 校验失败也**要落盘**：用户可能只是暂时写错一行就想先存着，逼他改对才能
+/// 保存会丢掉已经敲进去的几十行。规则解析失败时引擎那边按空处理，不影响启动。
+pub fn save_split_custom(custom: String) -> Result<(), String> {
+    let Some(config) = CONFIG.get() else {
+        return Err(t("配置还没读进来", "The config is not loaded yet").to_string());
+    };
+    let mut config = lock(config);
+    if config.split.custom == custom {
+        return Ok(());
+    }
+    config.split.custom = custom;
+    let verdict = config.split.parse_custom().map(|_| ());
+    if let Err(error) = config.save() {
+        log::warn!("保存配置失败：{error}");
+    }
+    verdict
+}
+
+/// 存直连出口：DNS 服务器与出口网卡。
+pub fn save_split_outlet(direct_dns: String, direct_interface: String) -> Result<(), String> {
+    let Some(config) = CONFIG.get() else {
+        return Err(t("配置还没读进来", "The config is not loaded yet").to_string());
+    };
+    let mut config = lock(config);
+    let dns = direct_dns.trim().to_string();
+    let interface = direct_interface.trim().to_string();
+    if config.split.direct_dns == dns && config.split.direct_interface == interface {
+        return Ok(());
+    }
+    let previous = (config.split.direct_dns.clone(), config.split.direct_interface.clone());
+    config.split.direct_dns = dns;
+    config.split.direct_interface = interface;
+    let verdict = config.split.validate().or_else(|error| {
+        // 只有「直连 DNS 不是 IP」这类出口错误该由这一块负责；「一组清单都没开」
+        // 是另一张卡片的事，别在这里拦着用户存出口。
+        if config.split.direct_dns_addr().is_some() {
+            Ok(())
+        } else {
+            Err(error)
+        }
+    });
+    if verdict.is_err() {
+        config.split.direct_dns = previous.0;
+        config.split.direct_interface = previous.1;
+        return verdict;
+    }
+    if let Err(error) = config.save() {
+        log::warn!("保存配置失败：{error}");
+    }
+    Ok(())
+}
+
+/// 后台更新三份清单（走网络，结论由内核写进 `Shared::split_update`）。
+pub fn update_split_lists() {
+    let Some(engine) = ENGINE.get() else {
+        return;
+    };
+    let settings = config().map(|config| config.split).unwrap_or_default();
+    engine.update_split_lists(settings);
+}
+
+/// 内置清单的条数 `(局域网与保留, 国内 IP, 国内域名)`。
+///
+/// 取的是**编译进程序的快照**条数，不含运行时探测到的本机网卡段：那个数每次
+/// 开机都可能变，摆在「内置清单」这一栏里反而让人以为清单被人改过。
+pub fn split_counts() -> (usize, usize, usize) {
+    let (local, ipv4, ipv6, domain) = crate::core::split::builtin::snapshot_size();
+    (local, ipv4 + ipv6, domain)
 }
 
 /// 取锁；上一次持锁的线程 panic 了也照常用里面的值（配置不该因此失效）。

@@ -38,7 +38,7 @@ use super::live::{Live, bytes_text, rate_text};
 use super::page::Page;
 use super::state::LogFilter;
 use super::widgets::{danger_color, direct_color, info_color, ok_color, proxy_color, warn_color};
-use super::{palette, profile, state};
+use super::{palette, profile, split, state};
 
 /// 顶栏高度。
 const TOP_BAR_HEIGHT: f32 = 52.0;
@@ -95,6 +95,7 @@ impl LogView {
 struct Ui {
     logs: LogView,
     profiles: profile::ProfileUi,
+    splits: split::SplitUi,
 }
 
 /// 整窗骨架。
@@ -116,6 +117,7 @@ pub fn shell() -> impl IntoElement {    let page = signal(Page::Dashboard);
     let ui = Ui {
         logs: LogView::new(),
         profiles: profile::ProfileUi::new(),
+        splits: split::SplitUi::new(),
     };
     // 根组件只跑一次，窗口属性也在这里设一次。
     hide_system_title_bar();
@@ -689,6 +691,7 @@ fn page_body(
     match page {
         Page::Dashboard => dashboard(live, error).into_element(),
         Page::Profiles => profile::page(ui.profiles).into_element(),
+        Page::Split => split::page(ui.splits, live).into_element(),
         Page::Program => program(live, ui.logs).into_element(),
         other => pending_page(other).into_element(),
     }

@@ -8,7 +8,7 @@
 //! 拿着内核的锁去渲染会把锁的持有时间拉长到整个布局过程；而且很多元素
 //! （比如图表里的每一列）只需要同一帧的一份数据，重复加锁只会让数字对不上。
 
-use crate::core::engine::{Status, Update};
+use crate::core::engine::{SplitRuntime, SplitUpdate, Status, Update};
 use crate::core::i18n::t;
 use crate::core::logs::LogLine;
 use crate::core::traffic::RouteTraffic;
@@ -48,6 +48,10 @@ pub struct Live {
     pub blocked: Option<String>,
     /// 会话名额被打满过（tun2proxy 在日志里报了 `dropping new session`）。
     pub sessions_full: bool,
+    /// 分流器的运行情况：有没有在跑、生效多少条规则、本次分流了多少。
+    pub split: SplitRuntime,
+    /// 清单在线更新的进度。
+    pub split_update: SplitUpdate,
 }
 
 impl Live {
@@ -84,6 +88,8 @@ impl Live {
             log_total: guard.log_total,
             blocked: guard.start_blocked.clone(),
             sessions_full: guard.sessions_full,
+            split: guard.split.clone(),
+            split_update: guard.split_update.clone(),
         }
     }
 
@@ -100,6 +106,8 @@ impl Live {
             log_total: 0,
             blocked: None,
             sessions_full: false,
+            split: SplitRuntime::default(),
+            split_update: SplitUpdate::Idle,
         }
     }
 
