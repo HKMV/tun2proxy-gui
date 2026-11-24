@@ -1,0 +1,17 @@
+{
+  "name": "Tun2Proxy GUI",
+  "id": "com.hkmv.tun2proxy-gui",
+  "version": "0.6.5",
+  "build": 1,
+  "nsh": ">=0.6, <0.7",
+  "rust": ".",
+  "root": "App",
+  "theme": "themes/cyber.json",
+  "appearance": "system",
+  "icon": "assets/icon.png",
+  "window": {
+    "title": "Tun2Proxy GUI",
+    "defaultSize": { "width": 900, "height": 650 },
+    "minSize": { "width": 780, "height": 520 }
+  }
+}

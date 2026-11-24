@@ -1,5 +1,7 @@
 # 构建产物
 /target
+# nsh 生成的目录（类型声明、runner 源码、构建输出），可随时重建
+/.nsh
 # tools/ 下是独立的辅助 crate，各自有自己的 target/
 /tools/*/target
 

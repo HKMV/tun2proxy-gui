@@ -2,29 +2,31 @@
 name = "tun2proxy-gui"
 version = "0.6.5"
 edition = "2021"
-rust-version = "1.95"
+# nsh 0.6.1 要求 rustc 1.97 起（GPUI 时代是 1.95）。
+rust-version = "1.97"
 description = "Cross-platform desktop GUI for tun2proxy"
 authors = ["HKMV"]
 license = "MIT"
 repository = "https://github.com/HKMV/tun2proxy-gui"
 
+[lib]
+name = "tun2proxy_gui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tun2proxy-gui"
+path = "src/main.rs"
+
 [dependencies]
-# GPUI：GPU 加速的 Rust 原生桌面 UI（Windows / macOS / Linux 同一套渲染管线）。
+# 界面框架：Native Shell（nsh）。它是「无样式的原生基础组件 + 引擎」，界面
+# 的外观全部由本仓库的 ui 层用主题 token 自己画。
 #
-# 版本必须**精确锁定**：gpuikit 0.9 只对得上 gpui-unofficial 1.14.2 的 API，
-# 而 1.x 之间并不兼容（1.26 就把 `Window::blur` 改成了带参数的签名，
-# gpuikit 会直接编译失败）。所以这里用 `=` 而不是 `^`。
-gpui = { package = "gpui-unofficial", version = "=1.14.2" }
-# 窗口平台层：gpui 自己不提供，必须由应用指定一个。
-gpui_platform = { package = "gpui-platform-gpui-unofficial", version = "=1.14.2", features = [
-    "font-kit",
-] }
-# 组件库：按钮、输入框、下拉框、进度条、对话框、主题与图标。
-#
-# 走 vendor/ 里的 0.9.0 副本（见文件末尾的 [patch.crates-io]），因为上游的
-# Select 弹层宽度写死按内容排版、且不给应用任何旋钮，而这里的下拉框必须和
-# 触发框同宽。补丁只有二十来行，见 vendor/gpuikit/PATCH.md。
-gpuikit = "0.9"
+# 和 GPUI 时代的两点不同：
+# - 不再需要单独的 `gpui_platform`——nsh 的平台 crate 自带窗口；
+# - 不再需要 `[patch.crates-io]` 的本地副本（gpuikit 的 Select 弹层宽度补丁已
+#   随 gpuikit 一起删掉）。
+nsh-core = "0.6.1"
+nsh-base = "0.6.1"
 
 log = { version = "0.4", features = ["std"] }
 # 日志：tracing 生态（与 devroute 同一套写法）。
@@ -33,9 +35,6 @@ log = { version = "0.4", features = ["std"] }
 # - `tracing-subscriber`：订阅端（`time` 特性给 `OffsetTime`，按东八区打时间）；
 # - `tracing-appender`：按天滚动写文件，自带 `max_log_files` 清理；
 # - `time`：时间格式（`[hour]:[minute]:[second]` 与毫秒）。
-#
-# 第三方库（gpui / gpuikit）用的是 `log` crate：`tracing-subscriber` 默认带的
-# `tracing-log` 特性会把它桥接成 tracing 事件，所以不用改它们的调用点。
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["time"] }
 tracing-appender = "0.2"
@@ -48,8 +47,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "io-util"
 tokio-util = "0.7"
 # 分流器的直连出口要「按出接口选路」：Windows 上是 IP_UNICAST_IF，Linux 上是
 # SO_BINDTODEVICE。std 的 TcpStream 没有这个能力，这里用 socket2 建 socket 并
-# 拿到原始句柄自己 setsockopt。它在依赖树里本来就存在（tokio 间接依赖），不增
-# 加下载量。
+# 拿到原始句柄自己 setsockopt。
 socket2 = "0.6"
 # 只用到 IpCidr / IpCidrSet，关掉默认特性避免拖进整个 tproxy 运行时。
 tproxy-config = { version = "7.0.9", default-features = false }
@@ -59,16 +57,13 @@ tproxy-config = { version = "7.0.9", default-features = false }
 # 非 Windows 平台上它什么也不做（build.rs 里已经用 cfg 圈住了）。
 embed-resource = "3"
 
-# 隧道本身是**外部的命令行程序**：本程序只负责下载官方二进制、拼参数、拉起子进程
-# 和收日志（见 core::binary / core::engine），从头到尾没有 `use tun2proxy::...`。
-# 所以这里不依赖 tun2proxy crate——早先为读 `Args` 类型加过，后来改成自己拼
-# 参数列表就没人用了，留着只会让 CI 白编一棵几百个 crate 的依赖树。
 [target.'cfg(unix)'.dependencies]
 # root 检测（geteuid）、停子进程（SIGINT）、日志时间戳转本地时间（localtime_r）。
-# Windows 上这些走 windows-sys，不需要 libc。
 libc = "0.2"
 
-[target.'cfg(windows)'.dependencies]
+[target.'cfg(target_os = "windows")'.dependencies]
+# 平台层：Win32 的窗口与 Direct2D 绘制，`cargo run` 起程序时用它。
+nsh-platform-windows = "0.6.1"
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Security",
@@ -100,40 +95,14 @@ windows-sys = { version = "0.59", features = [
     # （CreateToolhelp32Snapshot / Process32NextW，见 core::orphans）。
     "Win32_System_Diagnostics_ToolHelp",
 ] }
-# 托盘图标按状态着色：ico 里的帧是 PNG，要解码改像素再编码回去。
-# 纯 Rust、无系统依赖，只在 Windows 上编进来。
+# 托盘图标的着色（历史遗留，nsh 的托盘接管后可以删）。
 png = "0.17"
 
 # 发布版：一切为了**体积**，编译时间让给 CI。
-#
-# 这个程序编进来的是整套 GPUI（渲染管线 + 文本排版 + 图像解码）与 tokio，
-# 默认 profile 出来 exe 将近 15 MB；下面五项合起来砍到手边大小，代价是
-# 本机全量 release 编译从「几分钟」变成「十几分钟」（增量只重链一次）。
 [profile.release]
-# 按体积优化而不是按速度：这个程序的负载是画两张折线图 + 转发字节，热点
-# 都在 tokio / 系统调用里，`s` 相比 `3` 省下的那部分代码体积换掉的性能
-# 用户感知不到；`z` 会关掉循环向量化，收益只多一点点，不值。
 opt-level = "s"
-# `fat` LTO：跨 crate 内联 + 死代码消除。GPUI 大量泛型与 trait 对象，只有跨
-# crate 优化才可能把没走到的分支摘掉；`thin` 做不到，体积差得很明显。
 lto = "fat"
-# 单一 codegen unit：给 LTO 一张完整的图，别再拆成 16 块各优化各的。
 codegen-units = 1
-# 出错直接 abort：省掉每个函数的 landing pad（栈展开表）。桌面程序不需要
-# 捕获 panic 后继续跑，这几处表纯属占地方。
-#
 # 注意：这条会让 `cargo test --release` 失效（测试框架需要展开）。
-# 单元测试请用默认的 dev 配置跑 `cargo test`，CI 里也只 build 不 test --release。
 panic = "abort"
-# 去掉符号表（Windows 的 exe 里也有一份，不是只有 ELF 才有）。
 strip = "symbols"
-
-# gpuikit 0.9.0 的本地副本。上游 `Select` 把弹层宽度交给了内容（只有
-# `min_w(120px)`），触发框多宽它都不管，应用侧拿不到任何开关；`Listbox`
-# 又是 `pub(crate)`，没法在应用里拼一个同宽的。所以这里只给 `Select` 加一个
-# `popup_width`，让弹层跟着触发框走，其余逻辑原样不动。
-#
-# 升级 gpui / gpuikit 时：把新版源码重新拷到 vendor/gpuikit，再按
-# vendor/gpuikit/PATCH.md 里的清单重打一遍；上游补了这个 API 就可以删掉本段。
-[patch.crates-io]
-gpuikit = { path = "vendor/gpuikit" }
