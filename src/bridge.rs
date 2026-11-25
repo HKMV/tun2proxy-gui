@@ -90,7 +90,12 @@ impl Backend {
         }
     }
 
-    /// 换界面语言（要重建整棵树才生效，前端自己刷新）。
+    /// 当前实际在用的界面语言（`zh` / `en`）：TSX 那边据此选文案。
+    pub fn language() -> String {
+        crate::api::program::resolved_language().to_string()
+    }
+
+    /// 换界面语言（存盘并立刻生效：TSX 那边读的是信号，下一帧就是新语言）。
     pub fn set_language(language: String) -> String {
         state::ensure_installed();
         match parse::<crate::core::i18n::LangSetting>(&language) {

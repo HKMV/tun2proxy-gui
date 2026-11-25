@@ -12,7 +12,7 @@
 use serde::Serialize;
 
 use crate::core::config::CloseAction;
-use crate::core::i18n::LangSetting;
+use crate::core::i18n::{Lang, LangSetting};
 use crate::core::paths;
 
 use super::state;
@@ -101,10 +101,22 @@ pub fn set_close_action(id: &str) -> &'static str {
     close_id(action)
 }
 
+/// 当前**实际**在用的界面语言（`auto` 已经解析成具体语言）。
+///
+/// 界面骨架的文案在 TSX 那边，得知道该写中文还是英文；`ProgramView.language`
+/// 是设置项（可能是 `auto`），拿它判断会把「跟随系统」当成中文。
+pub fn resolved_language() -> &'static str {
+    match crate::core::i18n::lang() {
+        Lang::En => "en",
+        Lang::Zh => "zh",
+    }
+}
+
 /// 改界面语言，返回 `(改后的 id, 要不要重建界面)`。
 ///
-/// 「重建」不是因为语言是构建期取的——JSON 里的文案全是运行期给的，改完下一帧
-/// 就是新语言。留这个返回值是给界面一个「要不要重置滚动位置」的信号。
+/// 「重建」不是因为语言是构建期取的——文案全是运行期给的，改完下一帧就是新语言。
+/// 留这个返回值是给界面一个「要不要重置滚动位置」的信号（TSX 那边换语言会回顶：
+/// 断行全变了，停在原偏移上会卡在半行字上）。
 pub fn set_language(id: &str) -> (&'static str, bool) {
     let setting = match id {
         "auto" => LangSetting::Auto,

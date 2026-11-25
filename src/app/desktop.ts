@@ -13,6 +13,7 @@ import { Application, currentWindow, Tray } from "nsh/desktop";
 import type { WindowRef } from "nsh/desktop";
 
 import type * as api from "./api";
+import { isEnglish, t } from "./i18n";
 
 /**
  * 窗口句柄。
@@ -56,16 +57,21 @@ export function installTray(options: {
   let last = "";
   effect(() => {
     const snap = options.snap();
-    const key = `${snap.active}|${snap.statusLabel}`;
+    // 语言也算进 key：菜单是原生对象，不重设就不会跟着界面换语言
+    // （`statusLabel` 通常也变了，但不能指望它一定变）。
+    const key = `${snap.active}|${snap.statusLabel}|${isEnglish()}`;
     if (key === last) return;
     last = key;
     Tray.set({
       tooltip: `Tun2Proxy GUI · ${snap.statusLabel}`,
       menu: [
-        { label: snap.active ? "停止隧道" : "启动隧道", onSelect: options.onToggle },
+        {
+          label: snap.active ? t("停止隧道", "Stop tunnel") : t("启动隧道", "Start tunnel"),
+          onSelect: options.onToggle,
+        },
         { type: "separator" },
-        { label: "显示窗口", onSelect: showWindow },
-        { label: "退出", onSelect: quit },
+        { label: t("显示窗口", "Show window"), onSelect: showWindow },
+        { label: t("退出", "Quit"), onSelect: quit },
       ],
       onClick: showWindow,
     });

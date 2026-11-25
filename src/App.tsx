@@ -16,19 +16,55 @@ import type { JSX } from "nsh";
 import * as api from "./app/api";
 import { Button, Card, CardHead, Caption, Dot, Metric, ScrollArea } from "./app/components";
 import { bindWindow, hideToTray, installTray, interceptClose, quit } from "./app/desktop";
+import { isEnglish, syncLanguage, t } from "./app/i18n";
 import { NetworkPage } from "./app/pages/Network";
 import { ProfilesPage } from "./app/pages/Profiles";
 import { ProgramPage } from "./app/pages/Program";
 import { SplitPage } from "./app/pages/Split";
 import { bumpTheme, hue, ink, rateText, surface } from "./app/theme";
 
-/** 导航项。 */
+/**
+ * 导航项。
+ *
+ * 中英两份都摆在这里（`en` / `hintEn`）：这些是模块顶层的常量，`t()` 在这里求值
+ * 只会拿到首帧的语言，所以语言相关的取词留到渲染时（子节点位置）做。
+ */
 const PAGES = [
-  { id: "dashboard", label: "仪表盘", hint: "隧道状态、实时流量" },
-  { id: "profiles", label: "代理配置", hint: "多套上游代理" },
-  { id: "split", label: "分流规则", hint: "国内直连、清单与出口" },
-  { id: "network", label: "网络与绕过", hint: "TUN 网卡、UDP 与绕行" },
-  { id: "program", label: "程序与日志", hint: "内核版本、日志与更新" },
+  {
+    id: "dashboard",
+    label: "仪表盘",
+    en: "Dashboard",
+    hint: "隧道状态、实时流量",
+    hintEn: "Tunnel state and live traffic",
+  },
+  {
+    id: "profiles",
+    label: "代理配置",
+    en: "Profiles",
+    hint: "多套上游代理",
+    hintEn: "Multiple upstream proxies",
+  },
+  {
+    id: "split",
+    label: "分流规则",
+    en: "Split routing",
+    hint: "国内直连、清单与出口",
+    hintEn: "Direct routing, lists and egress",
+  },
+  {
+    id: "network",
+    label: "网络与绕过",
+    en: "Network & bypass",
+    hint: "TUN 网卡、UDP 与绕行",
+    hintEn: "TUN adapter, UDP and bypass",
+  },
+  {
+    id: "program",
+    label: "程序与日志",
+    en: "Program & logs",
+    hint: "内核版本、日志与更新",
+    hintEn: "Core version, logs and updates",
+  },
 ] as const;
 
 type PageId = (typeof PAGES)[number]["id"];
@@ -36,19 +72,18 @@ type PageId = (typeof PAGES)[number]["id"];
 /** 最近两分钟：每秒一个点。 */
 const HISTORY_POINTS = 120;
 
-/** 可选的配色。色块不写死色值——从各套 JSON 的 `primary` 里读，改配色不用改这里。 */
-const PALETTES = [
-  { id: "cyber", label: "赛博青" },
-  { id: "matrix", label: "矩阵绿" },
-  { id: "ember", label: "熔岩橙" },
-  { id: "aurora", label: "极光紫" },
-] as const;
+/**
+ * 可选的配色。色块不写死色值——从各套 JSON 的 `primary` 里读，改配色不用改这里。
+ *
+ * 没有名字：顶栏只有四个色点，鼠标悬停也不弹提示，写在这里的文案从来没被渲染过。
+ */
+const PALETTES = [{ id: "cyber" }, { id: "matrix" }, { id: "ember" }, { id: "aurora" }] as const;
 
 /** 明暗三档。`auto` 交给系统。 */
 const THEMES = [
-  { id: "light", label: "浅色" },
-  { id: "auto", label: "跟随" },
-  { id: "dark", label: "深色" },
+  { id: "light", label: "浅色", en: "Light" },
+  { id: "auto", label: "跟随", en: "System" },
+  { id: "dark", label: "深色", en: "Dark" },
 ] as const;
 
 /**
@@ -58,6 +93,9 @@ const THEMES = [
  * 再闪一下。所以放在模块顶层、`mount` 之前。
  */
 const BOOT = api.boot();
+
+// 第一帧之前就把语言定下来，否则英文系统上会先闪一秒中文再跳成英文。
+syncLanguage(api.language());
 
 /** 一套配色的主色（色块用）：读它 JSON 里的 `primary`。结果缓存——色块每秒都画，别每次都解析。 */
 const SWATCHES = new Map<string, string>();
@@ -109,6 +147,16 @@ export function App(): JSX.Element {
   const page = signal<PageId>("dashboard");
   const snap = signal<api.Snapshot>(api.snapshot());
   const notice = signal<string | null>(null);
+  /**
+   * 没有管理员权限时的那句话。
+   *
+   * 发布版在开窗口之前就 UAC 重启过自己（`main.rs` 的 `ensure_elevated`），走不到
+   * 这里；`nsh run` 的开发宿主和 `nsh package` 打的包没有那一步，进程就是普通
+   * 权限——这时候点「启动」只会拿到一句内核报错，用户根本猜不到是权限问题。
+   *
+   * 这句话由内核给（已经按语言翻好），所以换语言之后要重新取一次。
+   */
+  const privilege = signal(api.privilegeHint());
   const palette = signal<string>(BOOT.palette);
   const themeSetting = signal<string>(BOOT.theme);
   /** 关窗确认浮层开着没有（关窗行为配成「每次询问」时用）。 */
@@ -136,6 +184,10 @@ export function App(): JSX.Element {
   effect(() => {
     const id = setInterval(() => {
       snap.set(api.snapshot());
+      // 语言可能被别的窗口 / 配置文件改掉，每秒对一次；换语言那一刻由程序页
+      // 自己立刻同步（见 `Program.tsx`），不用等这一拍。
+      syncLanguage(api.language());
+      privilege.set(api.privilegeHint());
     }, 1000);
     return () => clearInterval(id);
   });
@@ -176,13 +228,17 @@ export function App(): JSX.Element {
       const result = api.start();
       if (!result.ok) {
         stopStarting();
-        notice.set(result.error ?? "启动失败");
+        notice.set(result.error ?? t("启动失败", "Failed to start"));
       } else {
         notice.set(null);
       }
     } catch (err) {
       stopStarting();
-      notice.set(`启动/停止时出错：${err instanceof Error ? err.message : String(err)}`);
+      notice.set(
+        `${t("启动/停止时出错：", "Start/stop failed: ")}${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
     }
   };
 
@@ -214,7 +270,6 @@ export function App(): JSX.Element {
    * 这里；`nsh run` 的开发宿主和 `nsh package` 打的包没有那一步，进程就是普通
    * 权限——这时候点「启动」只会拿到一句内核报错，用户根本猜不到是权限问题。
    */
-  const privilege = signal(api.privilegeHint());
   const privilegeError = signal<string | null>(null);
 
   return (
@@ -256,7 +311,7 @@ export function App(): JSX.Element {
             <Text style={{ fontSize: 11, color: hue.danger() }}>{privilegeError()}</Text>
           ) : null}
           <Button
-            label="以管理员身份重启"
+            label={t("以管理员身份重启", "Restart as administrator")}
             onPress={() => {
               try {
                 const result = api.relaunchElevated();
@@ -265,7 +320,7 @@ export function App(): JSX.Element {
                   quit();
                   return;
                 }
-                privilegeError.set(result.error ?? "提权失败");
+                privilegeError.set(result.error ?? t("提权失败", "Elevation failed"));
               } catch (err) {
                 privilegeError.set(err instanceof Error ? err.message : String(err));
               }
@@ -284,7 +339,9 @@ export function App(): JSX.Element {
             page.set(id);
           }}
         />
-        <ScrollArea resetOn={page} style={{ flex: 1, padding: 24 }}>
+        {/* 换页、换语言都回到顶部：换完语言整页的断行都变了，停在原来那个
+            偏移上会正好卡在半行字上（标题被裁掉一截）。 */}
+        <ScrollArea resetOn={() => `${page()}|${isEnglish()}`} style={{ flex: 1, padding: 24 }}>
           {/* 上限 1200 并居中：窗口一拉大，宽屏下卡片能到 1300+，状态卡的数字
               被推到右侧边缘、离标题老远，中间空出一大片。窄窗不受影响。 */}
           <View
@@ -305,8 +362,13 @@ export function App(): JSX.Element {
                 onPress={() => notice.set(null)}
                 style={{ flexDirection: "row", alignItems: "flex-start", gap: 8, cursor: "pointer" }}
               >
-                <Text style={{ fontSize: 11, color: hue.danger() }}>启动失败：{notice()}</Text>
-                <Text style={{ fontSize: 11, color: ink.muted() }}>（点一下消掉）</Text>
+                <Text style={{ fontSize: 11, color: hue.danger() }}>
+                  {t("启动失败：", "Failed to start: ")}
+                  {notice()}
+                </Text>
+                <Text style={{ fontSize: 11, color: ink.muted() }}>
+                  {t("（点一下消掉）", "(click to dismiss)")}
+                </Text>
               </View>
             ) : null}
             {
@@ -329,10 +391,13 @@ export function App(): JSX.Element {
       {snap().busy || starting() ? (
         <BusyMask
           snap={snap}
-          label={starting() ? "正在检查上游代理…" : undefined}
+          label={starting() ? t("正在检查上游代理…", "Checking the upstream proxy…") : undefined}
           hint={
             starting()
-              ? "连通性检测最多 3 秒；不通会取消启动并说明原因。"
+              ? t(
+                  "连通性检测最多 3 秒；不通会取消启动并说明原因。",
+                  "The connectivity check takes up to 3 s; if it fails the start is cancelled and the reason shown.",
+                )
               : undefined
           }
         />
@@ -353,19 +418,22 @@ export function App(): JSX.Element {
         >
           <Card style={{ width: 400 }}>
             <CardHead
-              title="关闭窗口？"
-              hint="tun2proxy 是常驻服务：退出会把正在跑的隧道一起带走，网会断。收进托盘可以继续在后台跑。"
+              title={t("关闭窗口？", "Close the window?")}
+              hint={t(
+                "tun2proxy 是常驻服务：退出会把正在跑的隧道一起带走，网会断。收进托盘可以继续在后台跑。",
+                "tun2proxy is a background service: quitting takes the running tunnel with it and your network drops. Minimising to the tray keeps it running.",
+              )}
             />
             <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 8 }}>
               <Button
-                label="继续后台运行"
+                label={t("继续后台运行", "Keep running in the background")}
                 onPress={() => {
                   askClose.set(false);
                   hideToTray();
                 }}
               />
               <Button
-                label="退出程序"
+                label={t("退出程序", "Quit")}
                 variant="danger"
                 onPress={() => {
                   askClose.set(false);
@@ -396,12 +464,18 @@ function BusyMask(props: {
   hint?: string;
 }): JSX.Element {
   // 文案由后端给（`busyLabel`）：状态机在那边，界面不复述一套。
-  const label = () => props.label || props.snap().busyLabel || "请稍等…";
+  const label = () => props.label || props.snap().busyLabel || t("请稍等…", "One moment…");
   const hint = () =>
     props.hint ||
     (props.snap().status === "stopping"
-      ? "等子进程退出、网卡回收，这几秒不要再点一次。"
-      : "探上游代理、清理残留网卡与进程，这几秒不要再点一次。");
+      ? t(
+          "等子进程退出、网卡回收，这几秒不要再点一次。",
+          "Waiting for the child process to exit and the adapter to be released — do not click again.",
+        )
+      : t(
+          "探上游代理、清理残留网卡与进程，这几秒不要再点一次。",
+          "Probing the upstream proxy and clearing leftover adapters and processes — do not click again.",
+        ));
   return (
     <View
       style={{
@@ -497,7 +571,7 @@ function TopBar(props: {
         </View>
         <View style={{ flexDirection: "column", gap: 2 }}>
           <Text style={{ fontSize: 13, fontWeight: "600", color: ink.primary() }}>Tun2Proxy</Text>
-          <Text style={{ fontSize: 10, color: ink.muted() }}>隧道控制台</Text>
+          <Text style={{ fontSize: 10, color: ink.muted() }}>{t("隧道控制台", "Tunnel console")}</Text>
         </View>
       </View>
       <StatusPill snap={props.snap} />
@@ -602,7 +676,7 @@ function ThemeChips(props: { current: string; onChoose: (id: string) => void }):
                 color: chosen ? hue.primaryInk() : ink.muted(),
               }}
             >
-              {item.label}
+              {t(item.label, item.en)}
             </Text>
           </View>
         );
@@ -668,12 +742,12 @@ function SideBar(props: {
             paddingBottom: 8,
           }}
         >
-          导航
+          {t("导航", "Navigation")}
         </Text>
         {PAGES.map((item) => (
           <NavItem
             label={item.label}
-            hint={item.hint}
+            labelEn={item.en}
             chosen={props.page() === item.id}
             onPress={() => props.onSelect(item.id)}
           />
@@ -684,10 +758,10 @@ function SideBar(props: {
   );
 }
 
-/** 一个导航项。 */
+/** 一个导航项。只画名字：那行说明留给右侧的页头，侧栏里塞两行会挤成一团。 */
 function NavItem(props: {
   label: string;
-  hint: string;
+  labelEn: string;
   chosen: boolean;
   onPress: () => void;
 }): JSX.Element {
@@ -716,7 +790,7 @@ function NavItem(props: {
           color: props.chosen ? ink.primary() : ink.muted(),
         }}
       >
-        {props.label}
+        {t(props.label, props.labelEn)}
       </Text>
     </View>
   );
@@ -763,8 +837,14 @@ function ToggleButton(props: {
       style={{ height: 36, borderRadius: 18, cursor: "pointer" }}
     >
       {running()
-        ? face(props.snap().busy ? "停止中…" : "停止", hue.danger())
-        : face(blocked() ? "启动中…" : "启动", hue.primary())}
+        ? face(
+            props.snap().busy ? t("停止中…", "Stopping…") : t("停止", "Stop"),
+            hue.danger(),
+          )
+        : face(
+            blocked() ? t("启动中…", "Starting…") : t("启动", "Start"),
+            hue.primary(),
+          )}
     </View>
   );
 }
@@ -774,13 +854,17 @@ function PageHeader(props: { page: () => PageId; snap: () => api.Snapshot }): JS
   const meta = () => PAGES.find((item) => item.id === props.page()) ?? PAGES[0];
   const version = () => {
     const snap = props.snap();
-    return `${snap.statusLabel} · ${snap.version ? `tun2proxy ${snap.version}` : "未安装"}`;
+    return `${snap.statusLabel} · ${
+      snap.version ? `tun2proxy ${snap.version}` : t("未安装", "not installed")
+    }`;
   };
   return (
     <View style={{ flexDirection: "row", alignItems: "flex-end", gap: 16 }}>
       <View style={{ flex: 1, flexDirection: "column", gap: 4 }}>
-        <Text style={{ fontSize: 22, fontWeight: "600", color: ink.primary() }}>{meta().label}</Text>
-        <Text style={{ fontSize: 12, color: ink.muted() }}>{meta().hint}</Text>
+        <Text style={{ fontSize: 22, fontWeight: "600", color: ink.primary() }}>
+          {t(meta().label, meta().en)}
+        </Text>
+        <Text style={{ fontSize: 12, color: ink.muted() }}>{t(meta().hint, meta().hintEn)}</Text>
       </View>
       <Text style={{ fontSize: 11, color: ink.muted(), fontVariant: ["tabular-nums"] }}>
         {version()}
@@ -825,13 +909,21 @@ function StatusCard(props: {
         <View style={{ flex: 1, flexDirection: "column", gap: 6 }}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
             <Dot color={color()} size={10} pulse={!snap().active} />
-            <Text style={{ fontSize: 10, fontWeight: "600", color: ink.muted() }}>隧道状态</Text>
+            <Text style={{ fontSize: 10, fontWeight: "600", color: ink.muted() }}>
+              {t("隧道状态", "Tunnel state")}
+            </Text>
           </View>
           <Text style={{ fontSize: 24, fontWeight: "600", color: ink.primary() }}>
             {snap().statusLabel}
           </Text>
           <Text style={{ fontSize: 11, color: ink.muted() }}>
-            {props.notice() ?? snap().detail ?? snap().blocked ?? "启动后这里显示直连与代理的实时速率。"}
+            {props.notice() ??
+              snap().detail ??
+              snap().blocked ??
+              t(
+                "启动后这里显示直连与代理的实时速率。",
+                "Once started, the live direct and proxied rates show up here.",
+              )}
           </Text>
           {/* 会话名额打满：新连接会被丢掉，但界面上原本一点迹象都没有——用户只会
               觉得「网忽然变差了」。写清后果和去处。 */}
@@ -839,17 +931,36 @@ function StatusCard(props: {
             <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
               <Dot color={hue.warn()} size={6} />
               <Text style={{ fontSize: 11, color: hue.warn() }}>
-                会话名额已打满：新连接会被丢弃，去「代理配置」把「最大会话数」调大。
+                {t(
+                  "会话名额已打满：新连接会被丢弃，去「代理配置」把「最大会话数」调大。",
+                  "Session slots are exhausted: new connections are dropped. Raise the session limit on the Profiles page.",
+                )}
               </Text>
             </View>
           ) : null}
         </View>
-        <Metric label="直连 ↓" value={rateText(snap().direct.down)} color={hue.direct()} />
-        <Metric label="直连 ↑" value={rateText(snap().direct.up)} color={hue.direct()} />
-        <Metric label="代理 ↓" value={rateText(snap().proxy.down)} color={hue.proxy()} />
-        <Metric label="代理 ↑" value={rateText(snap().proxy.up)} color={hue.proxy()} />
+        <Metric
+          label={t("直连 ↓", "Direct ↓")}
+          value={rateText(snap().direct.down)}
+          color={hue.direct()}
+        />
+        <Metric
+          label={t("直连 ↑", "Direct ↑")}
+          value={rateText(snap().direct.up)}
+          color={hue.direct()}
+        />
+        <Metric
+          label={t("代理 ↓", "Proxy ↓")}
+          value={rateText(snap().proxy.down)}
+          color={hue.proxy()}
+        />
+        <Metric
+          label={t("代理 ↑", "Proxy ↑")}
+          value={rateText(snap().proxy.up)}
+          color={hue.proxy()}
+        />
         <Button
-          label={snap().active ? "停止" : "启动"}
+          label={snap().active ? t("停止", "Stop") : t("启动", "Start")}
           variant="primary"
           disabled={snap().busy || props.starting()}
           onPress={props.onToggle}
@@ -870,12 +981,20 @@ function TrafficCard(props: { snap: () => api.Snapshot }): JSX.Element {
   return (
     <Card>
       <CardHead
-        title="实时流量"
-        hint="直连在下、代理在上，最近两分钟"
+        title={t("实时流量", "Live traffic")}
+        hint={t("直连在下、代理在上，最近两分钟", "Direct below, proxied above — last two minutes")}
         right={
           <View style={{ flexDirection: "row", gap: 16 }}>
-            <Metric label="直连" value={rateText(props.snap().direct.down)} color={hue.direct()} />
-            <Metric label="代理" value={rateText(props.snap().proxy.down)} color={hue.proxy()} />
+            <Metric
+              label={t("直连", "Direct")}
+              value={rateText(props.snap().direct.down)}
+              color={hue.direct()}
+            />
+            <Metric
+              label={t("代理", "Proxy")}
+              value={rateText(props.snap().proxy.down)}
+              color={hue.proxy()}
+            />
           </View>
         }
       />
@@ -920,16 +1039,33 @@ function TrafficCard(props: { snap: () => api.Snapshot }): JSX.Element {
             }}
           >
             <Text style={{ fontSize: 11, color: ink.muted() }}>
-              还没有流量：启动隧道后这里每秒画一根柱子
+              {t(
+                "还没有流量：启动隧道后这里每秒画一根柱子",
+                "No traffic yet — once the tunnel runs, one bar is drawn per second",
+              )}
             </Text>
           </View>
         ) : null}
       </View>
       <View style={{ flexDirection: "row", gap: 24 }}>
-        <Metric label="分流到直连" value={`${props.snap().split.direct}`} color={hue.direct()} />
-        <Metric label="分流到代理" value={`${props.snap().split.proxy}`} color={hue.proxy()} />
-        <Metric label="判定失败" value={`${props.snap().split.failed}`} color={hue.danger()} />
-        <Caption>{props.snap().split.running ? "分流器运行中" : "分流器未运行"}</Caption>
+        <Metric
+          label={t("分流到直连", "Routed direct")}
+          value={`${props.snap().split.direct}`}
+          color={hue.direct()}
+        />
+        <Metric
+          label={t("分流到代理", "Routed via proxy")}
+          value={`${props.snap().split.proxy}`}
+          color={hue.proxy()}
+        />
+        <Metric
+          label={t("判定失败", "Split failed")}
+          value={`${props.snap().split.failed}`}
+          color={hue.danger()}
+        />
+        <Caption>
+          {props.snap().split.running ? t("分流器运行中", "Splitter running") : t("分流器未运行", "Splitter stopped")}
+        </Caption>
       </View>
     </Card>
   );

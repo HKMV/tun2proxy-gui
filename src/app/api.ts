@@ -439,6 +439,15 @@ export function privilegeHint(): string {
 }
 
 /**
+ * 当前实际在用的界面语言：`zh` / `en`。
+ *
+ * 不是设置项——设置项可能是 `auto`，那样得看系统语言，判断在 Rust 那边做完了。
+ */
+export function language(): string {
+  return Backend.language();
+}
+
+/**
  * 以管理员身份重新拉起自己。
  *
  * 返回 `ok` 表示新进程已经起来了，本进程应当立刻退出（见 `desktop.quit()`）。
