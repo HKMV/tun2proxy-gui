@@ -189,10 +189,13 @@ export function SplitPage(props: { snap: () => api.Snapshot }): JSX.Element {
                   flexDirection: "row",
                   alignItems: "center",
                   gap: 12,
-                  paddingLeft: 4,
-                  paddingRight: 4,
-                  paddingTop: 3,
-                  paddingBottom: 3,
+                  paddingLeft: 6,
+                  // 右边多留 10 点：滚动条是自绘的、压在内容上，留出这条空隙
+                  // 开关才不会被它压住。
+                  paddingRight: 14,
+                  // 上下 5 点：开关 22 高，行距太窄时一排胶囊会挤成一条。
+                  paddingTop: 5,
+                  paddingBottom: 5,
                   borderRadius: 6,
                 }}
                 hoverStyle={{ backgroundColor: hue.accent() }}
