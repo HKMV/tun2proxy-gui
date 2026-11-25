@@ -137,7 +137,9 @@ export function Button(props: {
         borderWidth: 1,
         borderColor:
           variant === "primary" ? "transparent" : variant === "danger" ? hue.danger() : surface.border(),
-        backgroundColor: disabled ? hue.muted() : variant === "primary" ? hue.primary() : "transparent",
+        // 禁用态同样不能用 hue.muted()：列表行本身就是这个色，按钮的胶囊
+        // 形状会整块消失，只剩一行灰字，看着像排版没对齐。
+        backgroundColor: disabled ? surface.border() : variant === "primary" ? hue.primary() : "transparent",
         cursor: disabled ? "default" : "pointer",
         opacity: disabled ? 0.5 : 1,
         transitionProperty: "background-color",
@@ -301,7 +303,9 @@ export function Toggle(props: {
         flexDirection: "row",
         alignItems: "center",
         justifyContent: props.on ? "flex-end" : "flex-start",
-        backgroundColor: props.on ? hue.primary() : hue.muted(),
+        // 关态轨道不能用 hue.muted()：那个色同时是列表行的底色，放在行里
+        // 轨道就和底色并成一片，只剩一个圆点，看不出这是个开关。
+        backgroundColor: props.on ? hue.primary() : surface.border(),
         cursor: disabled() ? "default" : "pointer",
         opacity: disabled() ? 0.4 : 1,
         transitionProperty: "background-color",
@@ -440,3 +444,4 @@ export function ScrollArea(props: {
     </View>
   );
 }
+
