@@ -317,6 +317,28 @@ impl Backend {
         crate::api::program::install_update();
         outcome(Ok(()))
     }
+
+    // —— 运行环境 ——
+
+    /// 权限不够时的一句话，够用时是空串（前端据此决定要不要提示）。
+    ///
+    /// 返回裸文本而不是 JSON：只有一句话，包一层反而要前端多解一次。
+    pub fn privilege_hint() -> String {
+        state::ensure_installed();
+        crate::api::env::privilege_hint().unwrap_or_default()
+    }
+
+    /// 以管理员身份重新拉起自己。
+    ///
+    /// 成功时新进程已经起来了：前端收到 `ok` 就该退出本进程，否则会有两个窗口。
+    pub fn relaunch_elevated() -> String {
+        state::ensure_installed();
+        if crate::api::env::relaunch_elevated() {
+            outcome(Ok(()))
+        } else {
+            outcome(Err("没能以管理员身份启动：可能是 UAC 里点了「否」，或系统拒绝了这次提权。".to_string()))
+        }
+    }
 }
 
 /// `{"enabled":true}`：开关类动作的返回值。

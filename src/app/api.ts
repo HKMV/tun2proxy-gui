@@ -428,3 +428,21 @@ export function checkUpdate(): Outcome {
 export function installUpdate(): Outcome {
   return JSON.parse(Backend.installUpdate()) as Outcome;
 }
+
+/**
+ * 权限不够时的一句话，够用时是空串。
+ *
+ * 空串而不是 `null`：桥接那边返回的就是裸文本，`""` 天然是「没问题」。
+ */
+export function privilegeHint(): string {
+  return Backend.privilegeHint();
+}
+
+/**
+ * 以管理员身份重新拉起自己。
+ *
+ * 返回 `ok` 表示新进程已经起来了，本进程应当立刻退出（见 `desktop.quit()`）。
+ */
+export function relaunchElevated(): Outcome {
+  return JSON.parse(Backend.relaunchElevated()) as Outcome;
+}

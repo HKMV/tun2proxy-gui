@@ -28,6 +28,7 @@
 //! 的 `install` 在 `main` 里装一次。界面不持有它们，只调函数、读快照——所以
 //! 界面什么时候重建、重建几次都不影响业务。
 
+pub mod env;
 pub mod network;
 pub mod profiles;
 pub mod program;

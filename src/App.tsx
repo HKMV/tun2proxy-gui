@@ -207,6 +207,16 @@ export function App(): JSX.Element {
     onAsk: () => askClose.set(true),
   });
 
+  /**
+   * 没有管理员权限时的那句话。
+   *
+   * 发布版在开窗口之前就 UAC 重启过自己（`main.rs` 的 `ensure_elevated`），走不到
+   * 这里；`nsh run` 的开发宿主和 `nsh package` 打的包没有那一步，进程就是普通
+   * 权限——这时候点「启动」只会拿到一句内核报错，用户根本猜不到是权限问题。
+   */
+  const privilege = signal(api.privilegeHint());
+  const privilegeError = signal<string | null>(null);
+
   return (
     <View
       onLayout={settleBootTheme}
@@ -223,6 +233,46 @@ export function App(): JSX.Element {
         onPalette={choosePalette}
         onTheme={chooseTheme}
       />
+      {/* 权限条：只在真的没有权限时出现，横跨整窗——任何一页点「启动」都该
+          看到同一句后果，而不是各页各说一套。 */}
+      {privilege() ? (
+        <View
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 10,
+            paddingLeft: 16,
+            paddingRight: 16,
+            paddingTop: 8,
+            paddingBottom: 8,
+            backgroundColor: surface.inset(),
+            borderBottomWidth: 1,
+            borderColor: surface.border(),
+          }}
+        >
+          <Dot color={hue.warn()} size={6} />
+          <Text style={{ flex: 1, fontSize: 11, color: ink.primary() }}>{privilege()}</Text>
+          {privilegeError() ? (
+            <Text style={{ fontSize: 11, color: hue.danger() }}>{privilegeError()}</Text>
+          ) : null}
+          <Button
+            label="以管理员身份重启"
+            onPress={() => {
+              try {
+                const result = api.relaunchElevated();
+                if (result.ok) {
+                  // 新进程已经起来了，本进程必须让位：留着就是两个窗口、两份托盘。
+                  quit();
+                  return;
+                }
+                privilegeError.set(result.error ?? "提权失败");
+              } catch (err) {
+                privilegeError.set(err instanceof Error ? err.message : String(err));
+              }
+            }}
+          />
+        </View>
+      ) : null}
       <View style={{ flex: 1, flexDirection: "row" }}>
         <SideBar
           page={page}
