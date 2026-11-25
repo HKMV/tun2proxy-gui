@@ -140,16 +140,62 @@ export function App(): JSX.Element {
     return () => clearInterval(id);
   });
 
+  /**
+   * 点完「启动」到内核真的开始启动之间还有一段：内核先在后台探上游代理
+   * （最多 3 秒），这段里状态机还是「未启动」，蒙版不会自己出来——用户点了
+   * 一两秒没反应，就会以为按钮坏了，然后反复点。
+   *
+   * 所以这里自己记一个「正在预检」：点下去立刻上蒙版，等状态或结论一变就收。
+   */
+  const starting = signal(false);
+  let clickedAt = 0;
+  let startingTimer: number | null = null;
+
+  const stopStarting = () => {
+    starting.set(false);
+    if (startingTimer !== null) {
+      clearTimeout(startingTimer);
+      startingTimer = null;
+    }
+  };
+
   const toggle = () => {
     const state = snap();
-    if (state.busy) return;
-    if (state.active) {
-      api.stop();
-      return;
+    if (state.busy || starting()) return;
+    // 桥接调用抛出来的东西没人接：按钮照旧没反应，用户只能以为它坏了。
+    // 统一兜住，把原因摆到状态卡那一行上。
+    try {
+      if (state.active) {
+        api.stop();
+        return;
+      }
+      clickedAt = Date.now();
+      starting.set(true);
+      // 兜底：预检自己出不来结论时，最多盖 8 秒。
+      startingTimer = setTimeout(stopStarting, 8000);
+      const result = api.start();
+      if (!result.ok) {
+        stopStarting();
+        notice.set(result.error ?? "启动失败");
+      } else {
+        notice.set(null);
+      }
+    } catch (err) {
+      stopStarting();
+      notice.set(`启动/停止时出错：${err instanceof Error ? err.message : String(err)}`);
     }
-    const result = api.start();
-    notice.set(result.ok ? null : (result.error ?? "启动失败"));
   };
+
+  // 预检有结论就收掉蒙版：真的开始启动了（active/busy），或者被挡下来
+  // （blocked 有话说）。blocked 要等一拍再看——上一轮的失败原因还挂在快照上，
+  // 点下去内核清掉它要等下一次刷新，早了会把这一轮的蒙版当场收掉。
+  effect(() => {
+    if (!starting()) return;
+    const s = snap();
+    const settled =
+      s.active || s.busy || (s.blocked !== null && Date.now() - clickedAt > 1200);
+    if (settled) stopStarting();
+  });
 
   // 托盘与关窗：这两个是「窗口」的事，和页面无关，所以挂在这里一次。
   //
@@ -181,6 +227,7 @@ export function App(): JSX.Element {
         <SideBar
           page={page}
           snap={snap}
+          starting={starting}
           onToggle={toggle}
           onSelect={(id) => {
             notice.set(null);
@@ -214,7 +261,7 @@ export function App(): JSX.Element {
             ) : null}
             {
               page() === "dashboard" ? (
-                <Dashboard snap={snap} notice={notice} onToggle={toggle} />
+                <Dashboard snap={snap} notice={notice} starting={starting} onToggle={toggle} />
               ) : page() === "profiles" ? (
                 <ProfilesPage snap={snap} />
               ) : page() === "split" ? (
@@ -229,7 +276,17 @@ export function App(): JSX.Element {
         </ScrollArea>
       </View>
       {/* 启停蒙版：这几秒内核在干活，整窗盖住，别让人反复点。 */}
-      {snap().busy ? <BusyMask snap={snap} /> : null}
+      {snap().busy || starting() ? (
+        <BusyMask
+          snap={snap}
+          label={starting() ? "正在检查上游代理…" : undefined}
+          hint={
+            starting()
+              ? "连通性检测最多 3 秒；不通会取消启动并说明原因。"
+              : undefined
+          }
+        />
+      ) : null}
       {/* 关窗确认：配成「每次询问」时才出现。整窗蒙一层，问清楚再走。 */}
       {askClose() ? (
         <View
@@ -282,13 +339,19 @@ export function App(): JSX.Element {
  *
  * 盖的是**界面**：系统标题栏在外面，蒙版期间照样能点叉关窗（那是窗口的事）。
  */
-function BusyMask(props: { snap: () => api.Snapshot }): JSX.Element {
+function BusyMask(props: {
+  snap: () => api.Snapshot;
+  /** 覆盖后端给的文案（预检那一段后端还没有状态）。 */
+  label?: string;
+  hint?: string;
+}): JSX.Element {
   // 文案由后端给（`busyLabel`）：状态机在那边，界面不复述一套。
-  const label = () => props.snap().busyLabel || "请稍等…";
+  const label = () => props.label || props.snap().busyLabel || "请稍等…";
   const hint = () =>
-    props.snap().status === "stopping"
+    props.hint ||
+    (props.snap().status === "stopping"
       ? "等子进程退出、网卡回收，这几秒不要再点一次。"
-      : "探上游代理、清理残留网卡与进程，这几秒不要再点一次。";
+      : "探上游代理、清理残留网卡与进程，这几秒不要再点一次。");
   return (
     <View
       style={{
@@ -529,6 +592,7 @@ function StatusPill(props: { snap: () => api.Snapshot }): JSX.Element {
 function SideBar(props: {
   page: () => PageId;
   snap: () => api.Snapshot;
+  starting: () => boolean;
   onToggle: () => void;
   onSelect: (id: PageId) => void;
 }): JSX.Element {
@@ -565,7 +629,7 @@ function SideBar(props: {
           />
         ))}
       </View>
-      <ToggleButton snap={props.snap} onPress={props.onToggle} />
+      <ToggleButton snap={props.snap} starting={props.starting} onPress={props.onToggle} />
     </View>
   );
 }
@@ -617,8 +681,15 @@ function NavItem(props: {
  *
  * 忙碌期间由蒙版挡着，这里再按一次也只当没点：内核那两次调用不是幂等的。
  */
-function ToggleButton(props: { snap: () => api.Snapshot; onPress: () => void }): JSX.Element {
+function ToggleButton(props: {
+  snap: () => api.Snapshot;
+  starting: () => boolean;
+  onPress: () => void;
+}): JSX.Element {
   const running = () => props.snap().active;
+  // 预检那几秒内核还没进「启动中」，光看 busy 挡不住第二次点击。
+  const blocked = () => props.snap().busy || props.starting();
+  // 文案走 children（跟着信号走），不写进 style：nsh 的 style 字面量只在挂载/换主题时读。
   const face = (label: string, background: string) => (
     <View
       style={{
@@ -637,11 +708,13 @@ function ToggleButton(props: { snap: () => api.Snapshot; onPress: () => void }):
   return (
     <View
       onPress={() => {
-        if (!props.snap().busy) props.onPress();
+        if (!blocked()) props.onPress();
       }}
       style={{ height: 36, borderRadius: 18, cursor: "pointer" }}
     >
-      {running() ? face("停止", hue.danger()) : face("启动", hue.primary())}
+      {running()
+        ? face(props.snap().busy ? "停止中…" : "停止", hue.danger())
+        : face(blocked() ? "启动中…" : "启动", hue.primary())}
     </View>
   );
 }
@@ -670,11 +743,17 @@ function PageHeader(props: { page: () => PageId; snap: () => api.Snapshot }): JS
 function Dashboard(props: {
   snap: () => api.Snapshot;
   notice: () => string | null;
+  starting: () => boolean;
   onToggle: () => void;
 }): JSX.Element {
   return (
     <View style={{ flexDirection: "column", gap: 16 }}>
-      <StatusCard snap={props.snap} notice={props.notice} onToggle={props.onToggle} />
+      <StatusCard
+        snap={props.snap}
+        notice={props.notice}
+        starting={props.starting}
+        onToggle={props.onToggle}
+      />
       <TrafficCard snap={props.snap} />
     </View>
   );
@@ -684,6 +763,7 @@ function Dashboard(props: {
 function StatusCard(props: {
   snap: () => api.Snapshot;
   notice: () => string | null;
+  starting: () => boolean;
   onToggle: () => void;
 }): JSX.Element {
   const snap = () => props.snap();
@@ -711,7 +791,7 @@ function StatusCard(props: {
         <Button
           label={snap().active ? "停止" : "启动"}
           variant="primary"
-          disabled={snap().busy}
+          disabled={snap().busy || props.starting()}
           onPress={props.onToggle}
           style={{ height: 38, paddingLeft: 24, paddingRight: 24, borderRadius: 19 }}
         />

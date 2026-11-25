@@ -121,12 +121,13 @@ export function Button(props: {
   style?: object;
 }): JSX.Element {
   const variant = props.variant ?? "ghost";
-  const disabled = props.disabled ?? false;
+  // disabled 必须现读：写成常量会冻在挂载那一刻，之后 busy 变 true 也照样能点。
+  const disabled = () => props.disabled ?? false;
   // 颜色一律在 style 字面量里现取。先算成对象再展开会被冻在挂载那一刻的主题上：
   // 状态卡那颗「启动」因此一直停在旧配色的青色，换配色、换明暗都不跟着走。
   return (
     <View
-      onPress={disabled ? undefined : props.onPress}
+      onPress={disabled() ? undefined : props.onPress}
       style={{
         height: 28,
         paddingLeft: 12,
@@ -139,20 +140,20 @@ export function Button(props: {
           variant === "primary" ? "transparent" : variant === "danger" ? hue.danger() : surface.border(),
         // 禁用态同样不能用 hue.muted()：列表行本身就是这个色，按钮的胶囊
         // 形状会整块消失，只剩一行灰字，看着像排版没对齐。
-        backgroundColor: disabled ? surface.border() : variant === "primary" ? hue.primary() : "transparent",
-        cursor: disabled ? "default" : "pointer",
-        opacity: disabled ? 0.5 : 1,
+        backgroundColor: disabled() ? surface.border() : variant === "primary" ? hue.primary() : "transparent",
+        cursor: disabled() ? "default" : "pointer",
+        opacity: disabled() ? 0.5 : 1,
         transitionProperty: "background-color",
         transitionDuration: "120ms",
         ...props.style,
       }}
-      hoverStyle={disabled || variant !== "ghost" ? undefined : { backgroundColor: hue.accent() }}
+      hoverStyle={disabled() || variant !== "ghost" ? undefined : { backgroundColor: hue.accent() }}
     >
       <Text
         style={{
           fontSize: 11,
           fontWeight: variant === "primary" ? "600" : "400",
-          color: disabled
+          color: disabled()
             ? ink.muted()
             : variant === "primary"
               ? hue.primaryInk()
