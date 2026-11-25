@@ -14,7 +14,7 @@
 
 use serde::Serialize;
 
-use crate::core::engine::{Status, Update};
+use crate::core::engine::{ProbeState, Status, Update};
 use crate::core::logs::{LogKind, LogLine};
 
 use super::state;
@@ -72,12 +72,28 @@ impl LogEntry {
     }
 }
 
+/// 分流器的一次判定（列表里的一行）。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DecisionView {
+    /// `direct` / `proxy`。
+    pub route: &'static str,
+    /// 判定这么走，但没连上。
+    pub ok: bool,
+    /// 目标，形如 `www.qq.com:443`。
+    pub target: String,
+    /// 直连时是对端地址，走代理时是命中原因，失败时是失败原因。
+    pub detail: String,
+}
+
 /// 分流器的运行情况。
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SplitInfo {
     /// 分流器在不在跑。
     pub running: bool,
+    /// 分流器监听的地址；没在跑时是 `None`。
+    pub addr: Option<String>,
     /// 当前生效的规则条数。
     pub rules: usize,
     /// 本次分流到直连的连接数。
@@ -88,6 +104,20 @@ pub struct SplitInfo {
     pub failed: u64,
     /// 经过分流器的会话总数。
     pub sessions: u64,
+    /// 最近的判定，新的在前。
+    pub decisions: Vec<DecisionView>,
+}
+
+/// 内置清单的更新进度。
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SplitUpdateInfo {
+    /// 正在拉取。
+    pub busy: bool,
+    /// 这一档的一句话（「正在从 APNIC 拉取…」「已更新 1.2 万条」）。
+    pub text: Option<String>,
+    /// 最后那次是不是失败了（决定文字的颜色）。
+    pub failed: bool,
 }
 
 /// 版本检查 / 下载安装的进度。
@@ -103,6 +133,18 @@ pub struct UpdateInfo {
     pub downloaded: u64,
     /// 这一档的一句话（「已是最新」「发现 v0.8.8」…）。
     pub text: Option<String>,
+}
+
+/// 一个代理地址的检测状态。
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProbeView {
+    /// 还在测（按钮显示「检测中…」）。
+    pub running: bool,
+    /// 通过了没有；没结论时是 `None`。
+    pub ok: Option<bool>,
+    /// 一句话结论：成功时是「握手成功 + 耗时」，失败时是具体原因。
+    pub detail: Option<String>,
 }
 
 /// 界面一帧要用的全部实时数据。
@@ -140,7 +182,14 @@ pub struct Snapshot {
     /// 日志面板要靠它判断「有没有新行」：`logs.len()` 涨到 [`LOG_TAIL`] 就不再
     /// 变，用它的话「跟随最新」会停在半路，看起来就是「日志不滚了」。
     pub log_total: u64,
+    /// 代理地址的检测结论，键是 `probe::key(地址)`（去空白 + 小写）。
+    ///
+    /// 按地址存而不是按下标：改过地址之后旧结论自己就查不到了，不会出现
+    /// 「测过」的标签挂在没测过的新地址上。
+    pub probes: std::collections::BTreeMap<String, ProbeView>,
     pub split: SplitInfo,
+    /// 内置清单更新的进度。
+    pub split_update: SplitUpdateInfo,
     pub update: UpdateInfo,
 }
 
@@ -182,6 +231,25 @@ impl Snapshot {
         Self {
             version: guard.version.clone(),
             update: UpdateInfo::of(&guard.update),
+            probes: guard
+                .probes
+                .iter()
+                .map(|(key, state)| {
+                    let view = match state {
+                        ProbeState::Running => ProbeView {
+                            running: true,
+                            ok: None,
+                            detail: None,
+                        },
+                        ProbeState::Done(report) => ProbeView {
+                            running: false,
+                            ok: Some(report.ok),
+                            detail: Some(report.detail.clone()),
+                        },
+                    };
+                    (key.clone(), view)
+                })
+                .collect(),
             direct: Rates {
                 up: guard.rate.direct.up,
                 down: guard.rate.direct.down,
@@ -197,12 +265,28 @@ impl Snapshot {
             sessions_full: guard.sessions_full,
             split: SplitInfo {
                 running: guard.split.running,
+                addr: guard.split.addr.map(|addr| addr.to_string()),
                 rules: guard.split.rules,
                 direct: guard.split.direct,
                 proxy: guard.split.proxy,
                 failed: guard.split.failed,
                 sessions: guard.split.sessions,
+                decisions: guard
+                    .split
+                    .decisions
+                    .iter()
+                    .map(|decision| DecisionView {
+                        route: match decision.route {
+                            crate::core::split::service::DecisionRoute::Direct => "direct",
+                            crate::core::split::service::DecisionRoute::Proxy => "proxy",
+                        },
+                        ok: decision.ok,
+                        target: decision.target.clone(),
+                        detail: decision.detail.clone(),
+                    })
+                    .collect(),
             },
+            split_update: SplitUpdateInfo::of(&guard.split_update),
             ..Self::of_status(&status)
         }
     }
@@ -262,6 +346,17 @@ fn status_label(status: &Status) -> &'static str {
         Status::Running => t("运行中", "Running"),
         Status::Stopping => t("正在停止", "Stopping"),
         Status::Failed(_) => t("启动失败", "Failed"),
+    }
+}
+
+impl SplitUpdateInfo {
+    fn of(update: &crate::core::engine::SplitUpdate) -> Self {
+        use crate::core::engine::SplitUpdate;
+        Self {
+            busy: update.is_busy(),
+            text: update.text().map(str::to_string),
+            failed: matches!(update, SplitUpdate::Failed(_)),
+        }
     }
 }
 
