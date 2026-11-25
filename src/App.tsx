@@ -833,6 +833,16 @@ function StatusCard(props: {
           <Text style={{ fontSize: 11, color: ink.muted() }}>
             {props.notice() ?? snap().detail ?? snap().blocked ?? "启动后这里显示直连与代理的实时速率。"}
           </Text>
+          {/* 会话名额打满：新连接会被丢掉，但界面上原本一点迹象都没有——用户只会
+              觉得「网忽然变差了」。写清后果和去处。 */}
+          {snap().sessionsFull ? (
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+              <Dot color={hue.warn()} size={6} />
+              <Text style={{ fontSize: 11, color: hue.warn() }}>
+                会话名额已打满：新连接会被丢弃，去「代理配置」把「最大会话数」调大。
+              </Text>
+            </View>
+          ) : null}
         </View>
         <Metric label="直连 ↓" value={rateText(snap().direct.down)} color={hue.direct()} />
         <Metric label="直连 ↑" value={rateText(snap().direct.up)} color={hue.direct()} />
