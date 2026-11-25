@@ -355,6 +355,23 @@ export function ScrollArea(props: {
   const content = signal(0);
   const offset = signal(0);
 
+  /**
+   * 自己记偏移。
+   *
+   * `onScroll` 只在用户真的拖/滚时来（实测：`scrollTo` 滚完一条都不发），
+   * 而滚动条滑块的位置就靠这个偏移算——不自己记，滚轮滚到底滑块还钉在顶上，
+   * 看着像"页面根本没动"。所以凡是程序自己滚的地方都同步一次偏移。
+   */
+  const scrollTo = (y: number) => {
+    const limit = Math.max(0, content() - viewport());
+    const target = Math.min(limit, Math.max(0, y));
+    node?.scrollTo({ y: target });
+    offset.set(target);
+    // 「贴着底」也一起记：只有 onScroll 记的话，滚轮翻上去之后新日志还是会
+    // 把人拽回底部（onScroll 不发，atBottom 一直是 true）。
+    atBottom = limit - target <= 8;
+  };
+
   // 首次不滚：挂载时本来就该在顶部，白滚一次会让第一帧抖一下。
   let first = true;
   if (props.resetOn) {
@@ -366,7 +383,7 @@ export function ScrollArea(props: {
         return;
       }
       // 等新内容摆好再滚，否则那次调用落在旧布局上（等于没滚）。
-      setTimeout(() => node?.scrollTo({ y: 0 }), 0);
+      setTimeout(() => scrollTo(0), 0);
     });
   }
 
@@ -379,7 +396,7 @@ export function ScrollArea(props: {
    * 误判成"用户在翻旧的"。
    */
   let atBottom = true;
-  const stickToEnd = () => node?.scrollTo({ y: Math.max(0, content() - viewport()) });
+  const stickToEnd = () => scrollTo(content() - viewport());
 
   /**
    * 滚轮自己接。
@@ -391,8 +408,7 @@ export function ScrollArea(props: {
   const wheel = (event: { delta: { y: number }; deltaMode: "points" | "lines" }) => {
     // 鼠标档位一格 48 点，触摸板按点原样算。
     const delta = event.delta.y * (event.deltaMode === "lines" ? 48 : 1);
-    const limit = Math.max(0, content() - viewport());
-    node?.scrollTo({ y: Math.min(limit, Math.max(0, offset() + delta)) });
+    scrollTo(offset() + delta);
   };
 
   const overflow = () => content() - viewport();
