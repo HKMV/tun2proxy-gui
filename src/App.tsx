@@ -82,9 +82,22 @@ function schemeOf(setting: string): "light" | "dark" | "system" {
   return setting === "light" || setting === "dark" ? setting : "system";
 }
 
-// 第一帧之前就把配色和明暗定下来。
-setTheme(JSON.parse(BOOT.themeJson) as Parameters<typeof setTheme>[0]);
+// 第一帧之前就把配色和明暗定下来，免得先闪一下默认配色。
+const BOOT_THEME = JSON.parse(BOOT.themeJson) as Parameters<typeof setTheme>[0];
+setTheme(BOOT_THEME);
 setColorScheme(schemeOf(BOOT.theme));
+
+// 窗口起来之后还要再套一次：nsh 建窗时会按 `nsh.json` 里的 `theme` 再装一遍，
+// 把这里盖掉；而 `setTheme` 对「和当前一样」的值直接跳过重绘，于是界面停在
+// `nsh.json` 那套上，配置里存的配色根本看不见（点一个别的配色才盖得回来）。
+// 先清空再装，保证这一次一定算「变了」。只在第一次布局时补一次。
+let bootThemeSettled = false;
+function settleBootTheme(): void {
+  if (bootThemeSettled) return;
+  bootThemeSettled = true;
+  setTheme(null);
+  setTheme(BOOT_THEME);
+}
 
 /** 整窗：顶栏 + 侧栏 + 内容区。 */
 export function App(): JSX.Element {
@@ -146,6 +159,7 @@ export function App(): JSX.Element {
 
   return (
     <View
+      onLayout={settleBootTheme}
       style={{
         flex: 1,
         flexDirection: "column",
