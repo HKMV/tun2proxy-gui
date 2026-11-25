@@ -322,6 +322,14 @@ cargo build        # 调试构建
 
 ### TSX 界面（nsh 分支）
 
+![TSX 仪表盘](assets/screenshots/tsx-dashboard-zh.png)
+
+*TSX 界面（仪表盘）：同一份内核数据，左侧导航 + 状态卡 + 实时流量。*
+
+![TSX 分流规则](assets/screenshots/tsx-split-zh.png)
+
+*TSX 界面（分流规则）：总开关、内置清单分组、自定义规则。*
+
 分层是硬边界，界面换了下面这层不用动：
 
 ```text

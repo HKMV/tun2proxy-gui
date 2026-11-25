@@ -321,6 +321,14 @@ Set `TUN2PROXY_GUI_NO_ELEVATE=1` to skip elevation and start with the current pr
 
 ### The TSX UI (nsh branch)
 
+![TSX dashboard](assets/screenshots/tsx-dashboard-en.png)
+
+*The TSX UI (Dashboard): the same core data, with sidebar navigation, a status card and live traffic.*
+
+![TSX split routing](assets/screenshots/tsx-split-en.png)
+
+*The TSX UI (Split routing): master switch, built-in list groups and custom rules.*
+
 The layering is a hard boundary, so swapping the UI leaves the layers below untouched:
 
 ```text
