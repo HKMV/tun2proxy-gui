@@ -188,7 +188,17 @@ export function App(): JSX.Element {
           }}
         />
         <ScrollArea resetOn={page} style={{ flex: 1, padding: 24 }}>
-          <View style={{ flexDirection: "column", gap: 16 }}>
+          {/* 上限 1200 并居中：窗口一拉大，宽屏下卡片能到 1300+，状态卡的数字
+              被推到右侧边缘、离标题老远，中间空出一大片。窄窗不受影响。 */}
+          <View
+            style={{
+              flexDirection: "column",
+              gap: 16,
+              width: "100%",
+              maxWidth: 1200,
+              alignSelf: "center",
+            }}
+          >
             <PageHeader page={page} snap={snap} />
             {/* 启动被本地校验挡回来时的一句话。放在这里而不是仪表盘里：
                 侧栏那颗按钮任何页都能点，坐在程序页点完却什么都看不到，
@@ -203,7 +213,6 @@ export function App(): JSX.Element {
               </View>
             ) : null}
             {
-              // 五页里仪表盘与代理配置已经搬完，其余三页还在 Rust 那套里。
               page() === "dashboard" ? (
                 <Dashboard snap={snap} notice={notice} onToggle={toggle} />
               ) : page() === "profiles" ? (
