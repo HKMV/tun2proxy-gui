@@ -124,7 +124,7 @@ export function ProgramPage(props: { snap: () => api.Snapshot }): JSX.Element {
             ))}
           </Chips>
         </Setting>
-        <Setting label="界面语言" hint="「跟随系统」按系统语言决定；改完立刻生效">
+        <Setting label="界面语言" hint="「跟随系统」按系统语言决定；界面文案目前只有中文">
           <Chips>
             {view().languageOptions.map((option) => (
               <Chip
