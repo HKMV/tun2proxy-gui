@@ -13,9 +13,9 @@ import { signal, Text, View } from "nsh";
 import type { JSX } from "nsh";
 
 import * as api from "../api";
-import { Button, Card, CardHead, Caption, Chip, Chips, Setting } from "../components";
+import { Button, Card, CardHead, Caption, Chip, Chips, ScrollArea, Setting } from "../components";
 import { hideToTray } from "../desktop";
-import { hue, ink } from "../theme";
+import { hue, ink, surface } from "../theme";
 
 /** 日志区画多少行。 */
 const LOG_ROWS = 200;
@@ -171,39 +171,43 @@ export function ProgramPage(props: { snap: () => api.Snapshot }): JSX.Element {
           }
           right={<Button label="清空" onPress={() => api.clearLogs()} />}
         />
+        {/* 日志区：底色用「页面底色」而不是「浅色底」，否则浅色主题下和白卡片
+            几乎同色，一大块空地看着像没画完。内容包一层 ScrollArea 并自动贴底
+            —— 200 行摞起来远高于 300，不滚的话看到的反而是最旧的那一截。 */}
         <View
           style={{
             height: 300,
             borderRadius: 10,
-            backgroundColor: hue.muted(),
+            backgroundColor: surface.inset(),
             padding: 8,
-            flexDirection: "column",
           }}
         >
-          <View style={{ flexDirection: "column", gap: 2 }}>
-            {shown().map((line) => (
-              <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
-                <Text
-                  style={{
-                    width: 44,
-                    fontSize: 10,
-                    color: kindColor(line.kind),
-                    fontVariant: ["tabular-nums"],
-                  }}
-                >
-                  {kindTag(line.kind)}
+          <ScrollArea stickToBottom={() => props.snap().logs.length}>
+            <View style={{ flexDirection: "column", gap: 2 }}>
+              {shown().map((line) => (
+                <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
+                  <Text
+                    style={{
+                      width: 44,
+                      fontSize: 10,
+                      color: kindColor(line.kind),
+                      fontVariant: ["tabular-nums"],
+                    }}
+                  >
+                    {kindTag(line.kind)}
+                  </Text>
+                  <Text style={{ flex: 1, fontSize: 10, color: ink.card() }}>{line.text}</Text>
+                </View>
+              ))}
+              {shown().length === 0 ? (
+                <Text style={{ fontSize: 10, color: ink.muted() }}>
+                  {props.snap().logs.length === 0
+                    ? "还没有日志：启动隧道之后这里会有内核输出"
+                    : "这一档没有日志行，换一档看看"}
                 </Text>
-                <Text style={{ flex: 1, fontSize: 10, color: ink.card() }}>{line.text}</Text>
-              </View>
-            ))}
-            {shown().length === 0 ? (
-              <Text style={{ fontSize: 10, color: ink.muted() }}>
-                {props.snap().logs.length === 0
-                  ? "还没有日志：启动隧道之后这里会有内核输出"
-                  : "这一档没有日志行，换一档看看"}
-              </Text>
-            ) : null}
-          </View>
+              ) : null}
+            </View>
+          </ScrollArea>
         </View>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
           <Chips>

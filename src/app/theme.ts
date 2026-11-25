@@ -48,6 +48,13 @@ export const surface = {
   border: () => color("border"),
   sidebar: () => color("sidebar"),
   sidebarBorder: () => color("sidebar-border"),
+  /**
+   * 凹进卡片里的一块（日志区这种）。
+   *
+   * 不用 `background`：浅色主题下它和卡片只差几个色阶，一整块空地看着像没画完；
+   * `secondary` 在浅色和深色里都比卡片明显一档，两边都成立。
+   */
+  inset: () => color("secondary"),
 };
 
 /** 文字的三档。 */

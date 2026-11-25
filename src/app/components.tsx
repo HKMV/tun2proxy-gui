@@ -342,6 +342,8 @@ export function ScrollArea(props: {
   style?: object;
   /** 这个信号一变就滚回顶部（换页时用）。 */
   resetOn?: () => unknown;
+  /** 这个信号一变就贴到底部（日志那种「最新在下面」的内容）。 */
+  stickToBottom?: () => unknown;
   children?: JSX.Element;
 }): JSX.Element {
   let node: ScrollRef | null = null;
@@ -364,6 +366,31 @@ export function ScrollArea(props: {
     });
   }
 
+  /**
+   * 「贴着底」这件事靠**内容变高的那一刻**判断，不靠每秒一次的快照。
+   *
+   * `atBottom` 由 `onScroll` 维护：用户滚上去了就是 false，滚到底（或程序刚把
+   * 它滚到底）就是 true。日志多出来一行时，只有本来就贴着底才继续跟随——
+   * 这样翻旧日志不会被打断，也不会像之前那样因为「内容长了、偏移没跟上」而
+   * 误判成"用户在翻旧的"。
+   */
+  let atBottom = true;
+  const stickToEnd = () => node?.scrollTo({ y: Math.max(0, content() - viewport()) });
+
+  /**
+   * 滚轮自己接。
+   *
+   * 嵌在页面滚动区里的内层 `Scroll` 拿不到滚轮（实测：日志区里滚动，动的是外层
+   * 页面），而 `onWheel` 是「最近的那个监听者听到」，所以这里接管：按视口当前
+   * 偏移自己算目标位置。
+   */
+  const wheel = (event: { delta: { y: number }; deltaMode: "points" | "lines" }) => {
+    // 鼠标档位一格 48 点，触摸板按点原样算。
+    const delta = event.delta.y * (event.deltaMode === "lines" ? 48 : 1);
+    const limit = Math.max(0, content() - viewport());
+    node?.scrollTo({ y: Math.min(limit, Math.max(0, offset() + delta)) });
+  };
+
   const overflow = () => content() - viewport();
   const thumbHeight = () => Math.max(32, (viewport() / Math.max(1, content())) * viewport());
   const thumbTop = () =>
@@ -375,15 +402,24 @@ export function ScrollArea(props: {
         ref={(next: ScrollRef) => (node = next)}
         style={{ flex: 1 }}
         scrollEventThrottle={16}
+        onWheel={wheel}
         onScroll={(event) => {
           viewport.set(event.size.height);
           content.set(event.contentSize.height);
           offset.set(event.offset.y);
+          // 8 点容差：贴到底时浮点数常常差一两个点，不给余量会一直判成「没到底」。
+          atBottom = event.contentSize.height - event.size.height - event.offset.y <= 8;
         }}
         onLayout={(event) => viewport.set(event.bounds.size.height)}
       >
         <View
-          onLayout={(event) => content.set(event.bounds.size.height)}
+          onLayout={(event) => {
+            const height = event.bounds.size.height;
+            const grew = height > content();
+            content.set(height);
+            // 内容变高了、而且用户本来就贴着底：跟着到底（首次挂载也走这条）。
+            if (grew && props.stickToBottom && atBottom) setTimeout(stickToEnd, 0);
+          }}
           style={{ flexDirection: "column" }}
         >
           {props.children}
