@@ -97,6 +97,10 @@ function settleBootTheme(): void {
   bootThemeSettled = true;
   setTheme(null);
   setTheme(BOOT_THEME);
+  // 组件体里算出来的颜色是按「那一刻」的主题算的，换完得通知它们重算一遍：
+  // 第一帧就挂上去、之后 props 又没变的元素（状态卡那颗主按钮）否则会一直
+  // 停在旧配色的青色上。
+  bumpTheme();
 }
 
 /** 整窗：顶栏 + 侧栏 + 内容区。 */

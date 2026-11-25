@@ -122,11 +122,8 @@ export function Button(props: {
 }): JSX.Element {
   const variant = props.variant ?? "ghost";
   const disabled = props.disabled ?? false;
-  const palette = {
-    primary: { bg: hue.primary(), ink: hue.primaryInk(), border: "transparent" },
-    ghost: { bg: "transparent", ink: ink.muted(), border: surface.border() },
-    danger: { bg: "transparent", ink: hue.danger(), border: hue.danger() },
-  }[variant];
+  // 颜色一律在 style 字面量里现取。先算成对象再展开会被冻在挂载那一刻的主题上：
+  // 状态卡那颗「启动」因此一直停在旧配色的青色，换配色、换明暗都不跟着走。
   return (
     <View
       onPress={disabled ? undefined : props.onPress}
@@ -138,8 +135,9 @@ export function Button(props: {
         alignItems: "center",
         justifyContent: "center",
         borderWidth: 1,
-        borderColor: palette.border,
-        backgroundColor: disabled ? hue.muted() : palette.bg,
+        borderColor:
+          variant === "primary" ? "transparent" : variant === "danger" ? hue.danger() : surface.border(),
+        backgroundColor: disabled ? hue.muted() : variant === "primary" ? hue.primary() : "transparent",
         cursor: disabled ? "default" : "pointer",
         opacity: disabled ? 0.5 : 1,
         transitionProperty: "background-color",
@@ -152,7 +150,13 @@ export function Button(props: {
         style={{
           fontSize: 11,
           fontWeight: variant === "primary" ? "600" : "400",
-          color: disabled ? ink.muted() : palette.ink,
+          color: disabled
+            ? ink.muted()
+            : variant === "primary"
+              ? hue.primaryInk()
+              : variant === "danger"
+                ? hue.danger()
+                : ink.muted(),
         }}
       >
         {props.label}
