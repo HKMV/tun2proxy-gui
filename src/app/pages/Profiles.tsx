@@ -119,10 +119,13 @@ export function ProfilesPage(props: { snap: () => api.Snapshot }): JSX.Element {
           onDuplicate={() => create(api.duplicateProfile)}
           onNew={() => create(api.addProfile)}
         />
-      ) : draft() === null ? null : (
+      ) : (
         <Editor
           index={editing() as number}
-          draft={draft()}
+          // 传访问器而不是 `draft()`：这个位置每求值一次就会重建整棵表单，
+          // 而草稿每敲一个字都会换一个对象——求值成对象的话输入框会被
+          // 重新挂载、焦点跟着丢，表现就是「只能打进去一个字」。
+          draft={draft}
           error={error()}
           snap={props.snap()}
           onPatch={patch}
@@ -268,7 +271,7 @@ function ProfileRow(props: {
 /** 编辑态：一套配置的全部参数。 */
 function Editor(props: {
   index: number;
-  draft: api.Draft | null;
+  draft: () => api.Draft | null;
   error: string | null;
   snap: api.Snapshot;
   onPatch: (change: (draft: api.Draft) => void) => void;
@@ -276,7 +279,7 @@ function Editor(props: {
   onSave: () => void;
 }): JSX.Element {
   // 组件体只跑一次，所以跟着信号变的东西都写成函数，在 JSX 里求值。
-  const draft = () => props.draft as api.Draft;
+  const draft = () => props.draft() as api.Draft;
 
   // DNS 模式决定哪两个字段参与：虚拟 IP 本地应答，远程 DNS 不参与；虚拟池只有它用。
   const virtual = () => draft().dns === "virtual";
