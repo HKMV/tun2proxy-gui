@@ -6,6 +6,8 @@ tun2proxy 的跨平台桌面图形前端，用 Rust 编写。界面基于 [GPUI]
 
 界面层级与交互参考了 [Paper-Dragon/tun2proxy-gui](https://github.com/Paper-Dragon/tun2proxy-gui)，并按「多套代理配置 + 一键启停」重做了布局。
 
+本分支另有一版用 TSX + [nsh](https://github.com/longbridge/nsh) 重写的界面：业务逻辑与界面完全解耦（`api/` 门面 + `bridge.rs` 适配层），换掉界面不影响内核，见 [TSX 界面](#tsx-界面nsh-分支)。
+
 ![仪表盘](assets/screenshots/dashboard-zh.png)
 
 *中文界面（仪表盘）：左侧常驻导航与运行状态，右侧是实时流量与连接去向、当前配置与运行参数。*
@@ -76,8 +78,8 @@ src/
 │  ├─ split.rs     分流规则
 │  ├─ network.rs   网络与绕过
 │  └─ program.rs   程序与日志
-├─ app/            TSX 侧代码（nsh 分支）：api.ts / theme.ts / components.tsx / desktop.ts / pages/
-└─ ui/             界面层（GPUI + gpuikit；发布走这一版，与上面两套互不影响）
+├─ app/            TSX 侧代码：api.ts / theme.ts / components.tsx / desktop.ts / pages/
+└─ ui/             另一版界面层（GPUI + gpuikit）：只有 `cargo run` 走它，与 TSX 那版互不影响
    ├─ state.rs     应用状态、消息枚举、数字输入草稿
    ├─ view.rs      根视图：左侧边栏 + 右侧内容区
    ├─ theme.rs     装载 gpuikit 主题（可换肤）与字号常量
@@ -95,8 +97,8 @@ tools/
 ├─ notes-reflow.py 发布说明的软换行合并（`--check` 打 tag 前自查）
 └─ regen-rules/   重新生成 builtin.rs 清单快照的小工具
 build.rs         把 app.rc（图标 + 版本信息）编进 Windows exe
-App.tsx          TSX 界面入口（nsh 分支；必须与 nsh.json 同级，nsh 就是这么找的）
-nsh.json         nsh 工程配置：rust = "."、root = "App"、singleInstance
+App.tsx          TSX 界面入口（必须与 nsh.json 同级，nsh 就是这么找的）
+nsh.json         nsh 工程配置：rust = "."（别写 root，写了会被当成 Rust 应用）、singleInstance、图标与主题
 ```
 
 ### 程序图标
@@ -320,22 +322,23 @@ cargo build        # 调试构建
 
 ### TSX 界面（nsh 分支）
 
-这个分支上界面还有一版用 TSX 写的（[longbridge/nsh](https://github.com/longbridge/nsh)）。分层是硬边界：
+分层是硬边界，界面换了下面这层不用动：
 
 ```text
 core/      内核：配置、探测、分流、进程监督——不知道界面存在
 api/       门面：纯 Rust + serde，数据出成 JSON，动作返回 {ok,error}
 bridge/    唯一 import nsh 的地方，#[module] Backend 把 api 包成模块方法
-ui/        中间那版 Rust 界面（发布仍走它）
+ui/        中间那版 Rust 界面（只有 `cargo run` 走它，留作对照）
 App.tsx    TSX 入口；src/app/ 下是 api.ts / theme.ts / components.tsx / pages/
 ```
 
 ```bash
 nsh run App.tsx    # dev host，改文件自动重建（页面会重置回仪表盘）
 nsh check          # tsc + cargo check
+nsh package --target windows -o out   # 打 Windows exe（跑的就是 TSX 这版）
 ```
 
-需要 nsh 0.6 以上。**`cargo run` 和发布 exe 仍然走 `ui/` 那一版（`AppSource::Rust`）**，TSX 这版还没接进发布流程（那条路要 `AppSource::Bundle` + `nsh package`，体积和签名都会变）。
+需要 nsh 0.6 以上。这个分支的打包出口是 `nsh package`；`cargo run` 仍然走 `ui/` 那一版（`AppSource::Rust`），只作对照。`nsh.json` 里**不要**写 `"root"`——那表示「Rust 应用」，`nsh build` 会只吐旧界面、不产出 `bundle.nshc`。
 
 写这一版时踩到的两件事：nsh 的组件体只跑一次，跟着信号变的派生值都要写成函数、在 JSX 子节点位置求值（写在 `style` 字面对象里会冻在首帧）；`Scroll` 自带的滚动条在 Windows 后端不画，所以 `components.tsx` 里自己画了一条。
 
