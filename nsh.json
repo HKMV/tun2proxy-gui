@@ -5,7 +5,6 @@
   "build": 1,
   "nsh": ">=0.6, <0.7",
   "rust": ".",
-  "root": "App",
   "singleInstance": true,
   "theme": "themes/cyber.json",
   "appearance": "system",
