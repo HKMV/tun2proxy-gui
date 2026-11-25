@@ -12,6 +12,7 @@ use nsh_core::element::{AdaptiveColor, Tokens};
 use nsh_core::platform::Appearance;
 use nsh_core::prelude::{set_color_scheme, set_tokens};
 
+use crate::api::theme::source;
 use crate::core::config::{Palette, ThemeSetting};
 
 use super::state;
@@ -106,12 +107,3 @@ pub fn swatch(palette: Palette) -> AdaptiveColor {
     }
 }
 
-/// 一套配色对应的 JSON 源文件（编译期嵌进 exe，发布时不用带 `themes/`）。
-fn source(palette: Palette) -> &'static str {
-    match palette {
-        Palette::Cyber => include_str!("../../themes/cyber.json"),
-        Palette::Matrix => include_str!("../../themes/matrix.json"),
-        Palette::Ember => include_str!("../../themes/ember.json"),
-        Palette::Aurora => include_str!("../../themes/aurora.json"),
-    }
-}

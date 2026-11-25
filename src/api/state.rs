@@ -79,6 +79,32 @@ pub fn install(config: Config, engine: Engine) {
     let _ = ENGINE.set(engine);
 }
 
+/// 让后端就绪：配置、语言、内核、上次残留的隧道网卡。
+///
+/// 启动路径有两条：
+///
+/// * **发布版**（`src/main.rs`）：单实例、提权、DPI 之后自己 load 配置和内核，
+///   再 [`install`]——所以这里进去会发现已经有了，直接返回；
+/// * **`nsh run App.tsx`**（开发时的 QuickJS host）：进程不是我们自己的 `main`
+///   起来的，没人做这一步，于是第一次取数据时由 [`crate::bridge`] 调这里补上。
+///
+/// 两条路都不会重复初始化：`Once` 保证只跑一次，`CONFIG` 已就位时闭包里立即
+/// 返回。
+pub fn ensure_installed() {
+    static START: std::sync::Once = std::sync::Once::new();
+    START.call_once(|| {
+        if CONFIG.get().is_some() {
+            return;
+        }
+        let config = Config::load();
+        crate::core::i18n::apply(config.language);
+        let engine = Engine::new();
+        // 开发时每次重启都可能撞上一次被强杀留下的网卡，和发布版一样先清掉。
+        engine.clean_stale_adapters();
+        install(config, engine);
+    });
+}
+
 /// 本次运行配置的一份副本；界面在 `install` 之前渲染时返回 `None`。
 ///
 /// 返回副本而不是引用：调用方多半只取一两个字段（配色、明暗），拿着副本既

@@ -18,8 +18,11 @@ pub mod palette;
 pub mod profile;
 pub mod shell;
 pub mod split;
-pub mod state;
 pub mod widgets;
+
+/// 内核句柄已经搬到 [`crate::api`]（业务层），这里只留个别名：Rust 这一套
+/// 界面还在过渡期，`super::state::…` 的写法不用一条条改。
+pub use crate::api::state;
 
 /// 窗口最小尺寸（逻辑像素）。
 ///

@@ -1,0 +1,588 @@
+//! 界面入口（TSX 这一套）。
+//!
+//! ```text
+//! App.tsx            整窗骨架：顶栏 + 侧栏 + 内容区
+//! app/api.ts         后端接口（唯一 import tun2proxy/native 的地方）
+//! app/theme.ts       颜色语义 + 数字格式化
+//! app/components.tsx 卡片、胶囊、按钮这些小块
+//! ```
+//!
+//! 页面全部只「读快照 + 调动作」：数据每秒从 `api.snapshot()` 拿一份，渲染完
+//! 就扔。界面不缓存业务状态，所以窗口重建、页面切换都不会影响内核。
+
+import { effect, setColorScheme, setTheme, signal, Scroll, Text, View } from "nsh";
+import type { JSX } from "nsh";
+
+import * as api from "./app/api";
+import { Button, Card, CardHead, Caption, Dot, Metric } from "./app/components";
+import { bumpTheme, hue, ink, rateText, surface } from "./app/theme";
+
+/** 导航项。 */
+const PAGES = [
+  { id: "dashboard", label: "仪表盘", hint: "隧道状态、实时流量" },
+  { id: "profiles", label: "代理配置", hint: "多套上游代理" },
+  { id: "split", label: "分流规则", hint: "国内直连、清单与出口" },
+  { id: "network", label: "网络与绕过", hint: "TUN 网卡、UDP 与绕行" },
+  { id: "program", label: "程序与日志", hint: "内核版本、日志与更新" },
+] as const;
+
+type PageId = (typeof PAGES)[number]["id"];
+
+/** 最近两分钟：每秒一个点。 */
+const HISTORY_POINTS = 120;
+
+/** 可选的配色。色块不写死色值——从各套 JSON 的 `primary` 里读，改配色不用改这里。 */
+const PALETTES = [
+  { id: "cyber", label: "赛博青" },
+  { id: "matrix", label: "矩阵绿" },
+  { id: "ember", label: "熔岩橙" },
+  { id: "aurora", label: "极光紫" },
+] as const;
+
+/** 明暗三档。`auto` 交给系统。 */
+const THEMES = [
+  { id: "light", label: "浅色" },
+  { id: "auto", label: "跟随" },
+  { id: "dark", label: "深色" },
+] as const;
+
+/**
+ * 启动时的一次性数据：配置里的配色 / 明暗 / 版本。
+ *
+ * 配色与明暗必须**在第一次渲染之前**套上，否则第一帧是 nsh 的默认黑白，随后
+ * 再闪一下。所以放在模块顶层、`mount` 之前。
+ */
+const BOOT = api.boot();
+
+/** 一套配色的主色（色块用）：读它 JSON 里的 `primary`。结果缓存——色块每秒都画，别每次都解析。 */
+const SWATCHES = new Map<string, string>();
+function swatchOf(palette: string): string {
+  const cached = SWATCHES.get(palette);
+  if (cached) return cached;
+  let color = "#888888";
+  try {
+    const theme = JSON.parse(api.paletteJson(palette)) as {
+      cssVars?: { dark?: Record<string, string>; light?: Record<string, string> };
+    };
+    color = theme.cssVars?.dark?.primary ?? theme.cssVars?.light?.primary ?? color;
+  } catch {
+    // 配色文件坏了：用中性灰，至少色块还在。
+  }
+  SWATCHES.set(palette, color);
+  return color;
+}
+
+/** 配置里的明暗 → nsh 的外观光。 */
+function schemeOf(setting: string): "light" | "dark" | "system" {
+  return setting === "light" || setting === "dark" ? setting : "system";
+}
+
+// 第一帧之前就把配色和明暗定下来。
+setTheme(JSON.parse(BOOT.themeJson) as Parameters<typeof setTheme>[0]);
+setColorScheme(schemeOf(BOOT.theme));
+
+/** 整窗：顶栏 + 侧栏 + 内容区。 */
+export function App(): JSX.Element {
+  // 当前页 + 这一帧的数据。data 每秒刷新一次；界面不存别的业务状态。
+  const page = signal<PageId>("dashboard");
+  const snap = signal<api.Snapshot>(api.snapshot());
+  const notice = signal<string | null>(null);
+  const palette = signal<string>(BOOT.palette);
+  const themeSetting = signal<string>(BOOT.theme);
+
+  // 换配色：先把新 JSON 套上去（颜色立刻变），再让后端存盘。
+  const choosePalette = (id: string) => {
+    const json = api.paletteJson(id);
+    if (json && json !== "{}") {
+      setTheme(JSON.parse(json) as Parameters<typeof setTheme>[0]);
+    }
+    palette.set(id);
+    bumpTheme();
+    api.setPalette(id);
+  };
+
+  // 换明暗：外观由 nsh 的平台层决定（`system` 交给系统），配置同样要存盘。
+  const chooseTheme = (id: string) => {
+    setColorScheme(schemeOf(id));
+    themeSetting.set(id);
+    bumpTheme();
+    api.setTheme(id);
+  };
+
+  effect(() => {
+    const id = setInterval(() => {
+      snap.set(api.snapshot());
+    }, 1000);
+    return () => clearInterval(id);
+  });
+
+  const toggle = () => {
+    const state = snap();
+    if (state.busy) return;
+    if (state.active) {
+      api.stop();
+      return;
+    }
+    const result = api.start();
+    notice.set(result.ok ? null : (result.error ?? "启动失败"));
+  };
+
+  return (
+    <View
+      style={{
+        flex: 1,
+        flexDirection: "column",
+        backgroundColor: surface.background(),
+      }}
+    >
+      <TopBar
+        snap={snap}
+        palette={palette}
+        themeSetting={themeSetting}
+        onPalette={choosePalette}
+        onTheme={chooseTheme}
+      />
+      <View style={{ flex: 1, flexDirection: "row" }}>
+        <SideBar
+          page={page}
+          snap={snap}
+          onToggle={toggle}
+          onSelect={(id) => {
+            notice.set(null);
+            page.set(id);
+          }}
+        />
+        <Scroll style={{ flex: 1, padding: 24, flexDirection: "column" }}>
+          <View style={{ flexDirection: "column", gap: 16 }}>
+            <PageHeader page={page()} snap={snap()} />
+            <Dashboard snap={snap()} notice={notice()} onToggle={toggle} />
+          </View>
+        </Scroll>
+      </View>
+    </View>
+  );
+}
+
+/**
+ * 顶栏：品牌 + 状态 + 配色 / 明暗切换 + 版本。
+ *
+ * 左边那块（品牌，占满剩余宽度）带 `windowDrag`：抓住顶栏空白处就能拖窗口，
+ * 右边的按钮不带，所以点它们不会顺手把窗口拖走。
+ */
+function TopBar(props: {
+  snap: () => api.Snapshot;
+  palette: () => string;
+  themeSetting: () => string;
+  onPalette: (id: string) => void;
+  onTheme: (id: string) => void;
+}): JSX.Element {
+  return (
+    <View
+      style={{
+        height: 52,
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 12,
+        paddingLeft: 16,
+        paddingRight: 12,
+        backgroundColor: surface.sidebar(),
+        borderBottomWidth: 1,
+        borderColor: surface.sidebarBorder(),
+      }}
+    >
+      <View
+        desktop={{ windowDrag: true }}
+        style={{ flex: 1, height: "100%", flexDirection: "row", alignItems: "center", gap: 12 }}
+      >
+        <View
+          style={{
+            width: 26,
+            height: 26,
+            borderRadius: 8,
+            alignItems: "center",
+            justifyContent: "center",
+            backgroundImage: `linear-gradient(135deg, ${hue.direct()}, ${hue.proxy()})`,
+          }}
+        >
+          <Text style={{ fontSize: 13, fontWeight: "700", color: hue.primaryInk() }}>
+            T
+          </Text>
+        </View>
+        <View style={{ flexDirection: "column", gap: 2 }}>
+          <Text style={{ fontSize: 13, fontWeight: "600", color: ink.primary() }}>Tun2Proxy</Text>
+          <Text style={{ fontSize: 10, color: ink.muted() }}>隧道控制台</Text>
+        </View>
+      </View>
+      <StatusPill snap={props.snap()} />
+      <PaletteDots current={props.palette()} onChoose={props.onPalette} />
+      <ThemeChips current={props.themeSetting()} onChoose={props.onTheme} />
+      <View
+        style={{
+          height: 24,
+          paddingLeft: 8,
+          paddingRight: 8,
+          borderRadius: 12,
+          alignItems: "center",
+          justifyContent: "center",
+          backgroundColor: hue.accent(),
+        }}
+      >
+        <Text style={{ fontSize: 10, color: ink.muted(), fontVariant: ["tabular-nums"] }}>
+          {`v${BOOT.version}`}
+        </Text>
+      </View>
+    </View>
+  );
+}
+
+/** 四个配色小圆点：各套自己的主色，选中的加一圈描边。 */
+function PaletteDots(props: {
+  current: string;
+  onChoose: (id: string) => void;
+}): JSX.Element {
+  return (
+    <View style={{ flexDirection: "row", alignItems: "center", gap: 2 }}>
+      {PALETTES.map((item) => {
+        const chosen = props.current === item.id;
+        // 24×24 的透明方块才是可点区域：圆点本身只有 16，直接点它太考验手速。
+        return (
+          <View
+            onPress={chosen ? undefined : () => props.onChoose(item.id)}
+            style={{
+              width: 24,
+              height: 24,
+              borderRadius: 12,
+              alignItems: "center",
+              justifyContent: "center",
+              cursor: chosen ? "default" : "pointer",
+            }}
+            hoverStyle={chosen ? undefined : { backgroundColor: hue.accent() }}
+          >
+            <View
+              style={{
+                width: chosen ? 16 : 12,
+                height: chosen ? 16 : 12,
+                borderRadius: 8,
+                backgroundColor: swatchOf(item.id),
+                borderWidth: chosen ? 2 : 0,
+                borderColor: ink.primary(),
+              }}
+            />
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
+/** 明暗三档。 */
+function ThemeChips(props: { current: string; onChoose: (id: string) => void }): JSX.Element {
+  return (
+    <View
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 2,
+        padding: 2,
+        height: 26,
+        borderRadius: 13,
+        backgroundColor: hue.accent(),
+      }}
+    >
+      {THEMES.map((item) => {
+        const chosen = props.current === item.id;
+        return (
+          <View
+            onPress={chosen ? undefined : () => props.onChoose(item.id)}
+            style={{
+              height: 22,
+              paddingLeft: 10,
+              paddingRight: 10,
+              borderRadius: 11,
+              alignItems: "center",
+              justifyContent: "center",
+              backgroundColor: chosen ? hue.primary() : "transparent",
+              cursor: chosen ? "default" : "pointer",
+              transitionProperty: "background-color",
+              transitionDuration: "140ms",
+            }}
+            hoverStyle={chosen ? undefined : { backgroundColor: surface.card() }}
+          >
+            <Text
+              style={{
+                fontSize: 10,
+                fontWeight: chosen ? "600" : "400",
+                color: chosen ? hue.primaryInk() : ink.muted(),
+              }}
+            >
+              {item.label}
+            </Text>
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
+/** 状态胶囊：一个灯 + 一句话。 */
+function StatusPill(props: { snap: api.Snapshot }): JSX.Element {
+  const color =
+    props.snap.status === "failed"
+      ? hue.danger()
+      : props.snap.active
+        ? hue.ok()
+        : hue.warn();
+  return (
+    <View
+      style={{
+        height: 26,
+        paddingLeft: 10,
+        paddingRight: 12,
+        borderRadius: 13,
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+        backgroundColor: hue.accent(),
+      }}
+    >
+      <Dot color={color} pulse={!props.snap.active} />
+      <Text style={{ fontSize: 11, color: ink.primary() }}>{props.snap.statusLabel}</Text>
+    </View>
+  );
+}
+
+/** 侧栏：五个导航项 + 底部那颗启停按钮。 */
+function SideBar(props: {
+  page: () => PageId;
+  snap: () => api.Snapshot;
+  onToggle: () => void;
+  onSelect: (id: PageId) => void;
+}): JSX.Element {
+  return (
+    <View
+      style={{
+        width: 176,
+        padding: 12,
+        gap: 4,
+        backgroundColor: surface.sidebar(),
+        borderRightWidth: 1,
+        borderColor: surface.sidebarBorder(),
+        justifyContent: "space-between",
+      }}
+    >
+      <View style={{ flexDirection: "column", gap: 2 }}>
+        <Text
+          style={{
+            fontSize: 10,
+            color: ink.muted(),
+            paddingLeft: 12,
+            paddingTop: 8,
+            paddingBottom: 8,
+          }}
+        >
+          导航
+        </Text>
+        {PAGES.map((item) => (
+          <NavItem
+            label={item.label}
+            hint={item.hint}
+            chosen={props.page() === item.id}
+            onPress={() => props.onSelect(item.id)}
+          />
+        ))}
+      </View>
+      <ToggleButton snap={props.snap()} onPress={props.onToggle} />
+    </View>
+  );
+}
+
+/** 一个导航项。 */
+function NavItem(props: {
+  label: string;
+  hint: string;
+  chosen: boolean;
+  onPress: () => void;
+}): JSX.Element {
+  return (
+    <View
+      onPress={props.onPress}
+      style={{
+        paddingLeft: 12,
+        paddingRight: 12,
+        paddingTop: 8,
+        paddingBottom: 8,
+        borderRadius: 8,
+        flexDirection: "column",
+        gap: 2,
+        cursor: "pointer",
+        backgroundColor: props.chosen ? hue.accent() : "transparent",
+        transitionProperty: "background-color",
+        transitionDuration: "120ms",
+      }}
+      hoverStyle={props.chosen ? undefined : { backgroundColor: hue.accent() }}
+    >
+      <Text
+        style={{
+          fontSize: 12,
+          fontWeight: props.chosen ? "600" : "400",
+          color: props.chosen ? ink.primary() : ink.muted(),
+        }}
+      >
+        {props.label}
+      </Text>
+    </View>
+  );
+}
+
+/** 侧栏底部那颗按钮：未启动时「启动」，运行中「停止」。 */
+function ToggleButton(props: { snap: api.Snapshot; onPress: () => void }): JSX.Element {
+  const running = props.snap.active;
+  return (
+    <View
+      onPress={props.snap.busy ? undefined : props.onPress}
+      style={{
+        height: 36,
+        borderRadius: 18,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: running ? hue.danger() : hue.primary(),
+        opacity: props.snap.busy ? 0.6 : 1,
+        cursor: props.snap.busy ? "default" : "pointer",
+      }}
+    >
+      <Text
+        style={{ fontSize: 12, fontWeight: "600", color: hue.primaryInk() }}
+      >
+        {running ? "停止" : "启动"}
+      </Text>
+    </View>
+  );
+}
+
+/** 页面标题 + 右侧一句实时读数。 */
+function PageHeader(props: { page: PageId; snap: api.Snapshot }): JSX.Element {
+  const meta = PAGES.find((item) => item.id === props.page) ?? PAGES[0];
+  return (
+    <View style={{ flexDirection: "row", alignItems: "flex-end", gap: 16 }}>
+      <View style={{ flex: 1, flexDirection: "column", gap: 4 }}>
+        <Text style={{ fontSize: 22, fontWeight: "600", color: ink.primary() }}>{meta.label}</Text>
+        <Text style={{ fontSize: 12, color: ink.muted() }}>{meta.hint}</Text>
+      </View>
+      <Text style={{ fontSize: 11, color: ink.muted(), fontVariant: ["tabular-nums"] }}>
+        {`${props.snap.statusLabel} · ${props.snap.version ? `tun2proxy ${props.snap.version}` : "未安装"}`}
+      </Text>
+    </View>
+  );
+}
+
+/** 仪表盘。 */
+function Dashboard(props: {
+  snap: api.Snapshot;
+  notice: string | null;
+  onToggle: () => void;
+}): JSX.Element {
+  return (
+    <View style={{ flexDirection: "column", gap: 16 }}>
+      <StatusCard snap={props.snap} notice={props.notice} onToggle={props.onToggle} />
+      <TrafficCard snap={props.snap} />
+    </View>
+  );
+}
+
+/** 状态卡：状态 + 四个速率 + 启停。 */
+function StatusCard(props: {
+  snap: api.Snapshot;
+  notice: string | null;
+  onToggle: () => void;
+}): JSX.Element {
+  const snap = props.snap;
+  const color = snap.status === "failed" ? hue.danger() : snap.active ? hue.ok() : hue.warn();
+  return (
+    <Card>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 16 }}>
+        <View style={{ flex: 1, flexDirection: "column", gap: 6 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+            <Dot color={color} size={10} pulse={!snap.active} />
+            <Text style={{ fontSize: 10, fontWeight: "600", color: ink.muted() }}>隧道状态</Text>
+          </View>
+          <Text style={{ fontSize: 24, fontWeight: "600", color: ink.primary() }}>
+            {snap.statusLabel}
+          </Text>
+          <Text style={{ fontSize: 11, color: ink.muted() }}>
+            {props.notice ?? snap.detail ?? snap.blocked ?? "启动后这里显示直连与代理的实时速率。"}
+          </Text>
+        </View>
+        <Metric label="直连 ↓" value={rateText(snap.direct.down)} color={hue.direct()} />
+        <Metric label="直连 ↑" value={rateText(snap.direct.up)} color={hue.direct()} />
+        <Metric label="代理 ↓" value={rateText(snap.proxy.down)} color={hue.proxy()} />
+        <Metric label="代理 ↑" value={rateText(snap.proxy.up)} color={hue.proxy()} />
+        <Button
+          label={snap.active ? "停止" : "启动"}
+          variant="primary"
+          disabled={snap.busy}
+          onPress={props.onToggle}
+          style={{ height: 38, paddingLeft: 24, paddingRight: 24, borderRadius: 19 }}
+        />
+      </View>
+    </Card>
+  );
+}
+
+/** 流量卡：两分钟的堆叠柱状图 + 分流计数。 */
+function TrafficCard(props: { snap: api.Snapshot }): JSX.Element {
+  const points = props.snap.history.slice(-HISTORY_POINTS);
+  const peak = Math.max(1, ...points.map((point) => point.direct.down + point.proxy.down));
+  return (
+    <Card>
+      <CardHead
+        title="实时流量"
+        hint="直连在下、代理在上，最近两分钟"
+        right={
+          <View style={{ flexDirection: "row", gap: 16 }}>
+            <Metric label="直连" value={rateText(props.snap.direct.down)} color={hue.direct()} />
+            <Metric label="代理" value={rateText(props.snap.proxy.down)} color={hue.proxy()} />
+          </View>
+        }
+      />
+      <View
+        style={{
+          height: 120,
+          flexDirection: "row",
+          alignItems: "flex-end",
+          gap: 1,
+        }}
+      >
+        {points.map((point) => {
+          const total = point.direct.down + point.proxy.down;
+          const height = Math.max(total > 0 ? 1 : 0, (total / peak) * 120);
+          const directPart = total > 0 ? (point.direct.down / total) * height : 0;
+          return (
+            <View
+              style={{
+                flex: 1,
+                height,
+                flexDirection: "column",
+                justifyContent: "flex-end",
+                borderRadius: 1,
+                overflow: "hidden",
+              }}
+            >
+              <View style={{ height: height - directPart, backgroundColor: hue.proxy() }} />
+              <View style={{ height: directPart, backgroundColor: hue.direct() }} />
+            </View>
+          );
+        })}
+      </View>
+      <View style={{ flexDirection: "row", gap: 24 }}>
+        <Metric
+          label="分流到直连"
+          value={`${props.snap.split.direct}`}
+          color={hue.direct()}
+        />
+        <Metric label="分流到代理" value={`${props.snap.split.proxy}`} color={hue.proxy()} />
+        <Metric label="判定失败" value={`${props.snap.split.failed}`} color={hue.danger()} />
+        <Caption>{props.snap.split.running ? "分流器运行中" : "分流器未运行"}</Caption>
+      </View>
+    </Card>
+  );
+}

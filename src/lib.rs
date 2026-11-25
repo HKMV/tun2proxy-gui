@@ -22,6 +22,8 @@
 //! 这一版是从 GPUI + gpuikit 迁到 Native Shell（nsh）的开始：内核一行未改，
 //! 界面按 nsh 的「无样式基础组件 + 应用自己画的 ui 层」重建。
 
+pub mod api;
+pub mod bridge;
 pub mod core;
 pub mod ui;
 
@@ -30,10 +32,16 @@ use nsh_core::prelude::*;
 
 /// 本 crate 对外暴露给 TSX 的那一套（`nsh.json` 的 `"rust"`）。
 ///
-/// 目前界面全在 Rust 里，这里只为将来的 TSX 入口留一个注册点。
+/// 注册两样东西：
+///
+/// * `App`——过渡期的 Rust 整窗界面（`nsh run` 不带参数时跑它）；
+/// * `Backend`——给 TSX 用的后端接口（[`bridge::Backend`]）。
+///
+/// 等 `.tsx` 那套页面全做完，`App` 和整个 `ui/` 一起删掉。
 #[native_module("tun2proxy/native")]
 fn native(registry: &mut Registry) {
     registry.register::<App>();
+    registry.module::<bridge::Backend>();
 }
 
 /// 应用根组件。
