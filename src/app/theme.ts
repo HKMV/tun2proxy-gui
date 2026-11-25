@@ -25,16 +25,6 @@ export function bumpTheme(): void {
   themeTick.update((tick) => tick + 1);
 }
 
-/**
- * 「主题变了」的计数器，供需要**手动**重设的东西订阅。
- *
- * 取色函数自己会读它（见 [`color`]）；滚动条那种拿不到响应式 `style` 的组件，
- * 就得靠外面读一下这个值再重设一次。
- */
-export function themeVersion(): number {
-  return themeTick();
-}
-
 /** 取一个 token，并订阅主题变化。 */
 function color(name: Parameters<typeof token>[0]): string {
   themeTick();

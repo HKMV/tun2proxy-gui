@@ -274,11 +274,6 @@ export function Setting(props: {
   );
 }
 
-/** 一条分隔线。 */
-export function Divider(): JSX.Element {
-  return <View style={{ height: 1, backgroundColor: surface.border() }} />;
-}
-
 /**
  * 开关。
  *
