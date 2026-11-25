@@ -64,7 +64,18 @@ src/
 │  ├─ icon.rs      Multi-size bitmaps of the app icon (one copy for window and tray)
 │  ├─ i18n.rs      Chinese/English strings and the language setting
 │  └─ platform.rs  Process-level init (Windows DPI awareness)
-└─ ui/             Presentation layer (GPUI + gpuikit)
+├─ bridge.rs       nsh adapter: `#[module] Backend`, exposes api as module methods (the only `use nsh` site)
+├─ api/            Facade: plain Rust + serde, independent of any UI framework
+│  ├─ mod.rs       Re-exports, `install` / `boot`
+│  ├─ state.rs     State and actions (palette, start/stop, split switches…)
+│  ├─ snapshot.rs  The once-a-second UI snapshot
+│  ├─ theme.rs     Palette JSON and light/dark
+│  ├─ profiles.rs  Proxy profiles
+│  ├─ split.rs     Split routing rules
+│  ├─ network.rs   Network and bypass
+│  └─ program.rs   Program and logs
+├─ app/            TSX side (nsh branch): api.ts / theme.ts / components.tsx / desktop.ts / pages/
+└─ ui/             Presentation layer (GPUI + gpuikit; the release ships this one, the two above are independent of it)
    ├─ state.rs     App state, message enum, numeric input drafts
    ├─ view.rs      Root view: sidebar + content area
    ├─ theme.rs     Installs the gpuikit theme (swappable) and font-size constants
@@ -82,6 +93,8 @@ tools/
 ├─ notes-reflow.py Merges hard-wrapped release notes into one line per paragraph (`--check` before tagging)
 └─ regen-rules/   Small tool that regenerates the builtin.rs list snapshot
 build.rs          Compiles app.rc (icon + version info) into the Windows exe
+App.tsx          TSX entry point (nsh branch; it has to sit next to nsh.json — that is where nsh looks)
+nsh.json         nsh project config: rust = ".", root = "App", singleInstance
 ```
 
 ### App icon
@@ -303,6 +316,27 @@ cargo build        # debug build
 ```
 
 Set `TUN2PROXY_GUI_NO_ELEVATE=1` to skip elevation and start with the current privileges.
+
+### The TSX UI (nsh branch)
+
+This branch also carries a UI written in TSX, on top of [longbridge/nsh](https://github.com/longbridge/nsh). The layering is a hard boundary:
+
+```text
+core/      kernel: config, probing, split routing, process supervision — it does not know a UI exists
+api/       facade: plain Rust + serde, data out as JSON, actions return {ok,error}
+bridge/    the only place that imports nsh; #[module] Backend wraps api as module methods
+ui/        the intermediate Rust UI (the release still ships this one)
+App.tsx    TSX entry point; src/app/ holds api.ts / theme.ts / components.tsx / pages/
+```
+
+```bash
+nsh run App.tsx    # dev host, rebuilds on save (the page resets to the dashboard)
+nsh check          # tsc + cargo check
+```
+
+Needs nsh 0.6 or newer. **`cargo run` and the released exe still use the `ui/` version (`AppSource::Rust`)**; the TSX one is not wired into the release flow yet (that takes `AppSource::Bundle` + `nsh package`, and both the binary size and code signing change).
+
+Two things this version ran into: nsh runs a component body once, so every value derived from a signal has to be a function evaluated in a JSX child position (put it in a `style` object literal and it freezes at the first frame); and `Scroll`'s built-in scrollbar draws nothing on the Windows backend, so `components.tsx` draws its own.
 
 ### Capturing a window while debugging
 

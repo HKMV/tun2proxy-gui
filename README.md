@@ -66,7 +66,18 @@ src/
 │  ├─ icon.rs      程序图标的多尺寸位图（窗口 / 托盘共用一份数据）
 │  ├─ i18n.rs      中英文文案与语言设置
 │  └─ platform.rs  进程级初始化（Windows DPI 感知）
-└─ ui/             界面层（GPUI + gpuikit）
+├─ bridge.rs       nsh 适配层：`#[module] Backend`，把 api 包成模块方法（唯一 use nsh 的地方）
+├─ api/            门面：纯 Rust + serde，不依赖任何界面框架
+│  ├─ mod.rs       再导出、`install` / `boot`
+│  ├─ state.rs     状态与动作（换配色、启停、分流开关…）
+│  ├─ snapshot.rs  每秒一份的界面快照
+│  ├─ theme.rs     配色 JSON 与明暗
+│  ├─ profiles.rs  代理配置
+│  ├─ split.rs     分流规则
+│  ├─ network.rs   网络与绕过
+│  └─ program.rs   程序与日志
+├─ app/            TSX 侧代码（nsh 分支）：api.ts / theme.ts / components.tsx / desktop.ts / pages/
+└─ ui/             界面层（GPUI + gpuikit；发布走这一版，与上面两套互不影响）
    ├─ state.rs     应用状态、消息枚举、数字输入草稿
    ├─ view.rs      根视图：左侧边栏 + 右侧内容区
    ├─ theme.rs     装载 gpuikit 主题（可换肤）与字号常量
@@ -84,6 +95,8 @@ tools/
 ├─ notes-reflow.py 发布说明的软换行合并（`--check` 打 tag 前自查）
 └─ regen-rules/   重新生成 builtin.rs 清单快照的小工具
 build.rs         把 app.rc（图标 + 版本信息）编进 Windows exe
+App.tsx          TSX 界面入口（nsh 分支；必须与 nsh.json 同级，nsh 就是这么找的）
+nsh.json         nsh 工程配置：rust = "."、root = "App"、singleInstance
 ```
 
 ### 程序图标
@@ -304,6 +317,27 @@ cargo build        # 调试构建
 ```
 
 设置 `TUN2PROXY_GUI_NO_ELEVATE=1` 可跳过提权，直接以当前权限启动。
+
+### TSX 界面（nsh 分支）
+
+这个分支上界面还有一版用 TSX 写的（[longbridge/nsh](https://github.com/longbridge/nsh)）。分层是硬边界：
+
+```text
+core/      内核：配置、探测、分流、进程监督——不知道界面存在
+api/       门面：纯 Rust + serde，数据出成 JSON，动作返回 {ok,error}
+bridge/    唯一 import nsh 的地方，#[module] Backend 把 api 包成模块方法
+ui/        中间那版 Rust 界面（发布仍走它）
+App.tsx    TSX 入口；src/app/ 下是 api.ts / theme.ts / components.tsx / pages/
+```
+
+```bash
+nsh run App.tsx    # dev host，改文件自动重建（页面会重置回仪表盘）
+nsh check          # tsc + cargo check
+```
+
+需要 nsh 0.6 以上。**`cargo run` 和发布 exe 仍然走 `ui/` 那一版（`AppSource::Rust`）**，TSX 这版还没接进发布流程（那条路要 `AppSource::Bundle` + `nsh package`，体积和签名都会变）。
+
+写这一版时踩到的两件事：nsh 的组件体只跑一次，跟着信号变的派生值都要写成函数、在 JSX 子节点位置求值（写在 `style` 字面对象里会冻在首帧）；`Scroll` 自带的滚动条在 Windows 后端不画，所以 `components.tsx` 里自己画了一条。
 
 ### 调试时怎么截图
 
