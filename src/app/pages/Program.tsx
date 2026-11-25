@@ -9,7 +9,7 @@
 //! 所以这里只画过滤后的最后 [`LOG_ROWS`] 行，并在标题上把「一共多少行」写清楚
 //! ——完整日志在磁盘文件里，路径就在上面那张卡的「日志」一行。
 
-import { signal, Text, View } from "nsh";
+import { Clipboard, signal, Text, View } from "nsh";
 import type { JSX } from "nsh";
 
 import * as api from "../api";
@@ -38,6 +38,33 @@ export function ProgramPage(props: { snap: () => api.Snapshot }): JSX.Element {
 
   const kept = () => props.snap().logs.filter((line) => keeps(filter(), line.kind));
   const shown = () => kept().slice(-LOG_ROWS);
+
+  /**
+   * 复制日志：把**当前这一档**整段放进剪贴板（不是屏幕上那 200 行）。
+   *
+   * 报问题时把日志粘出去是这一页最常用的动作，只给个路径让用户自己去翻文件
+   * 等于没给。旧界面有这颗按钮，搬过来时漏了。
+   *
+   * 复制成功后在按钮上回一句「已复制 N 行」：这个动作没有别的可见结果，不回报
+   * 一句用户不知道到底成没成。不用定时器让它自己消失——下一次复制或换档时复位。
+   */
+  const copied = signal<number | null>(null);
+  const copyError = signal<string | null>(null);
+  const copy = () => {
+    const lines = kept();
+    if (lines.length === 0) return;
+    const body = lines.map((line) => `${kindTag(line.kind)}  ${line.text}`).join("\n");
+    Clipboard.writeText(body).then(
+      () => {
+        copied.set(lines.length);
+        copyError.set(null);
+      },
+      (err: unknown) => {
+        copied.set(null);
+        copyError.set(err instanceof Error ? err.message : String(err));
+      },
+    );
+  };
 
   return (
     <View style={{ flexDirection: "column", gap: 16 }}>
@@ -215,11 +242,20 @@ export function ProgramPage(props: { snap: () => api.Snapshot }): JSX.Element {
               <Chip
                 label={item.label}
                 chosen={filter() === item.id}
-                onPress={() => filter.set(item.id)}
+                onPress={() => {
+                  filter.set(item.id);
+                  // 换档之后行数变了，上一次的「已复制 N 行」不再对得上。
+                  copied.set(null);
+                }}
               />
             ))}
           </Chips>
-          <Caption>完整日志在磁盘文件里，路径见上面的「日志」一行。</Caption>
+          <Button label={copied() === null ? "复制" : `已复制 ${copied()} 行`} onPress={copy} />
+          {copyError() ? (
+            <Text style={{ fontSize: 10, color: hue.danger() }}>复制失败：{copyError()}</Text>
+          ) : (
+            <Caption>完整日志在磁盘文件里，路径见上面的「日志」一行。</Caption>
+          )}
         </View>
       </Card>
     </View>
