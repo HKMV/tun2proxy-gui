@@ -172,6 +172,18 @@ export function App(): JSX.Element {
         <ScrollArea resetOn={page} style={{ flex: 1, padding: 24 }}>
           <View style={{ flexDirection: "column", gap: 16 }}>
             <PageHeader page={page} snap={snap} />
+            {/* 启动被本地校验挡回来时的一句话。放在这里而不是仪表盘里：
+                侧栏那颗按钮任何页都能点，坐在程序页点完却什么都看不到，
+                只能以为它没反应。点一下这行可以消掉。 */}
+            {notice() ? (
+              <View
+                onPress={() => notice.set(null)}
+                style={{ flexDirection: "row", alignItems: "flex-start", gap: 8, cursor: "pointer" }}
+              >
+                <Text style={{ fontSize: 11, color: hue.danger() }}>启动失败：{notice()}</Text>
+                <Text style={{ fontSize: 11, color: ink.muted() }}>（点一下消掉）</Text>
+              </View>
+            ) : null}
             {
               // 五页里仪表盘与代理配置已经搬完，其余三页还在 Rust 那套里。
               page() === "dashboard" ? (
@@ -189,6 +201,8 @@ export function App(): JSX.Element {
           </View>
         </ScrollArea>
       </View>
+      {/* 启停蒙版：这几秒内核在干活，整窗盖住，别让人反复点。 */}
+      {snap().busy ? <BusyMask snap={snap} /> : null}
       {/* 关窗确认：配成「每次询问」时才出现。整窗蒙一层，问清楚再走。 */}
       {askClose() ? (
         <View
@@ -228,6 +242,70 @@ export function App(): JSX.Element {
           </Card>
         </View>
       ) : null}
+    </View>
+  );
+}
+
+/**
+ * 启停蒙版：整窗盖住，中间一个转圈的环 + 「在等哪一步」。
+ *
+ * 启动要走「探上游 → 清残留网卡 → 起分流器 → 拉子进程」，停止要等子进程退出
+ * 和网卡回收，都是几秒级的。只把按钮变灰的话，用户会以为程序没反应，然后反复
+ * 点——内核那两次调用都不是幂等的。
+ *
+ * 盖的是**界面**：系统标题栏在外面，蒙版期间照样能点叉关窗（那是窗口的事）。
+ */
+function BusyMask(props: { snap: () => api.Snapshot }): JSX.Element {
+  // 文案由后端给（`busyLabel`）：状态机在那边，界面不复述一套。
+  const label = () => props.snap().busyLabel || "请稍等…";
+  const hint = () =>
+    props.snap().status === "stopping"
+      ? "等子进程退出、网卡回收，这几秒不要再点一次。"
+      : "探上游代理、清理残留网卡与进程，这几秒不要再点一次。";
+  return (
+    <View
+      style={{
+        position: "absolute",
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(0, 0, 0, 0.55)",
+      }}
+    >
+      <View
+        style={{
+          width: 420,
+          padding: 24,
+          borderRadius: 16,
+          alignItems: "center",
+          gap: 16,
+          backgroundColor: surface.card(),
+        }}
+      >
+        {/* 两段主色 + 两段淡色的环，靠 `spin` 转起来才看得出在动。 */}
+        <View
+          style={{
+            width: 34,
+            height: 34,
+            borderRadius: 17,
+            borderWidth: 3,
+            borderTopColor: hue.primary(),
+            borderRightColor: hue.primary(),
+            borderBottomColor: hue.muted(),
+            borderLeftColor: hue.muted(),
+            animationName: "spin",
+            animationDuration: "800ms",
+            animationTimingFunction: "linear",
+            animationIterationCount: "infinite",
+            animationFrameRate: 30,
+          }}
+        />
+        <Text style={{ fontSize: 14, fontWeight: "600", color: ink.primary() }}>{label()}</Text>
+        <Text style={{ fontSize: 11, color: ink.muted() }}>{hint()}</Text>
+      </View>
     </View>
   );
 }
@@ -503,29 +581,40 @@ function NavItem(props: {
   );
 }
 
-/** 侧栏底部那颗按钮：未启动时「启动」，运行中「停止」。 */
+/**
+ * 侧栏底部那颗按钮：未启动时「启动」，运行中「停止」。
+ *
+ * 底色和文字都长在 children 分支里，不写在 `style` 上：nsh 的组件体只跑一次，
+ * 而 `style` 是个字面对象，在里面读信号拿到的永远是首帧那一次（按钮会一直停在
+ * 「启动」、一直是主色）——只有放在 JSX 子节点位置的表达式才跟着信号走。
+ *
+ * 忙碌期间由蒙版挡着，这里再按一次也只当没点：内核那两次调用不是幂等的。
+ */
 function ToggleButton(props: { snap: () => api.Snapshot; onPress: () => void }): JSX.Element {
-  // nsh 的组件体只跑一次：凡是「跟着信号变」的值都得是函数，在 JSX 里求值。
   const running = () => props.snap().active;
-  const busy = () => props.snap().busy;
-  return (
+  const face = (label: string, background: string) => (
     <View
-      onPress={busy() ? undefined : props.onPress}
       style={{
-        height: 36,
+        flex: 1,
         borderRadius: 18,
         alignItems: "center",
         justifyContent: "center",
-        backgroundColor: running() ? hue.danger() : hue.primary(),
-        opacity: busy() ? 0.6 : 1,
-        cursor: busy() ? "default" : "pointer",
+        backgroundColor: background,
+        transitionProperty: "background-color",
+        transitionDuration: "160ms",
       }}
     >
-      <Text
-        style={{ fontSize: 12, fontWeight: "600", color: hue.primaryInk() }}
-      >
-        {running() ? "停止" : "启动"}
-      </Text>
+      <Text style={{ fontSize: 12, fontWeight: "600", color: hue.primaryInk() }}>{label}</Text>
+    </View>
+  );
+  return (
+    <View
+      onPress={() => {
+        if (!props.snap().busy) props.onPress();
+      }}
+      style={{ height: 36, borderRadius: 18, cursor: "pointer" }}
+    >
+      {running() ? face("停止", hue.danger()) : face("启动", hue.primary())}
     </View>
   );
 }
