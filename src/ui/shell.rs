@@ -19,6 +19,7 @@ use std::time::Duration;
 
 use nsh_base::theme;
 use nsh_core::desktop::{TitleBarOptions, TitleBarStyle, WindowAttributes};
+use nsh_core::geometry::Size;
 use nsh_core::element::desktop::{
     MenuItem, TrayClickEvent, current_window, on_quit_request, quit, set_tray, tray,
 };
@@ -108,6 +109,12 @@ struct Ui {
     /// 只能把整棵树重新建一遍，所以留这一个计数器给 [`shell`] 顶层的
     /// `dynamic` 订阅。
     rebuild: Signal<u64>,
+    /// 当前页那层滚动容器的句柄（每页各绑一次，同一时刻只有一个在树上）。
+    ///
+    /// 切页时要把位置拉回头顶：nsh 会把新旧两棵树里同位置的滚动容器当成同
+    /// 一个节点，偏移量跟着留下来，于是从「程序与日志」滚到底再切到仪表盘，
+    /// 一进去就停在半截，头一张卡（启动按钮）在视口外。
+    page_scroll: ElementRef,
 }
 
 /// 整窗骨架。
@@ -133,6 +140,7 @@ pub fn shell() -> impl IntoElement {    let page = signal(Page::Dashboard);
         splits: split::SplitUi::new(),
         networks: network::NetworkUi::new(),
         rebuild,
+        page_scroll: element_ref(),
     };
     // 根组件只跑一次，窗口属性也在这里设一次。
     hide_system_title_bar();
@@ -301,6 +309,18 @@ fn hide_system_title_bar() {
     attributes.title_bar = Some(title_bar);
     // 关窗由 [`intercept_close`] 决定，不让 nsh 直接销毁窗口。
     attributes.close_on_press = Some(false);
+    // 最小尺寸定死在 880×560（逻辑点）：
+    //
+    // * 窄到 800 物理像素时，顶栏那串控件会把品牌名挤没、仪表盘的「直连 ↓ /
+    //   直连 ↑ / 代理 ↓ / 代理 ↑」四个速率从一行摊成四行，卡片被撑成一条；
+    // * 再往下拖还会低于内容需要的高度，窗口直接变成用不了的形状。
+    //
+    // 880 是「四个速率 + 启动按钮」还排得下一行」的下限；560 高在 1366×768 的
+    // 笔记本上也放得下（125% 缩放后 700 物理像素，留得出任务栏）。
+    attributes.min_size = Some(Some(Size {
+        width: px(880.0),
+        height: px(560.0),
+    }));
     current_window().set(attributes);
 }
 
@@ -338,22 +358,28 @@ fn top_bar(
                 .flex_row()
                 .items_center()
                 .gap_3()
+                // 窗口拉窄时这一块会被压到比文字还窄：不裁切的话「Tun2Proxy」
+                // 和副标题直接盖到右边那排控件身上（未启动胶囊背后透出品牌名）。
+                .overflow_hidden()
                 .window_drag(true)
                 .child(brand_mark())
                 .child(
                     view()
                         .flex_col()
                         .gap_1()
+                        .overflow_hidden()
                         .child(
                             text("Tun2Proxy")
                                 .text_sm()
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(move || theme().foreground),
+                                .text_color(move || theme().foreground)
+                                .truncate(),
                         )
                         .child(
                             text(t("隧道控制台", "Tunnel console"))
                                 .text_xs()
-                                .text_color(move || theme().muted_foreground),
+                                .text_color(move || theme().muted_foreground)
+                                .truncate(),
                         ),
                 ),
         )
@@ -691,6 +717,13 @@ fn content(
     error: Signal<Option<String>>,
     ui: Ui,
 ) -> impl IntoElement {
+    // 换页拉回头顶。nsh 会把新旧两棵树里同位置的滚动容器当成同一个节点，
+    // 偏移量跟着留下来：从「程序与日志」滚到底再切到仪表盘，一进去就停在
+    // 半截，启动按钮和流量图全在视口外，只剩「当前配置」一类的下半场。
+    effect(move || {
+        let _ = page.get();
+        ui.page_scroll.scroll_to(Point::new(px(0.0), px(0.0)), false);
+    });
     view()
         .flex_1()
         .h_full()
@@ -698,7 +731,17 @@ fn content(
         .p_6()
         .gap_5()
         .child(header(page, live))
-        .child(dynamic(move || page_body(page.get(), page, live, error, ui)))
+        // 这一层是给 nsh 的收缩通道：它默认 `flex_shrink: 0`（React Native 的
+        // 口径，不是 CSS 的 1），包一层不写 `flex_1` 的容器，页面内容的高度就
+        // 原样往上顶——根布局的最小高度变成「整页全高」，窗口于是缩不下去，往
+        // 下拖只会把窗口撑成一条空白长条。`overflow_hidden` 顺带把这一层的最
+        // 小尺寸按 0 算，滚动交给里面那页自己的 `scroll()`。
+        .child(
+            view()
+                .flex_1()
+                .overflow_hidden()
+                .child(dynamic(move || page_body(page.get(), page, live, error, ui))),
+        )
 }
 
 /// 按当前页给出内容。
@@ -714,9 +757,9 @@ fn page_body(
 ) -> AnyElement {
     match page {
         Page::Dashboard => dashboard(live, error, page_signal, ui).into_element(),
-        Page::Profiles => profile::page(ui.profiles, live).into_element(),
-        Page::Split => split::page(ui.splits, live).into_element(),
-        Page::Network => network::page(ui.networks).into_element(),
+        Page::Profiles => profile::page(ui.profiles, live, ui.page_scroll).into_element(),
+        Page::Split => split::page(ui.splits, live, ui.page_scroll).into_element(),
+        Page::Network => network::page(ui.networks, ui.page_scroll).into_element(),
         Page::Program => program(live, ui.logs, ui).into_element(),
     }
 }
@@ -773,6 +816,7 @@ fn dashboard(
 ) -> impl IntoElement {
     scroll()
         .flex_1()
+        .element_ref(&ui.page_scroll)
         .child(
             view()
                 .flex_col()
@@ -974,27 +1018,39 @@ fn hero(live: Signal<Live>, error: Signal<Option<String>>) -> impl IntoElement {
                                 .text_color(move || theme().muted_foreground),
                             ),
                     )
-                    .child(view().flex_1())
-                    .child(metric(
-                        t("直连 ↓", "Direct ↓"),
-                        rate_text(snapshot.direct.1),
-                        direct_color(),
-                    ))
-                    .child(metric(
-                        t("直连 ↑", "Direct ↑"),
-                        rate_text(snapshot.direct.0),
-                        direct_color(),
-                    ))
-                    .child(metric(
-                        t("代理 ↓", "Proxy ↓"),
-                        rate_text(snapshot.proxy.1),
-                        proxy_color(),
-                    ))
-                    .child(metric(
-                        t("代理 ↑", "Proxy ↑"),
-                        rate_text(snapshot.proxy.0),
-                        proxy_color(),
-                    ))
+                    // 四个速率分两两一组，窗口拉窄时换行而不是被卡片边缘切掉
+                    // （「代理 ↓」只剩半个数字）。占位用 `flex_1` 吃掉中间的空
+                    // 白，同时给自己一个「不超过剩余宽度」的约束，`flex_wrap`
+                    // 才有机会生效。
+                    .child(
+                        view()
+                            .flex_1()
+                            .flex_row()
+                            .flex_wrap()
+                            .items_center()
+                            .justify_end()
+                            .gap_4()
+                            .child(metric(
+                                t("直连 ↓", "Direct ↓"),
+                                rate_text(snapshot.direct.1),
+                                direct_color(),
+                            ))
+                            .child(metric(
+                                t("直连 ↑", "Direct ↑"),
+                                rate_text(snapshot.direct.0),
+                                direct_color(),
+                            ))
+                            .child(metric(
+                                t("代理 ↓", "Proxy ↓"),
+                                rate_text(snapshot.proxy.1),
+                                proxy_color(),
+                            ))
+                            .child(metric(
+                                t("代理 ↑", "Proxy ↑"),
+                                rate_text(snapshot.proxy.0),
+                                proxy_color(),
+                            )),
+                    )
                     .child(tunnel_button(live, error)),
             )
     })
@@ -1500,7 +1556,12 @@ fn profile_card(ui: Ui, page: Signal<Page>) -> impl IntoElement {
             ),
             view(),
         ))
-        .child(dynamic(move || profile_body(ui, page)))
+        .child(dynamic(move || {
+            // 只跟着「配置被改过几次」重建这一张卡：切配置是低频动作，
+            // 为它整窗重建会把仪表盘的滚动位置一起丢掉。
+            let _ = ui.profiles.revision();
+            profile_body(ui, page)
+        }))
 }
 
 /// 当前配置卡的内容：名字 + 上游摘要 + 换配置 + 两个去处。
@@ -1530,7 +1591,7 @@ fn profile_body(ui: Ui, page: Signal<Page>) -> AnyElement {
                         let _ = &item.name;
                         chip(profile_slot_label(index), chosen, move || {
                             state::select_profile(index);
-                            ui.rebuild.set(ui.rebuild.get() + 1);
+                            ui.profiles.bump();
                         })
                     })
                     .collect::<Vec<_>>(),
@@ -1663,15 +1724,24 @@ fn log_preview_body(live: Signal<Live>) -> AnyElement {
 }
 
 /// 程序与日志页：上面管内核，下面看日志。
+/// 程序与日志：内核卡 + 窗口卡 + 关于卡 + 日志卡。
+///
+/// 和仪表盘一样套一层滚动：四张卡摞起来比默认窗口高，不滚的话「关于」和
+/// 日志卡会被挤到可视区外面（日志卡还不能靠 `flex_1` 抢高度——那样它自己
+/// 会被压到只剩一条边）。这里给日志卡固定高度，整页交给人来滚。
 fn program(live: Signal<Live>, log_view: LogView, ui: Ui) -> impl IntoElement {
-    view()
+    scroll()
         .flex_1()
-        .flex_col()
-        .gap_3()
-        .child(core_card(live))
-        .child(window_card(ui))
-        .child(about_card())
-        .child(log_card(live, log_view))
+        .element_ref(&ui.page_scroll)
+        .child(
+            view()
+                .flex_col()
+                .gap_3()
+                .child(core_card(live))
+                .child(window_card(ui))
+                .child(about_card())
+                .child(log_card(live, log_view)),
+        )
 }
 
 /// 窗口与界面：关窗口怎么办、界面用哪种语言、以及「藏进托盘」这个动作。
@@ -1679,10 +1749,12 @@ fn program(live: Signal<Live>, log_view: LogView, ui: Ui) -> impl IntoElement {
 /// 三样都是「设一次就不动」的选项，所以做成一行一项的 chips，不做下拉框：
 /// 三个选项全都摆在眼前，选中的那格是实心的，扫一眼就知道当前是什么。
 fn window_card(ui: Ui) -> impl IntoElement {
-    let close = state::close_action();
     let language = state::config()
         .map(|config| config.language)
         .unwrap_or_default();
+    // 改「关闭按钮」只需要重绘这一行；切语言才要整窗重建（文字是构建期取的）。
+    // 两者混用一个信号的话，在页面下方改一次关闭行为会把滚动位置一起丢掉。
+    let close_rev = signal(0u64);
 
     card_shell()
         .child(card_head(
@@ -1705,12 +1777,17 @@ fn window_card(ui: Ui) -> impl IntoElement {
                 )
                 .to_string(),
             ),
-            chips(CloseAction::ALL.into_iter().map(|item| {
-                chip(item.label(), item == close, move || {
-                    state::remember_close_action(item);
-                    ui.rebuild.set(ui.rebuild.get() + 1);
-                })
-            })),
+            dynamic(move || {
+                let _ = close_rev.get();
+                let close = state::close_action();
+                chips(CloseAction::ALL.into_iter().map(|item| {
+                    chip(item.label(), item == close, move || {
+                        state::remember_close_action(item);
+                        close_rev.set(close_rev.get() + 1);
+                    })
+                }))
+                .into_element()
+            }),
         ))
         .child(field(
             t("界面语言", "Language"),
@@ -1993,7 +2070,7 @@ fn core_progress(snapshot: Live) -> AnyElement {
 fn log_card(live: Signal<Live>, log_view: LogView) -> impl IntoElement {
     let filter = log_view.filter;
     view()
-        .flex_1()
+        .h(px(360.0))
         .flex_col()
         .gap_3()
         .rounded_xl()
@@ -2281,6 +2358,18 @@ fn log_pane(live: Signal<Live>, log_view: LogView) -> impl IntoElement {
             // 列表自己不撑高度：不给它 `h_full` 时高度是 0，界面上就是
             // 「有行数、一片空白」。
             .initial_scroll_at_end()
+            // 「跟随」跟着手指走：滚到底才算在跟随，往上翻就自动松开。
+            //
+            // 没有这一条时，用户正在往回翻几百行历史，下一条日志一来就把视口
+            // 拽回底部——永远读不到上一分钟发生了什么。
+            .on_scroll(move |event: &ScrollEvent| {
+                let bottom = event.offset.y.0 + event.size.height.0;
+                // 留 24dp 余量：最后一行只露出一半时也算「在底部」。
+                let at_end = bottom + 24.0 >= event.content_size.height.0;
+                if log_view.follow.get() != at_end {
+                    log_view.follow.set(at_end);
+                }
+            })
             .h_full()
             .empty(dynamic(move || {
                 // 两片空白长得一样但意思不同：真的是空的，还是这一档没匹配上。

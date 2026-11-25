@@ -177,6 +177,10 @@ pub fn text_area(
         .bg(move || theme().background)
         .border_1()
         .border_color(move || theme().border)
+        .transition_colors()
+        .duration(120.0)
+        .ease_out()
+        .focus_within(|this| this.border_color(theme().primary))
         .child(
             input()
                 .w_full()
@@ -191,6 +195,10 @@ pub fn text_area(
 }
 
 /// 输入框外面那层：底色比卡片深一档，用描边把边界说清楚。
+///
+/// 输入框自己拿不到焦点就变色的能力（它是宿主元素），所以焦点反馈挂在这层
+/// 外壳上：里面的 `input` 一拿到键盘焦点，外框就换成主色——不然点进点出
+/// 除了那根细光标之外，界面上没有任何区别。
 fn field_box(enabled: bool) -> View {
     view()
         .h(px(INPUT_HEIGHT))
@@ -206,14 +214,23 @@ fn field_box(enabled: bool) -> View {
         })
         .border_1()
         .border_color(move || theme().border)
+        .transition_colors()
+        .duration(120.0)
+        .ease_out()
+        .when(enabled, |this| {
+            this.focus_within(|this| this.border_color(theme().primary))
+        })
         .items_center()
 }
 
 /// 分段控件里的一格（选中的那格用主色实心）。
+///
+/// 高 24、左右 12：20dp 高的胶囊看着秀气，但鼠标要瞄准一个 20×40 的小方块
+/// 才能点中，一屏上七八个选项串在一起时尤其费劲。
 pub fn chip(label: &'static str, chosen: bool, on_press: impl Fn() + 'static) -> View {
     let mut chip = view()
-        .h(px(20.0))
-        .px_2()
+        .h(px(24.0))
+        .px_3()
         .rounded_full()
         .items_center()
         .justify_center()
@@ -253,7 +270,7 @@ pub fn chip(label: &'static str, chosen: bool, on_press: impl Fn() + 'static) ->
 /// 分段控件的容器：一排 chip 装在一个胶囊里。
 pub fn chips(children: impl IntoIterator<Item = View>) -> View {
     view()
-        .h(px(24.0))
+        .h(px(28.0))
         .flex_row()
         .items_center()
         .gap_1()
@@ -286,6 +303,32 @@ pub fn ghost_button(label: &'static str, on_press: impl Fn() + 'static) -> View 
             text(label)
                 .text_xs()
                 .text_color(move || theme().muted_foreground),
+        )
+}
+
+/// 危险动作的次要按钮：红字红边，同一个尺寸，跟 `ghost_button` 摆在一起不
+/// 会跳行。用在「确认删除」这一步上——先变红再变字，第二次点才真的删。
+pub fn danger_button(label: &'static str, on_press: impl Fn() + 'static) -> View {
+    view()
+        .h(px(26.0))
+        .px_3()
+        .rounded_full()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .transition_colors()
+        .duration(140.0)
+        .ease_out()
+        .border_1()
+        .border_color(move || danger_color())
+        .hover(|this| this.bg(theme().accent))
+        .active(|this| this.scale(0.96))
+        .on_press(on_press)
+        .child(
+            text(label)
+                .text_xs()
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(move || danger_color()),
         )
 }
 

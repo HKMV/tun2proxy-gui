@@ -22,7 +22,7 @@ use crate::tr_format;
 use super::live::Live;
 use super::state;
 use super::widgets::{
-    action_row, card_head, card_shell, chip, chips, danger_color, field, ghost_button,
+    action_row, card_head, card_shell, chip, chips, danger_button, danger_color, field, ghost_button,
     ghost_button_maybe, ok_color, primary_button, text_area, text_field,
 };
 
@@ -39,6 +39,9 @@ pub struct ProfileUi {
     draft: Signal<Option<ProfileDraft>>,
     /// 上一次保存失败的结论。
     error: Signal<Option<String>>,
+    /// 正在等二次确认的那一行（删配置是**不可撤销**的，一次点击就删掉
+    /// 一整套地址和绕过规则，误点的代价太大）。
+    confirm_delete: Signal<Option<usize>>,
 }
 
 impl ProfileUi {
@@ -48,6 +51,7 @@ impl ProfileUi {
             editing: signal(None),
             draft: signal(None),
             error: signal(None),
+            confirm_delete: signal(None),
         }
     }
 
@@ -59,8 +63,15 @@ impl ProfileUi {
     }
 
     /// 配置刚被改过：让这一页重新读一遍。
-    fn bump(&self) {
+    ///
+    /// 也供别的页面用：仪表盘上「当前配置」那个卡片切配置时，改的是同一份配置。
+    pub fn bump(&self) {
         self.rev.set(self.rev.get() + 1);
+    }
+
+    /// 当前的修改计数（别的页面拿它当重绘依赖）。
+    pub fn revision(&self) -> u64 {
+        self.rev.get()
     }
 }
 
@@ -133,8 +144,14 @@ fn number(raw: &str, label: &'static str, low: u64, high: u64) -> Result<u64, St
 }
 
 /// 页面入口：列表态或编辑态。
-pub fn page(ui: ProfileUi, live: Signal<Live>) -> impl IntoElement {
-    scroll().flex_1().child(dynamic(move || {
+pub fn page(ui: ProfileUi, live: Signal<Live>, page_scroll: ElementRef) -> impl IntoElement {
+    // 列表 ↔ 编辑态换的是整块内容，也要回顶：从滚到一半的列表点进编辑态，
+    // 表单一进来就停在中段，名字那一行已经在视口上方了。
+    effect(move || {
+        let _ = ui.editing.get();
+        page_scroll.scroll_to(Point::new(px(0.0), px(0.0)), false);
+    });
+    scroll().flex_1().element_ref(&page_scroll).child(dynamic(move || {
         match ui.editing.get() {
             Some(index) => editor(ui, index, live).into_element(),
             None => list(ui, live).into_element(),
@@ -239,11 +256,20 @@ fn row(ui: ProfileUi, live: Signal<Live>, config: &Config, index: usize) -> View
                 )
                 .child(dynamic(move || probe_note(live, url_note.clone())));
             if !active {
-                body = body.cursor_pointer().on_press(move || {
-                    if state::select_profile(index) {
-                        ui.bump();
-                    }
-                });
+                // 整块文字区都能点，悬停时淡淡地铺一层底：不铺的话鼠标移上去
+                // 只有指针变手型，看不出这一行是不是真的能点。
+                body = body
+                    .rounded_lg()
+                    .cursor_pointer()
+                    .transition_colors()
+                    .duration(120.0)
+                    .ease_out()
+                    .hover(|this| this.bg(theme().accent))
+                    .on_press(move || {
+                        if state::select_profile(index) {
+                            ui.bump();
+                        }
+                    });
             }
             body
         })
@@ -253,16 +279,28 @@ fn row(ui: ProfileUi, live: Signal<Live>, config: &Config, index: usize) -> View
                 .items_center()
                 .gap_2()
                 .child(dynamic(move || probe_button(live, url.clone())))
-                .child(ghost_button(t("编辑", "Edit"), move || begin_edit(ui, index)))
-                .child(ghost_button_maybe(
-                    t("删除", "Delete"),
-                    !only_one,
-                    move || {
-                        if state::remove_profile(index) {
-                            ui.bump();
-                        }
-                    },
-                )),
+                .child(ghost_button(t("编辑", "Edit"), move || {
+                    ui.confirm_delete.set(None);
+                    begin_edit(ui, index)
+                }))
+                // 删除要二次确认：第一下把按钮换成红色的「确认删除」，第二下才
+                // 真删。一套配置里有地址、DNS、绕过规则，删错了没有撤销。
+                .child(dynamic(move || {
+                    if !only_one && ui.confirm_delete.get() == Some(index) {
+                        danger_button(t("确认删除", "Confirm"), move || {
+                            ui.confirm_delete.set(None);
+                            if state::remove_profile(index) {
+                                ui.bump();
+                            }
+                        })
+                        .into_element()
+                    } else {
+                        ghost_button_maybe(t("删除", "Delete"), !only_one, move || {
+                            ui.confirm_delete.set(Some(index));
+                        })
+                        .into_element()
+                    }
+                })),
         )
 }
 

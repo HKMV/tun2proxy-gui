@@ -66,8 +66,8 @@ fn profile(ui: NetworkUi) -> Profile {
 }
 
 /// 页面入口。
-pub fn page(ui: NetworkUi) -> impl IntoElement {
-    scroll().flex_1().child(
+pub fn page(ui: NetworkUi, page_scroll: ElementRef) -> impl IntoElement {
+    scroll().flex_1().element_ref(&page_scroll).child(
         view()
             .flex_col()
             .gap_4()
