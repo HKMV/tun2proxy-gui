@@ -47,6 +47,7 @@
 
   "tray.start": "Start tunnel",
   "tray.stop": "Stop tunnel",
+  "tray.hide": "Hide to tray",
   "tray.show": "Show window",
   "tray.quit": "Quit",
 
@@ -230,5 +231,36 @@
   "split.disabledHint": "All traffic goes through the upstream proxy, exactly as without this feature",
   "split.dnsModeWarning": "The DNS mode is “{mode}”: tun2proxy only sees IPs, so the domain lists do nothing and only IP ranges are split. Switch the DNS mode to “Virtual IP” to use the domain rules.",
   "split.rulesTruncated": "Showing the first {rows} — use the search box above to reach later rules",
-  "split.status": "Listening on {addr}, {rules} rules active · this run: direct {direct} / proxied {proxy} / failed {failed}"
+  "split.status": "Listening on {addr}, {rules} rules active · this run: direct {direct} / proxied {proxy} / failed {failed}",
+
+  "dash.traffic.peak": "peak",
+  "dash.route.title": "Where traffic goes",
+  "dash.route.hint": "The last two minutes in 2-second steps: direct at the bottom, proxied above it, failures on top.",
+  "dash.route.empty": "Once the tunnel starts this shows where each connection went.",
+  "dash.route.proxied": "Proxied",
+  "dash.route.off": "The splitter is not running: no new decisions land here until the tunnel starts.",
+  "dash.route.idle": "No connection has reached the splitter yet. That is normal while idle.",
+  "dash.route.totals": "The chart covers the last 2 minutes in 2-second steps; the numbers are this run's totals ({count} connections).",
+  "dash.profile.title": "Current profile",
+  "dash.profile.hint": "The tunnel starts with this profile; switching applies on the next start.",
+  "dash.profile.switch": "Switch",
+  "dash.profile.slot": "Profile {index}",
+  "dash.profile.empty": "This profile has no proxy address yet, so starting will fail; use “Edit” to fill it in.",
+  "dash.split.title": "Split routing",
+  "dash.split.hint": "Each connection is classified once: matches go direct, the rest use the upstream proxy.",
+  "dash.split.china": "China IPs and domains",
+  "dash.split.rest": "Everything else",
+  "dash.split.upstream": "Upstream proxy",
+  "dash.env.title": "Environment",
+  "dash.env.hint": "The config and the logs live here; check the log directory first.",
+  "dash.env.config": "Config",
+  "dash.env.bin": "Binaries",
+  "dash.env.logs": "Logs",
+  "dash.log.title": "Recent log",
+  "dash.log.hint": "The last 5 lines; the full list and filters are on the Program page.",
+  "dash.log.empty": "No log yet. The latest lines show up here once the tunnel starts.",
+  "dash.log.seeAll": "See all",
+
+  "program.follow": "Follow",
+  "program.jumpLatest": "Jump to latest"
 }

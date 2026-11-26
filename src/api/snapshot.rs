@@ -106,6 +106,20 @@ pub struct SplitInfo {
     pub sessions: u64,
     /// 最近的判定，新的在前。
     pub decisions: Vec<DecisionView>,
+    /// 分流去向的时序，**旧 → 新**，最后一格是「现在」。长度固定，界面按位置摊开。
+    pub trend: Vec<TrendView>,
+}
+
+/// 分流去向时序里的一格（2 秒）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrendView {
+    /// 判到直连的条数。
+    pub direct: u64,
+    /// 判到代理的条数。
+    pub proxy: u64,
+    /// 判定失败的条数。
+    pub failed: u64,
 }
 
 /// 内置清单的更新进度。
@@ -283,6 +297,16 @@ impl Snapshot {
                         ok: decision.ok,
                         target: decision.target.clone(),
                         detail: decision.detail.clone(),
+                    })
+                    .collect(),
+                trend: guard
+                    .split
+                    .trend
+                    .iter()
+                    .map(|bucket| TrendView {
+                        direct: bucket.direct,
+                        proxy: bucket.proxy,
+                        failed: bucket.failed,
                     })
                     .collect(),
             },

@@ -70,6 +70,7 @@ export function installTray(options: {
           onSelect: options.onToggle,
         },
         { type: "separator" },
+        { label: t("tray.hide"), onSelect: hideToTray },
         { label: t("tray.show"), onSelect: showWindow },
         { label: t("tray.quit"), onSelect: quit },
       ],

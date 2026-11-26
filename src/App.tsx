@@ -14,7 +14,7 @@ import { effect, setColorScheme, setTheme, signal, Text, View } from "nsh";
 import type { JSX } from "nsh";
 
 import * as api from "./app/api";
-import { Button, Card, CardHead, Caption, Dot, Metric, ScrollArea } from "./app/components";
+import { Button, Card, CardHead, Caption, Chip, Chips, Dot, Metric, ScrollArea } from "./app/components";
 import { bindWindow, hideToTray, installTray, interceptClose, quit } from "./app/desktop";
 import { isEnglish, syncLanguage, t } from "./app/i18n";
 import type { MessageKey } from "./app/i18n";
@@ -363,7 +363,13 @@ export function App(): JSX.Element {
             ) : null}
             {
               page() === "dashboard" ? (
-                <Dashboard snap={snap} notice={notice} starting={starting} onToggle={toggle} />
+                <Dashboard
+                  snap={snap}
+                  notice={notice}
+                  starting={starting}
+                  onToggle={toggle}
+                  onGo={(id) => page.set(id)}
+                />
               ) : page() === "profiles" ? (
                 <ProfilesPage snap={snap} />
               ) : page() === "split" ? (
@@ -855,6 +861,7 @@ function Dashboard(props: {
   notice: () => string | null;
   starting: () => boolean;
   onToggle: () => void;
+  onGo: (id: PageId) => void;
 }): JSX.Element {
   return (
     <View style={{ flexDirection: "column", gap: 16 }}>
@@ -865,6 +872,17 @@ function Dashboard(props: {
         onToggle={props.onToggle}
       />
       <TrafficCard snap={props.snap} />
+      <RoutingCard snap={props.snap} />
+      <ProfileCard snap={props.snap} onGo={props.onGo} />
+      <View style={{ flexDirection: "row", alignItems: "stretch", gap: 16 }}>
+        <View style={{ flex: 1 }}>
+          <SplitCard />
+        </View>
+        <View style={{ flex: 1 }}>
+          <EnvCard />
+        </View>
+      </View>
+      <LogPreviewCard snap={props.snap} onGo={props.onGo} />
     </View>
   );
 }
@@ -944,8 +962,12 @@ function StatusCard(props: {
 /** 流量卡：两分钟的堆叠柱状图 + 分流计数。 */
 function TrafficCard(props: { snap: () => api.Snapshot }): JSX.Element {
   const points = () => props.snap().history.slice(-HISTORY_POINTS);
+  /** 纵轴刻度：两路之和的最高一秒。 */
   const peak = () =>
     Math.max(1, ...points().map((point) => point.direct.down + point.proxy.down));
+  /** 卡片右上角显示的峰值（0 也照实显示，别写成 1 B/s）。 */
+  const peakRate = () =>
+    points().reduce((top, point) => Math.max(top, point.direct.down + point.proxy.down), 0);
   // 一根柱子都没有时整个图区是空白，看起来像「坏了」——补一句说明。
   const idle = () => points().every((point) => point.direct.down + point.proxy.down === 0);
   return (
@@ -964,6 +986,12 @@ function TrafficCard(props: { snap: () => api.Snapshot }): JSX.Element {
               label={t("common.proxy")}
               value={rateText(props.snap().proxy.down)}
               color={hue.proxy()}
+            />
+            {/* 峰值给的是「这两分钟里最高的一秒」，和左边的当前速率不是一个口径。 */}
+            <Metric
+              label={t("dash.traffic.peak")}
+              value={rateText(peakRate())}
+              color={ink.muted()}
             />
           </View>
         }
@@ -1034,6 +1062,216 @@ function TrafficCard(props: { snap: () => api.Snapshot }): JSX.Element {
           {props.snap().split.running ? t("app.traffic.splitterOn") : t("app.traffic.splitterOff")}
         </Caption>
       </View>
+    </Card>
+  );
+}
+
+/**
+ * 连接去向卡：最近两分钟每个连接被判到哪一边。
+ *
+ * 单独一张卡而不是并进流量图：流量图回答「多快」（字节/秒），这张回答「去了哪」
+ * （条数）。两种单位画在同一个刻度上只会互相误导。
+ */
+function RoutingCard(props: { snap: () => api.Snapshot }): JSX.Element {
+  const trend = () => props.snap().split.trend;
+  const idle = () => trend().every((bucket) => bucket.direct + bucket.proxy + bucket.failed === 0);
+  /** 纵轴：单格里最高的一条（三路各画各的，不叠总高）。 */
+  const peak = () =>
+    Math.max(1, ...trend().map((bucket) => Math.max(bucket.direct, bucket.proxy, bucket.failed)));
+  const split = () => props.snap().split;
+  const routed = () => split().direct + split().proxy;
+  // 百分比只算「真的走了哪条路」的两条：失败不进分母，否则两段加起来不到 100%。
+  const pct = (value: number) =>
+    routed() === 0 ? "" : `${Math.round((value / routed()) * 100)}%`;
+  const caption = () => {
+    if (!split().running) return t("dash.route.off");
+    if (split().sessions === 0) return t("dash.route.idle");
+    return t("dash.route.totals", { count: split().sessions });
+  };
+  const legend = (label: string, value: number, percent: string, color: string) => (
+    <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+      <Dot color={color} size={8} />
+      <Text style={{ fontSize: 11, color: ink.muted() }}>{label}</Text>
+      <Text style={{ fontSize: 11, fontWeight: "600", color }}>
+        {percent ? `${value}（${percent}）` : `${value}`}
+      </Text>
+    </View>
+  );
+  return (
+    <Card>
+      <CardHead title={t("dash.route.title")} hint={t("dash.route.hint")} />
+      <View style={{ height: 88, flexDirection: "row", alignItems: "flex-end", gap: 2 }}>
+        {trend().map((bucket) => {
+          const scale = (count: number) => Math.max(count > 0 ? 1 : 0, (count / peak()) * 88);
+          return (
+            <View
+              style={{
+                flex: 1,
+                height: 88,
+                flexDirection: "column",
+                justifyContent: "flex-end",
+                gap: 1,
+              }}
+            >
+              <View style={{ height: scale(bucket.failed), backgroundColor: hue.danger() }} />
+              <View style={{ height: scale(bucket.proxy), backgroundColor: hue.proxy() }} />
+              <View style={{ height: scale(bucket.direct), backgroundColor: hue.direct() }} />
+            </View>
+          );
+        })}
+        {idle() ? (
+          <View
+            style={{
+              position: "absolute",
+              left: 0,
+              right: 0,
+              top: 0,
+              bottom: 0,
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <Text style={{ fontSize: 11, color: ink.muted() }}>{t("dash.route.empty")}</Text>
+          </View>
+        ) : null}
+      </View>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 20 }}>
+        {legend(t("common.direct"), split().direct, pct(split().direct), hue.direct())}
+        {legend(t("dash.route.proxied"), split().proxy, pct(split().proxy), hue.proxy())}
+        {legend(t("common.failed"), split().failed, "", hue.danger())}
+        <View style={{ flex: 1 }} />
+      </View>
+      <Caption>{caption()}</Caption>
+    </Card>
+  );
+}
+
+/**
+ * 当前配置卡：隧道用哪一套启动，换一套不用先跑「代理配置」页。
+ *
+ * 「换一套再启动」是每天要做的动作，所以放仪表盘。切完下次启动生效——隧道在跑
+ * 的时候改配置本来就不该动到已经在跑的连接。
+ */
+function ProfileCard(props: {
+  snap: () => api.Snapshot;
+  onGo: (id: PageId) => void;
+}): JSX.Element {
+  const view = signal<api.ProfilesView>(api.profiles());
+  // 名字、地址、配置套数都可能在别的页面被改；每秒跟着快照重读一次配置。
+  effect(() => {
+    props.snap();
+    view.set(api.profiles());
+  });
+  const current = () => view().items[view().active];
+  const switchTo = (index: number) => {
+    api.selectProfile(index);
+    view.set(api.profiles());
+  };
+  return (
+    <Card>
+      <CardHead
+        title={t("dash.profile.title")}
+        hint={t("dash.profile.hint")}
+        right={
+          <Button label={t("common.edit")} onPress={() => props.onGo("profiles")} />
+        }
+      />
+      {current() ? (
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+          <Text style={{ fontSize: 15, fontWeight: "600", color: ink.primary() }}>
+            {current().displayName}
+          </Text>
+          <Text style={{ flex: 1, fontSize: 11, color: ink.muted() }}>{current().summary}</Text>
+        </View>
+      ) : null}
+      {view().items.length > 1 ? (
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+          <Text style={{ fontSize: 11, color: ink.muted() }}>{t("dash.profile.switch")}</Text>
+          <Chips>
+            {view().items.map((item, index) => (
+              <Chip
+                label={t("dash.profile.slot", { index: index + 1 })}
+                chosen={index === view().active}
+                onPress={() => switchTo(index)}
+              />
+            ))}
+          </Chips>
+        </View>
+      ) : null}
+      {current() && current().proxy_url.trim() === "" ? (
+        <Text style={{ fontSize: 11, color: hue.warn() }}>{t("dash.profile.empty")}</Text>
+      ) : null}
+    </Card>
+  );
+}
+
+/** 分流策略卡：两条路各自的颜色与含义（静态说明，数据在流量/去向卡里）。 */
+function SplitCard(): JSX.Element {
+  const row = (label: string, target: string, color: string) => (
+    <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+      <Dot color={color} size={8} />
+      <Text style={{ flex: 1, fontSize: 11, color: ink.primary() }}>{label}</Text>
+      <Text style={{ fontSize: 11, fontWeight: "600", color }}>{target}</Text>
+    </View>
+  );
+  return (
+    <Card>
+      <CardHead title={t("dash.split.title")} hint={t("dash.split.hint")} />
+      {row(t("dash.split.china"), t("common.direct"), hue.direct())}
+      {row(t("dash.split.rest"), t("dash.split.upstream"), hue.proxy())}
+    </Card>
+  );
+}
+
+/** 运行环境卡：三份真实路径，启动排障时要看。 */
+function EnvCard(): JSX.Element {
+  // 路径在进程生命周期里不会变，读一次就够。
+  const paths = api.programView();
+  const row = (label: string, value: string) => (
+    <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+      <Text style={{ width: 44, fontSize: 10, color: ink.muted() }}>{label}</Text>
+      <Text style={{ flex: 1, fontSize: 10, color: ink.card() }}>{value}</Text>
+    </View>
+  );
+  return (
+    <Card>
+      <CardHead title={t("dash.env.title")} hint={t("dash.env.hint")} />
+      {row(t("dash.env.config"), paths.configPath)}
+      {row(t("dash.env.bin"), paths.binDir)}
+      {row(t("dash.env.logs"), paths.logsDir)}
+    </Card>
+  );
+}
+
+/** 最近日志卡：仪表盘上扫一眼「刚才发生了什么」，完整列表在程序页。 */
+function LogPreviewCard(props: {
+  snap: () => api.Snapshot;
+  onGo: (id: PageId) => void;
+}): JSX.Element {
+  const tail = () => props.snap().logs.slice(-5);
+  return (
+    <Card>
+      <CardHead
+        title={t("dash.log.title")}
+        hint={t("dash.log.hint")}
+        right={<Button label={t("dash.log.seeAll")} onPress={() => props.onGo("program")} />}
+      />
+      {tail().length === 0 ? (
+        <Caption>{t("dash.log.empty")}</Caption>
+      ) : (
+        <View style={{ flexDirection: "column", gap: 4 }}>
+          {tail().map((line) => (
+            <Text
+              style={{
+                fontSize: 10,
+                color: line.kind === "output" ? ink.card() : ink.muted(),
+              }}
+            >
+              {line.text}
+            </Text>
+          ))}
+        </View>
+      )}
     </Card>
   );
 }

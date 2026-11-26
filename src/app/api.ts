@@ -50,6 +50,15 @@ export interface SplitInfo {
   sessions: number;
   /** 最近的判定，新的在前。 */
   decisions: DecisionView[];
+  /** 分流去向的时序，旧 → 新，最后一格是「现在」。长度固定。 */
+  trend: TrendView[];
+}
+
+/** 分流去向时序里的一格（2 秒）。 */
+export interface TrendView {
+  direct: number;
+  proxy: number;
+  failed: number;
 }
 
 /** 内置清单的更新进度。 */

@@ -35,6 +35,10 @@ type FilterId = (typeof FILTERS)[number]["id"];
 export function ProgramPage(props: { snap: () => api.Snapshot }): JSX.Element {
   const view = signal<api.ProgramView>(api.programView());
   const filter = signal<FilterId>("all");
+  /** 日志是否跟着最新一行走。 */
+  const follow = signal(true);
+  /** 「请再滚到底一次」的计数器（见 `ScrollArea` 那处的注释）。 */
+  const jump = signal(0);
   // 换配色 / 明暗 / 关窗行为之后要重读一次：这几项都落在同一个配置文件里。
   const reload = () => view.set(api.programView());
 
@@ -211,7 +215,23 @@ export function ProgramPage(props: { snap: () => api.Snapshot }): JSX.Element {
               ? t("program.logCount", { total: props.snap().logs.length, rows: LOG_ROWS })
               : t("program.logCountFiltered", { kept: kept().length, total: props.snap().logs.length, rows: LOG_ROWS })
           }
-          right={<Button label={t("common.clear")} onPress={() => api.clearLogs()} />}
+          right={
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+              <Button
+                label={t("program.jumpLatest")}
+                onPress={() => {
+                  follow.set(true);
+                  jump.set(jump() + 1);
+                }}
+              />
+              <Chip
+                label={t("program.follow")}
+                chosen={follow()}
+                onPress={() => follow.set(!follow())}
+              />
+              <Button label={t("common.clear")} onPress={() => api.clearLogs()} />
+            </View>
+          }
         />
         {/* 日志区：底色用「页面底色」而不是「浅色底」，否则浅色主题下和白卡片
             几乎同色，一大块空地看着像没画完。内容包一层 ScrollArea 并自动贴底
@@ -224,7 +244,12 @@ export function ProgramPage(props: { snap: () => api.Snapshot }): JSX.Element {
             padding: 8,
           }}
         >
-          <ScrollArea stickToBottom={() => props.snap().logs.length}>
+          {/* 跟随：开着就一直贴着底（新日志自己滚出来）；关掉就冻在当前这一屏，
+              往上翻旧日志时不会被新行拽回去。`jump` 只是个「请再滚一次」的计数器
+              ——`stickToBottom` 只在返回值变化时才滚，光把 follow 打开不会触发。 */}
+          <ScrollArea
+            stickToBottom={() => (follow() ? props.snap().logs.length : 0) + jump()}
+          >
             <View style={{ flexDirection: "column", gap: 2 }}>
               {shown().map((line) => (
                 <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}>

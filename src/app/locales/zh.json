@@ -47,6 +47,7 @@
 
   "tray.start": "启动隧道",
   "tray.stop": "停止隧道",
+  "tray.hide": "隐藏到托盘",
   "tray.show": "显示窗口",
   "tray.quit": "退出",
 
@@ -230,5 +231,36 @@
   "split.disabledHint": "所有流量照常走上游代理，与没有这个功能时完全一致",
   "split.dnsModeWarning": "当前 DNS 策略是「{mode}」：tun2proxy 只能看到 IP，域名清单不会生效，只有 IP 段在分流。把 DNS 策略改成「虚拟 IP」才能用上域名规则。",
   "split.rulesTruncated": "只显示前 {rows} 条，用上面的查找框定位更靠后的规则",
-  "split.status": "监听 {addr}，生效 {rules} 条规则 · 本次直连 {direct} / 走代理 {proxy} / 失败 {failed}"
+  "split.status": "监听 {addr}，生效 {rules} 条规则 · 本次直连 {direct} / 走代理 {proxy} / 失败 {failed}",
+
+  "dash.traffic.peak": "峰值",
+  "dash.route.title": "连接去向",
+  "dash.route.hint": "最近两分钟，每 2 秒一格；直连在下、代理在上、失败在最顶。",
+  "dash.route.empty": "隧道启动后这里会画出每个连接的去向。",
+  "dash.route.proxied": "走代理",
+  "dash.route.off": "分流器没在运行：这里不会有新的判定，启动隧道之后才开始累计。",
+  "dash.route.idle": "还没有连接经过分流器。没有流量时它什么也不做，这属于正常。",
+  "dash.route.totals": "折线是最近 2 分钟、每 2 秒一格；数字是本次运行累计（共 {count} 条连接）。",
+  "dash.profile.title": "当前配置",
+  "dash.profile.hint": "隧道用这一套启动，切换后下次启动生效。",
+  "dash.profile.switch": "换一套",
+  "dash.profile.slot": "配置 {index}",
+  "dash.profile.empty": "这套配置还没填代理地址，启动会立刻失败——点「编辑」补上。",
+  "dash.split.title": "分流策略",
+  "dash.split.hint": "每个连接按规则判一次，命中就直连，其余走上游代理。",
+  "dash.split.china": "国内 IP 与域名",
+  "dash.split.rest": "其余流量",
+  "dash.split.upstream": "上游代理",
+  "dash.env.title": "运行环境",
+  "dash.env.hint": "配置文件与日志都在这里，出问题时先看日志目录。",
+  "dash.env.config": "配置",
+  "dash.env.bin": "二进制",
+  "dash.env.logs": "日志",
+  "dash.log.title": "最近日志",
+  "dash.log.hint": "最后 5 行；完整的日志和过滤在「程序与日志」页。",
+  "dash.log.empty": "还没有日志。启动隧道后这里会显示最近的几行。",
+  "dash.log.seeAll": "查看全部",
+
+  "program.follow": "跟随最新",
+  "program.jumpLatest": "跳到最新"
 }
