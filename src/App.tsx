@@ -17,6 +17,7 @@ import * as api from "./app/api";
 import { Button, Card, CardHead, Caption, Dot, Metric, ScrollArea } from "./app/components";
 import { bindWindow, hideToTray, installTray, interceptClose, quit } from "./app/desktop";
 import { isEnglish, syncLanguage, t } from "./app/i18n";
+import type { MessageKey } from "./app/i18n";
 import { NetworkPage } from "./app/pages/Network";
 import { ProfilesPage } from "./app/pages/Profiles";
 import { ProgramPage } from "./app/pages/Program";
@@ -26,46 +27,36 @@ import { bumpTheme, hue, ink, rateText, surface } from "./app/theme";
 /**
  * 导航项。
  *
- * 中英两份都摆在这里（`en` / `hintEn`）：这些是模块顶层的常量，`t()` 在这里求值
- * 只会拿到首帧的语言，所以语言相关的取词留到渲染时（子节点位置）做。
+ * 只放 key（`nav.*`），文案在 `locales/` 里。这些是模块顶层的常量，`t()` 在这里
+ * 求值只会拿到首帧的语言，所以取词留到渲染时（子节点位置）做。
  */
 const PAGES = [
   {
     id: "dashboard",
-    label: "仪表盘",
-    en: "Dashboard",
-    hint: "隧道状态、实时流量",
-    hintEn: "Tunnel state and live traffic",
+    label: "nav.dashboard",
+    hint: "nav.dashboard.hint",
   },
   {
     id: "profiles",
-    label: "代理配置",
-    en: "Profiles",
-    hint: "多套上游代理",
-    hintEn: "Multiple upstream proxies",
+    label: "nav.profiles",
+    hint: "nav.profiles.hint",
   },
   {
     id: "split",
-    label: "分流规则",
-    en: "Split routing",
-    hint: "国内直连、清单与出口",
-    hintEn: "Direct routing, lists and egress",
+    label: "nav.split",
+    hint: "nav.split.hint",
   },
   {
     id: "network",
-    label: "网络与绕过",
-    en: "Network & bypass",
-    hint: "TUN 网卡、UDP 与绕行",
-    hintEn: "TUN adapter, UDP and bypass",
+    label: "nav.network",
+    hint: "nav.network.hint",
   },
   {
     id: "program",
-    label: "程序与日志",
-    en: "Program & logs",
-    hint: "内核版本、日志与更新",
-    hintEn: "Core version, logs and updates",
+    label: "nav.program",
+    hint: "nav.program.hint",
   },
-] as const;
+] as const satisfies readonly { id: string; label: MessageKey; hint: MessageKey }[];
 
 type PageId = (typeof PAGES)[number]["id"];
 
@@ -81,10 +72,10 @@ const PALETTES = [{ id: "cyber" }, { id: "matrix" }, { id: "ember" }, { id: "aur
 
 /** 明暗三档。`auto` 交给系统。 */
 const THEMES = [
-  { id: "light", label: "浅色", en: "Light" },
-  { id: "auto", label: "跟随", en: "System" },
-  { id: "dark", label: "深色", en: "Dark" },
-] as const;
+  { id: "light", label: "theme.light" },
+  { id: "auto", label: "theme.auto" },
+  { id: "dark", label: "theme.dark" },
+] as const satisfies readonly { id: string; label: MessageKey }[];
 
 /**
  * 启动时的一次性数据：配置里的配色 / 明暗 / 版本。
@@ -228,16 +219,16 @@ export function App(): JSX.Element {
       const result = api.start();
       if (!result.ok) {
         stopStarting();
-        notice.set(result.error ?? t("启动失败", "Failed to start"));
+        notice.set(result.error ?? t("app.state.startFailed"));
       } else {
         notice.set(null);
       }
     } catch (err) {
       stopStarting();
       notice.set(
-        `${t("启动/停止时出错：", "Start/stop failed: ")}${
-          err instanceof Error ? err.message : String(err)
-        }`,
+        t("app.error.startStop", {
+          msg: err instanceof Error ? err.message : String(err),
+        }),
       );
     }
   };
@@ -311,7 +302,7 @@ export function App(): JSX.Element {
             <Text style={{ fontSize: 11, color: hue.danger() }}>{privilegeError()}</Text>
           ) : null}
           <Button
-            label={t("以管理员身份重启", "Restart as administrator")}
+            label={t("app.state.restartAdmin")}
             onPress={() => {
               try {
                 const result = api.relaunchElevated();
@@ -320,7 +311,7 @@ export function App(): JSX.Element {
                   quit();
                   return;
                 }
-                privilegeError.set(result.error ?? t("提权失败", "Elevation failed"));
+                privilegeError.set(result.error ?? t("app.state.elevationFailed"));
               } catch (err) {
                 privilegeError.set(err instanceof Error ? err.message : String(err));
               }
@@ -363,11 +354,10 @@ export function App(): JSX.Element {
                 style={{ flexDirection: "row", alignItems: "flex-start", gap: 8, cursor: "pointer" }}
               >
                 <Text style={{ fontSize: 11, color: hue.danger() }}>
-                  {t("启动失败：", "Failed to start: ")}
-                  {notice()}
+                  {t("app.error.startFailed", { msg: notice() ?? "" })}
                 </Text>
                 <Text style={{ fontSize: 11, color: ink.muted() }}>
-                  {t("（点一下消掉）", "(click to dismiss)")}
+                  {t("app.dismiss")}
                 </Text>
               </View>
             ) : null}
@@ -391,13 +381,10 @@ export function App(): JSX.Element {
       {snap().busy || starting() ? (
         <BusyMask
           snap={snap}
-          label={starting() ? t("正在检查上游代理…", "Checking the upstream proxy…") : undefined}
+          label={starting() ? t("app.mask.checkingUpstream") : undefined}
           hint={
             starting()
-              ? t(
-                  "连通性检测最多 3 秒；不通会取消启动并说明原因。",
-                  "The connectivity check takes up to 3 s; if it fails the start is cancelled and the reason shown.",
-                )
+              ? t("app.mask.startHint")
               : undefined
           }
         />
@@ -418,22 +405,19 @@ export function App(): JSX.Element {
         >
           <Card style={{ width: 400 }}>
             <CardHead
-              title={t("关闭窗口？", "Close the window?")}
-              hint={t(
-                "tun2proxy 是常驻服务：退出会把正在跑的隧道一起带走，网会断。收进托盘可以继续在后台跑。",
-                "tun2proxy is a background service: quitting takes the running tunnel with it and your network drops. Minimising to the tray keeps it running.",
-              )}
+              title={t("app.close.title")}
+              hint={t("app.close.hint")}
             />
             <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 8 }}>
               <Button
-                label={t("继续后台运行", "Keep running in the background")}
+                label={t("app.close.keepRunning")}
                 onPress={() => {
                   askClose.set(false);
                   hideToTray();
                 }}
               />
               <Button
-                label={t("退出程序", "Quit")}
+                label={t("app.close.quit")}
                 variant="danger"
                 onPress={() => {
                   askClose.set(false);
@@ -464,18 +448,12 @@ function BusyMask(props: {
   hint?: string;
 }): JSX.Element {
   // 文案由后端给（`busyLabel`）：状态机在那边，界面不复述一套。
-  const label = () => props.label || props.snap().busyLabel || t("请稍等…", "One moment…");
+  const label = () => props.label || props.snap().busyLabel || t("app.mask.oneMoment");
   const hint = () =>
     props.hint ||
     (props.snap().status === "stopping"
-      ? t(
-          "等子进程退出、网卡回收，这几秒不要再点一次。",
-          "Waiting for the child process to exit and the adapter to be released — do not click again.",
-        )
-      : t(
-          "探上游代理、清理残留网卡与进程，这几秒不要再点一次。",
-          "Probing the upstream proxy and clearing leftover adapters and processes — do not click again.",
-        ));
+      ? t("app.mask.stoppingHint")
+      : t("app.mask.startingHint"));
   return (
     <View
       style={{
@@ -571,7 +549,7 @@ function TopBar(props: {
         </View>
         <View style={{ flexDirection: "column", gap: 2 }}>
           <Text style={{ fontSize: 13, fontWeight: "600", color: ink.primary() }}>Tun2Proxy</Text>
-          <Text style={{ fontSize: 10, color: ink.muted() }}>{t("隧道控制台", "Tunnel console")}</Text>
+          <Text style={{ fontSize: 10, color: ink.muted() }}>{t("app.brand")}</Text>
         </View>
       </View>
       <StatusPill snap={props.snap} />
@@ -676,7 +654,7 @@ function ThemeChips(props: { current: string; onChoose: (id: string) => void }):
                 color: chosen ? hue.primaryInk() : ink.muted(),
               }}
             >
-              {t(item.label, item.en)}
+              {t(item.label)}
             </Text>
           </View>
         );
@@ -742,12 +720,11 @@ function SideBar(props: {
             paddingBottom: 8,
           }}
         >
-          {t("导航", "Navigation")}
+          {t("app.nav")}
         </Text>
         {PAGES.map((item) => (
           <NavItem
             label={item.label}
-            labelEn={item.en}
             chosen={props.page() === item.id}
             onPress={() => props.onSelect(item.id)}
           />
@@ -760,8 +737,7 @@ function SideBar(props: {
 
 /** 一个导航项。只画名字：那行说明留给右侧的页头，侧栏里塞两行会挤成一团。 */
 function NavItem(props: {
-  label: string;
-  labelEn: string;
+  label: MessageKey;
   chosen: boolean;
   onPress: () => void;
 }): JSX.Element {
@@ -790,7 +766,7 @@ function NavItem(props: {
           color: props.chosen ? ink.primary() : ink.muted(),
         }}
       >
-        {t(props.label, props.labelEn)}
+        {t(props.label)}
       </Text>
     </View>
   );
@@ -838,11 +814,11 @@ function ToggleButton(props: {
     >
       {running()
         ? face(
-            props.snap().busy ? t("停止中…", "Stopping…") : t("停止", "Stop"),
+            props.snap().busy ? t("app.toggle.stopping") : t("app.toggle.stop"),
             hue.danger(),
           )
         : face(
-            blocked() ? t("启动中…", "Starting…") : t("启动", "Start"),
+            blocked() ? t("app.toggle.starting") : t("app.toggle.start"),
             hue.primary(),
           )}
     </View>
@@ -855,16 +831,16 @@ function PageHeader(props: { page: () => PageId; snap: () => api.Snapshot }): JS
   const version = () => {
     const snap = props.snap();
     return `${snap.statusLabel} · ${
-      snap.version ? `tun2proxy ${snap.version}` : t("未安装", "not installed")
+      snap.version ? `tun2proxy ${snap.version}` : t("app.state.notInstalled")
     }`;
   };
   return (
     <View style={{ flexDirection: "row", alignItems: "flex-end", gap: 16 }}>
       <View style={{ flex: 1, flexDirection: "column", gap: 4 }}>
         <Text style={{ fontSize: 22, fontWeight: "600", color: ink.primary() }}>
-          {t(meta().label, meta().en)}
+          {t(meta().label)}
         </Text>
-        <Text style={{ fontSize: 12, color: ink.muted() }}>{t(meta().hint, meta().hintEn)}</Text>
+        <Text style={{ fontSize: 12, color: ink.muted() }}>{t(meta().hint)}</Text>
       </View>
       <Text style={{ fontSize: 11, color: ink.muted(), fontVariant: ["tabular-nums"] }}>
         {version()}
@@ -910,7 +886,7 @@ function StatusCard(props: {
           <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
             <Dot color={color()} size={10} pulse={!snap().active} />
             <Text style={{ fontSize: 10, fontWeight: "600", color: ink.muted() }}>
-              {t("隧道状态", "Tunnel state")}
+              {t("app.state.title")}
             </Text>
           </View>
           <Text style={{ fontSize: 24, fontWeight: "600", color: ink.primary() }}>
@@ -920,10 +896,7 @@ function StatusCard(props: {
             {props.notice() ??
               snap().detail ??
               snap().blocked ??
-              t(
-                "启动后这里显示直连与代理的实时速率。",
-                "Once started, the live direct and proxied rates show up here.",
-              )}
+              t("app.traffic.empty")}
           </Text>
           {/* 会话名额打满：新连接会被丢掉，但界面上原本一点迹象都没有——用户只会
               觉得「网忽然变差了」。写清后果和去处。 */}
@@ -931,36 +904,33 @@ function StatusCard(props: {
             <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
               <Dot color={hue.warn()} size={6} />
               <Text style={{ fontSize: 11, color: hue.warn() }}>
-                {t(
-                  "会话名额已打满：新连接会被丢弃，去「代理配置」把「最大会话数」调大。",
-                  "Session slots are exhausted: new connections are dropped. Raise the session limit on the Profiles page.",
-                )}
+                {t("app.sessionsFull")}
               </Text>
             </View>
           ) : null}
         </View>
         <Metric
-          label={t("直连 ↓", "Direct ↓")}
+          label={t("app.traffic.directDown")}
           value={rateText(snap().direct.down)}
           color={hue.direct()}
         />
         <Metric
-          label={t("直连 ↑", "Direct ↑")}
+          label={t("app.traffic.directUp")}
           value={rateText(snap().direct.up)}
           color={hue.direct()}
         />
         <Metric
-          label={t("代理 ↓", "Proxy ↓")}
+          label={t("app.traffic.proxyDown")}
           value={rateText(snap().proxy.down)}
           color={hue.proxy()}
         />
         <Metric
-          label={t("代理 ↑", "Proxy ↑")}
+          label={t("app.traffic.proxyUp")}
           value={rateText(snap().proxy.up)}
           color={hue.proxy()}
         />
         <Button
-          label={snap().active ? t("停止", "Stop") : t("启动", "Start")}
+          label={snap().active ? t("app.toggle.stop") : t("app.toggle.start")}
           variant="primary"
           disabled={snap().busy || props.starting()}
           onPress={props.onToggle}
@@ -981,17 +951,17 @@ function TrafficCard(props: { snap: () => api.Snapshot }): JSX.Element {
   return (
     <Card>
       <CardHead
-        title={t("实时流量", "Live traffic")}
-        hint={t("直连在下、代理在上，最近两分钟", "Direct below, proxied above — last two minutes")}
+        title={t("app.traffic.title")}
+        hint={t("app.traffic.hint")}
         right={
           <View style={{ flexDirection: "row", gap: 16 }}>
             <Metric
-              label={t("直连", "Direct")}
+              label={t("common.direct")}
               value={rateText(props.snap().direct.down)}
               color={hue.direct()}
             />
             <Metric
-              label={t("代理", "Proxy")}
+              label={t("common.proxy")}
               value={rateText(props.snap().proxy.down)}
               color={hue.proxy()}
             />
@@ -1039,32 +1009,29 @@ function TrafficCard(props: { snap: () => api.Snapshot }): JSX.Element {
             }}
           >
             <Text style={{ fontSize: 11, color: ink.muted() }}>
-              {t(
-                "还没有流量：启动隧道后这里每秒画一根柱子",
-                "No traffic yet — once the tunnel runs, one bar is drawn per second",
-              )}
+              {t("app.traffic.emptyHint")}
             </Text>
           </View>
         ) : null}
       </View>
       <View style={{ flexDirection: "row", gap: 24 }}>
         <Metric
-          label={t("分流到直连", "Routed direct")}
+          label={t("app.traffic.routedDirect")}
           value={`${props.snap().split.direct}`}
           color={hue.direct()}
         />
         <Metric
-          label={t("分流到代理", "Routed via proxy")}
+          label={t("app.traffic.routedProxy")}
           value={`${props.snap().split.proxy}`}
           color={hue.proxy()}
         />
         <Metric
-          label={t("判定失败", "Split failed")}
+          label={t("app.traffic.splitFailed")}
           value={`${props.snap().split.failed}`}
           color={hue.danger()}
         />
         <Caption>
-          {props.snap().split.running ? t("分流器运行中", "Splitter running") : t("分流器未运行", "Splitter stopped")}
+          {props.snap().split.running ? t("app.traffic.splitterOn") : t("app.traffic.splitterOff")}
         </Caption>
       </View>
     </Card>

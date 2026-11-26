@@ -66,12 +66,12 @@ export function installTray(options: {
       tooltip: `Tun2Proxy GUI · ${snap.statusLabel}`,
       menu: [
         {
-          label: snap.active ? t("停止隧道", "Stop tunnel") : t("启动隧道", "Start tunnel"),
+          label: snap.active ? t("tray.stop") : t("tray.start"),
           onSelect: options.onToggle,
         },
         { type: "separator" },
-        { label: t("显示窗口", "Show window"), onSelect: showWindow },
-        { label: t("退出", "Quit"), onSelect: quit },
+        { label: t("tray.show"), onSelect: showWindow },
+        { label: t("tray.quit"), onSelect: quit },
       ],
       onClick: showWindow,
     });

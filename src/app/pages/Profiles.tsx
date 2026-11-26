@@ -15,41 +15,36 @@ import type { JSX } from "nsh";
 import * as api from "../api";
 import { Button, Card, CardHead, Caption, Chip, Chips, Field, TextBox } from "../components";
 import { t } from "../i18n";
+import type { MessageKey } from "../i18n";
 import { hue, ink } from "../theme";
 
-/** DNS 三种模式（值是配置里的键，文案是界面自己的）。 */
+/** DNS 三种模式（值是配置里的键，文案在 `locales/` 里）。 */
 const DNS_MODES = [
   {
     id: "direct",
-    label: "直连",
-    en: "Direct",
-    hint: "交给隧道转发给远程 DNS，依赖代理的 UDP 能力",
-    hintEn: "Forwarded through the tunnel to the remote DNS — needs UDP support upstream",
+    label: "profiles.dns.direct",
+    hint: "profiles.dns.direct.hint",
   },
   {
     id: "virtual",
-    label: "虚拟 IP",
-    en: "Virtual IP",
-    hint: "本地直接应答，把域名映射进虚拟地址池",
-    hintEn: "Answered locally: domain names are mapped into the virtual address pool",
+    label: "profiles.dns.virtual",
+    hint: "profiles.dns.virtual.hint",
   },
   {
     id: "over-tcp",
-    label: "走 TCP",
-    en: "Over TCP",
-    hint: "DNS 查询改走 TCP，绕过只拦 UDP 53 的网络",
-    hintEn: "DNS queries go over TCP, getting around networks that only intercept UDP 53",
+    label: "profiles.dns.overTcp",
+    hint: "profiles.dns.overTcp.hint",
   },
-] as const;
+] as const satisfies readonly { id: string; label: MessageKey; hint: MessageKey }[];
 
 /** 日志级别的五档。 */
 const LEVELS = [
-  { id: "error", label: "错误", en: "Error" },
-  { id: "warn", label: "警告", en: "Warn" },
-  { id: "info", label: "信息", en: "Info" },
-  { id: "debug", label: "调试", en: "Debug" },
-  { id: "trace", label: "详细", en: "Trace" },
-] as const;
+  { id: "error", label: "profiles.level.error" },
+  { id: "warn", label: "profiles.level.warn" },
+  { id: "info", label: "profiles.level.info" },
+  { id: "debug", label: "profiles.level.debug" },
+  { id: "trace", label: "profiles.level.trace" },
+] as const satisfies readonly { id: string; label: MessageKey }[];
 
 /** 检测结论按地址存（去空白 + 小写），和内核那边同一个键。 */
 function probeKey(url: string): string {
@@ -98,7 +93,7 @@ export function ProfilesPage(props: { snap: () => api.Snapshot }): JSX.Element {
     if (!current) return;
     const result = api.saveProfile(index, current);
     if (!result.ok) {
-      error.set(result.error ?? t("保存失败", "Save failed"));
+      error.set(result.error ?? t("profiles.saveFailed"));
       return;
     }
     reload();
@@ -172,11 +167,8 @@ function List(props: {
   return (
     <Card>
       <CardHead
-        title={t("配置", "Profiles")}
-        hint={t(
-          `共 ${props.view.items.length} 套，点一行就切过去；启动隧道用的是标着「当前」的那套`,
-          `${props.view.items.length} saved. Click a row to switch — the tunnel starts with the one marked Current.`,
-        )}
+        title={t("profiles.title")}
+        hint={t("profiles.savedCount", { count: props.view.items.length })}
       />
       <View style={{ flexDirection: "column", gap: 4 }}>
         {props.view.items.map((item, index) => (
@@ -195,11 +187,11 @@ function List(props: {
         ))}
       </View>
       <View style={{ flexDirection: "row", gap: 8 }}>
-        <Button label={t("复制当前", "Duplicate current")} onPress={props.onDuplicate} />
-        <Button label={t("新建", "New")} variant="primary" onPress={props.onNew} />
+        <Button label={t("profiles.duplicate")} onPress={props.onDuplicate} />
+        <Button label={t("common.new")} variant="primary" onPress={props.onNew} />
       </View>
       <Caption>
-        {t(`配置存在 ${props.view.path}`, `Config file: ${props.view.path}`)}
+        {t("profiles.configFile", { path: props.view.path })}
       </Caption>
     </Card>
   );
@@ -274,20 +266,20 @@ function ProfileRow(props: {
         ) : null}
       </View>
       <Button
-        label={running() ? t("检测中…", "Testing…") : t("检测", "Test")}
+        label={running() ? t("profiles.testing") : t("profiles.test")}
         disabled={running()}
         onPress={() => api.checkProxy(props.item.proxy_url)}
       />
-      <Button label={t("编辑", "Edit")} onPress={props.onEdit} />
+      <Button label={t("common.edit")} onPress={props.onEdit} />
       {props.confirming ? (
         <Button
-          label={t("确认删除", "Confirm delete")}
+          label={t("profiles.deleteConfirm")}
           variant="danger"
           onPress={props.onConfirmDelete}
         />
       ) : (
         <Button
-          label={t("删除", "Delete")}
+          label={t("common.delete")}
           disabled={props.onlyOne}
           onPress={props.onlyOne ? undefined : props.onAskDelete}
         />
@@ -317,35 +309,32 @@ function Editor(props: {
   return (
     <Card>
       <CardHead
-        title={t("编辑这套配置", "Edit this profile")}
-        hint={t(
-          `正在改「${draft().name || "未命名配置"}」`,
-          `Editing “${draft().name || "unnamed profile"}”`,
-        )}
+        title={t("profiles.editThis")}
+        hint={t("profiles.editing", { name: draft().name || t("profiles.unnamed") })}
       />
       {/* 取消 / 保存放在卡片头下面一行：长表单改一两处就能直接保存，不用滚回顶部。 */}
       <View style={{ flexDirection: "row", gap: 8 }}>
-        <Button label={t("取消", "Cancel")} onPress={props.onCancel} />
-        <Button label={t("保存", "Save")} variant="primary" onPress={props.onSave} />
+        <Button label={t("common.cancel")} onPress={props.onCancel} />
+        <Button label={t("common.save")} variant="primary" onPress={props.onSave} />
       </View>
       {props.error ? (
         <Text style={{ fontSize: 11, color: hue.danger() }}>{props.error}</Text>
       ) : null}
 
       <Field
-        label={t("配置名称", "Profile name")}
-        hint={t("配置列表里显示的名字", "The name shown in the profile list")}
+        label={t("profiles.name")}
+        hint={t("profiles.nameHint")}
       >
         <TextBox
           value={draft().name}
-          placeholder={t("例如：公司代理", "e.g. Office proxy")}
+          placeholder={t("profiles.namePlaceholder")}
           onChange={(value) => props.onPatch((next) => (next.name = value))}
         />
       </Field>
 
       <Field
-        label={t("上游代理地址", "Upstream proxy")}
-        hint={t("socks5:// 或 http:// 开头", "Starts with socks5:// or http://")}
+        label={t("profiles.upstream")}
+        hint={t("profiles.upstreamHint")}
       >
         <TextBox
           value={draft().proxyUrl}
@@ -356,7 +345,7 @@ function Editor(props: {
       {/* 填完地址就地测一次：这里才是「刚输完」的位置，回列表再测要多跳一步。 */}
       <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
         <Button
-          label={probe()?.running ? t("检测中…", "Testing…") : t("检测这个地址", "Test this address")}
+          label={probe()?.running ? t("profiles.testing") : t("profiles.testThis")}
           disabled={probe()?.running ?? false}
           onPress={() => api.checkProxy(draft().proxyUrl)}
         />
@@ -367,11 +356,11 @@ function Editor(props: {
         ) : null}
       </View>
 
-      <Field label={t("DNS 模式", "DNS mode")} hint={t(mode().hint, mode().hintEn)}>
+      <Field label={t("profiles.dnsMode")} hint={t(mode().hint)}>
         <Chips>
           {DNS_MODES.map((item) => (
             <Chip
-              label={t(item.label, item.en)}
+              label={t(item.label)}
               chosen={draft().dns === item.id}
               onPress={() => props.onPatch((next) => (next.dns = item.id))}
             />
@@ -380,11 +369,11 @@ function Editor(props: {
       </Field>
 
       <Field
-        label={t("远程 DNS", "Remote DNS")}
+        label={t("profiles.remoteDns")}
         hint={
           virtual()
-            ? t("「虚拟 IP」在本地应答，这一项不参与", "Virtual IP answers locally — this field is unused")
-            : t("查询经隧道发往这台服务器", "Queries travel through the tunnel to this server")
+            ? t("profiles.virtualIpUnused")
+            : t("profiles.remoteDnsHint")
         }
       >
         <TextBox
@@ -396,14 +385,11 @@ function Editor(props: {
       </Field>
 
       <Field
-        label={t("虚拟地址池", "Virtual pool")}
+        label={t("profiles.virtualPool")}
         hint={
           virtual()
-            ? t(
-                "接管 DNS 时分配给域名的假地址段",
-                "The fake range handed out to domain names while DNS is intercepted",
-              )
-            : t("只有「虚拟 IP」模式会用到", "Only used by Virtual IP mode")
+            ? t("profiles.virtualPoolFieldHint")
+            : t("profiles.onlyVirtualIp")
         }
       >
         <TextBox
@@ -415,8 +401,8 @@ function Editor(props: {
       </Field>
 
       <Field
-        label={t("网卡名称", "Adapter name")}
-        hint={t("留空则每次启动随机生成", "Leave empty to generate a random one per start")}
+        label={t("profiles.adapter")}
+        hint={t("profiles.virtualPoolHint")}
       >
         <TextBox
           value={draft().tunName}
@@ -427,7 +413,7 @@ function Editor(props: {
 
       <View style={{ flexDirection: "row", gap: 12 }}>
         <View style={{ flex: 1 }}>
-          <Field label="MTU" hint={t("默认 1500", "Default 1500")}>
+          <Field label="MTU" hint={t("profiles.mtuHint")}>
             <TextBox
               value={draft().mtu}
               onChange={(value) => props.onPatch((next) => (next.mtu = value))}
@@ -436,8 +422,8 @@ function Editor(props: {
         </View>
         <View style={{ flex: 1 }}>
           <Field
-            label={t("最大会话数", "Max sessions")}
-            hint={t("并发上限；顶到上限只丢新连接", "Concurrency cap; extras are dropped")}
+            label={t("profiles.maxSessions")}
+            hint={t("profiles.maxSessionsHint")}
           >
             <TextBox
               value={draft().maxSessions}
@@ -449,7 +435,7 @@ function Editor(props: {
 
       <View style={{ flexDirection: "row", gap: 12 }}>
         <View style={{ flex: 1 }}>
-          <Field label={t("TCP 超时", "TCP timeout")} hint={t("秒；默认 600", "Seconds; default 600")}>
+          <Field label={t("profiles.tcpTimeout")} hint={t("profiles.udpTimeoutHint")}>
             <TextBox
               value={draft().tcpTimeout}
               onChange={(value) => props.onPatch((next) => (next.tcpTimeout = value))}
@@ -457,7 +443,7 @@ function Editor(props: {
           </Field>
         </View>
         <View style={{ flex: 1 }}>
-          <Field label={t("UDP 超时", "UDP timeout")} hint={t("秒；默认 10", "Seconds; default 10")}>
+          <Field label={t("profiles.udpTimeout")} hint={t("profiles.tcpTimeoutHint")}>
             <TextBox
               value={draft().udpTimeout}
               onChange={(value) => props.onPatch((next) => (next.udpTimeout = value))}
@@ -467,13 +453,13 @@ function Editor(props: {
       </View>
 
       <Field
-        label={t("日志级别", "Log level")}
-        hint={t("子进程输出的详细程度", "How verbose the child process is")}
+        label={t("profiles.logLevel")}
+        hint={t("profiles.logLevelHint")}
       >
         <Chips>
           {LEVELS.map((level) => (
             <Chip
-              label={t(level.label, level.en)}
+              label={t(level.label)}
               chosen={draft().verbosity === level.id}
               onPress={() => props.onPatch((next) => (next.verbosity = level.id))}
             />
@@ -482,14 +468,11 @@ function Editor(props: {
       </Field>
 
       <Field
-        label={t("绕过地址", "Bypass addresses")}
-        hint={t(
-          "每行一个 IP 或 CIDR；这些地址不进隧道",
-          "One IP or CIDR per line — these never enter the tunnel",
-        )}
+        label={t("profiles.bypass")}
+        hint={t("profiles.bypassHint")}
         right={
           <Button
-            label={t("填入局域网默认值", "Fill in LAN defaults")}
+            label={t("profiles.fillLanDefaults")}
             onPress={() =>
               props.onPatch((next) => (next.bypass = api.defaults().bypass))
             }

@@ -16,6 +16,7 @@ import * as api from "../api";
 import { Button, Card, CardHead, Caption, Chip, Chips, ScrollArea, Setting } from "../components";
 import { hideToTray } from "../desktop";
 import { syncLanguage, t } from "../i18n";
+import type { MessageKey } from "../i18n";
 import { hue, ink, surface } from "../theme";
 
 /** 日志区画多少行。 */
@@ -23,11 +24,11 @@ const LOG_ROWS = 200;
 
 /** 日志过滤的四档（和后端的 `LogFilter` 一一对应）。 */
 const FILTERS = [
-  { id: "all", label: "全部", en: "All" },
-  { id: "output", label: "内核输出", en: "Core output" },
-  { id: "app", label: "本程序", en: "This app" },
-  { id: "split", label: "分流判定", en: "Routing" },
-] as const;
+  { id: "all", label: "program.filter.all" },
+  { id: "output", label: "program.filter.output" },
+  { id: "app", label: "program.filter.app" },
+  { id: "split", label: "program.filter.split" },
+] as const satisfies readonly { id: string; label: MessageKey }[];
 
 type FilterId = (typeof FILTERS)[number]["id"];
 
@@ -72,22 +73,22 @@ export function ProgramPage(props: { snap: () => api.Snapshot }): JSX.Element {
       {/* 内核 */}
       <Card>
         <CardHead
-          title={t("tun2proxy 内核", "tun2proxy core")}
+          title={t("program.coreSection")}
           hint={coreSummary(props.snap())}
           right={
             <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
               {/* 隧道在跑时按钮是灰的，原因写在这里：不写的话用户只会觉得按钮坏了。 */}
               {props.snap().active ? (
-                <Caption>{t("隧道运行中，先停止才能换内核", "Tunnel running — stop it to swap the core")}</Caption>
+                <Caption>{t("program.coreLocked")}</Caption>
               ) : null}
               <Button
-                label={t("检查更新", "Check for updates")}
+                label={t("program.checkUpdates")}
                 disabled={props.snap().update.busy}
                 onPress={() => api.checkUpdate()}
               />
               <Button
                 label={
-                  props.snap().installed ? t("重新安装", "Reinstall") : t("下载并安装", "Download & install")
+                  props.snap().installed ? t("program.reinstall") : t("program.download")
                 }
                 variant="primary"
                 disabled={props.snap().update.busy || props.snap().active}
@@ -122,30 +123,24 @@ export function ProgramPage(props: { snap: () => api.Snapshot }): JSX.Element {
                 }}
               />
             </View>
-            <Caption>{props.snap().update.text ?? t("正在准备…", "Preparing…")}</Caption>
+            <Caption>{props.snap().update.text ?? t("program.preparing")}</Caption>
           </View>
         ) : null}
         <View style={{ flexDirection: "column", gap: 4 }}>
-          <PathRow label={t("二进制", "Binary")} value={view().binDir} />
-          <PathRow label={t("日志", "Logs")} value={view().logsDir} />
+          <PathRow label={t("program.binary")} value={view().binDir} />
+          <PathRow label={t("program.logs")} value={view().logsDir} />
         </View>
       </Card>
 
       {/* 窗口与界面 */}
       <Card>
         <CardHead
-          title={t("窗口与界面", "Window & interface")}
-          hint={t(
-            "点关闭按钮时怎么处理，以及界面用哪种语言",
-            "What the close button does, and which language the interface uses",
-          )}
+          title={t("program.window")}
+          hint={t("program.windowHint")}
         />
         <Setting
-          label={t("关闭按钮", "Close button")}
-          hint={t(
-            "tun2proxy 是常驻服务，误关窗口会把正在跑的隧道一起带走",
-            "tun2proxy is a background service — closing the window by mistake takes the tunnel with it",
-          )}
+          label={t("program.closeButton")}
+          hint={t("program.closeHint")}
         >
           <Chips>
             {view().closeOptions.map((option) => (
@@ -161,11 +156,8 @@ export function ProgramPage(props: { snap: () => api.Snapshot }): JSX.Element {
           </Chips>
         </Setting>
         <Setting
-          label={t("界面语言", "Language")}
-          hint={t(
-            "「跟随系统」按系统语言决定，换完立刻生效",
-            "System follows the OS language; a change applies immediately",
-          )}
+          label={t("program.language")}
+          hint={t("program.languageHint")}
         >
           <Chips>
             {view().languageOptions.map((option) => (
@@ -183,55 +175,43 @@ export function ProgramPage(props: { snap: () => api.Snapshot }): JSX.Element {
           </Chips>
         </Setting>
         <Setting
-          label={t("托盘", "Tray")}
-          hint={t(
-            "隧道在后台跑着的时候，可以把窗口收进托盘，图标点一下就能叫回来",
-            "While the tunnel runs in the background you can tuck the window into the tray and click the icon to bring it back",
-          )}
+          label={t("program.tray")}
+          hint={t("program.trayHint")}
         >
-          <Button label={t("最小化到托盘", "Minimise to tray")} onPress={() => hideToTray()} />
+          <Button label={t("program.minimiseToTray")} onPress={() => hideToTray()} />
         </Setting>
       </Card>
 
       {/* 关于 */}
       <Card>
         <CardHead
-          title={t("关于", "About")}
-          hint={t("这个前端本身的信息", "About this front end")}
+          title={t("program.about")}
+          hint={t("program.aboutHint")}
         />
         <Setting
-          label={t("程序", "Program")}
-          hint={t(
-            "官方 tun2proxy 二进制的图形前端，Rust 后端 + nsh 界面",
-            "A GUI front end for the official tun2proxy binary — Rust backend, nsh interface",
-          )}
+          label={t("program.title")}
+          hint={t("program.aboutBlurb")}
         >
           <Text style={{ fontSize: 12, fontWeight: "600", color: ink.primary() }}>
             {`Tun2Proxy GUI ${view().version}`}
           </Text>
         </Setting>
         <View style={{ flexDirection: "column", gap: 4 }}>
-          <PathRow label={t("配置", "Config")} value={view().configPath} />
-          <PathRow label={t("数据", "Data")} value={view().dataDir} />
+          <PathRow label={t("program.about.config")} value={view().configPath} />
+          <PathRow label={t("program.about.data")} value={view().dataDir} />
         </View>
       </Card>
 
       {/* 运行日志 */}
       <Card>
         <CardHead
-          title={t("运行日志", "Run log")}
+          title={t("program.runLog")}
           hint={
             filter() === "all"
-              ? t(
-                  `共 ${props.snap().logs.length} 行，只列最后 ${LOG_ROWS} 行`,
-                  `${props.snap().logs.length} lines, showing the last ${LOG_ROWS}`,
-                )
-              : t(
-                  `${kept().length} / ${props.snap().logs.length} 行，只列最后 ${LOG_ROWS} 行`,
-                  `${kept().length} / ${props.snap().logs.length} lines, showing the last ${LOG_ROWS}`,
-                )
+              ? t("program.logCount", { total: props.snap().logs.length, rows: LOG_ROWS })
+              : t("program.logCountFiltered", { kept: kept().length, total: props.snap().logs.length, rows: LOG_ROWS })
           }
-          right={<Button label={t("清空", "Clear")} onPress={() => api.clearLogs()} />}
+          right={<Button label={t("common.clear")} onPress={() => api.clearLogs()} />}
         />
         {/* 日志区：底色用「页面底色」而不是「浅色底」，否则浅色主题下和白卡片
             几乎同色，一大块空地看着像没画完。内容包一层 ScrollArea 并自动贴底
@@ -264,11 +244,8 @@ export function ProgramPage(props: { snap: () => api.Snapshot }): JSX.Element {
               {shown().length === 0 ? (
                 <Text style={{ fontSize: 10, color: ink.muted() }}>
                   {props.snap().logs.length === 0
-                    ? t(
-                        "还没有日志：启动隧道之后这里会有内核输出",
-                        "No log yet — core output shows up here once the tunnel starts",
-                      )
-                    : t("这一档没有日志行，换一档看看", "Nothing in this filter — try another one")}
+                    ? t("program.logEmptyHint")
+                    : t("program.logEmpty")}
                 </Text>
               ) : null}
             </View>
@@ -278,7 +255,7 @@ export function ProgramPage(props: { snap: () => api.Snapshot }): JSX.Element {
           <Chips>
             {FILTERS.map((item) => (
               <Chip
-                label={t(item.label, item.en)}
+                label={t(item.label)}
                 chosen={filter() === item.id}
                 onPress={() => {
                   filter.set(item.id);
@@ -289,20 +266,16 @@ export function ProgramPage(props: { snap: () => api.Snapshot }): JSX.Element {
             ))}
           </Chips>
           <Button
-            label={copied() === null ? t("复制", "Copy") : t(`已复制 ${copied()} 行`, `Copied ${copied()} lines`)}
+            label={copied() === null ? t("common.copy") : t("program.copiedLines", { count: copied() ?? 0 })}
             onPress={copy}
           />
           {copyError() ? (
             <Text style={{ fontSize: 10, color: hue.danger() }}>
-              {t("复制失败：", "Copy failed: ")}
-              {copyError()}
+              {t("program.error.copyFailed", { msg: copyError() ?? "" })}
             </Text>
           ) : (
             <Caption>
-              {t(
-                "完整日志在磁盘文件里，路径见上面的「日志」一行。",
-                "The full log lives on disk — see the Logs path above.",
-              )}
+              {t("program.logPathHint")}
             </Caption>
           )}
         </View>
@@ -325,7 +298,7 @@ function PathRow(props: { label: string; value: string }): JSX.Element {
 
 /** 内核那一行的说明：版本 + 更新结论。 */
 function coreSummary(snap: api.Snapshot): string {
-  const version = snap.version ? `tun2proxy ${snap.version}` : t("还没安装 tun2proxy", "tun2proxy is not installed");
+  const version = snap.version ? `tun2proxy ${snap.version}` : t("program.notInstalled");
   const update = snap.update.text ? ` · ${snap.update.text}` : "";
   return `${version}${update}`;
 }
@@ -340,10 +313,10 @@ function keeps(filter: FilterId, kind: string): boolean {
 
 /** 日志行前面的短标签。 */
 function kindTag(kind: string): string {
-  if (kind === "output") return t("内核", "core");
-  if (kind === "app") return t("程序", "app");
-  if (kind === "split") return t("分流", "route");
-  return t("其他", "other");
+  if (kind === "output") return t("program.about.core");
+  if (kind === "app") return t("program.about.app");
+  if (kind === "split") return t("program.about.split");
+  return t("program.about.other");
 }
 
 /** 标签的颜色。 */

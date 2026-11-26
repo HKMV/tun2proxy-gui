@@ -1,8 +1,15 @@
 //! 界面文案：中文 / 英文。
 //!
-//! 和 Rust 那边 `core/i18n.rs` 是同一套做法——**没有翻译文件**，每条文案就地写成
-//! `t("中文", "English")`。好处是改文案不用在两处对齐、删一条文案不会留下孤儿 key；
-//! 代价是文案散在页面里，找的话直接搜中文。
+//! 文案全部放在 `locales/` 下的两份 JSON 里，键名是 `<区段>.<名字>`：
+//!
+//! ```text
+//! locales/zh.json   中文，**键的准绳**：key 只在这里定义
+//! locales/en.json   英文，类型上要求键集合与 zh.json 完全一致
+//! ```
+//!
+//! 英文少一条键，`MESSAGES` 那个类型标注当场报错，不用等界面上看见中文才知道漏了。
+//! 带数字/名字的句子用 `{name}` 占位，调用时传参数——别在代码里拼字符串，否则语序
+//! 一变就没法翻（英文的 "3 entries" 和中文的 "3 条" 位置刚好反过来）。
 //!
 //! 语言本身来自内核（`api.language()`，`auto` 已经被解析成具体语言），这里只留一个
 //! 信号存它。为什么要过信号：nsh 的组件体只跑一次，跟着语言变的值必须在**子节点位置**
@@ -12,6 +19,22 @@
 //! 换语言不会变。
 
 import { signal } from "nsh";
+
+import EN from "./locales/en.json";
+import ZH from "./locales/zh.json";
+
+/** 一条文案的键。只在 `zh.json` 里定义，别手写字符串。 */
+export type MessageKey = keyof typeof ZH;
+
+/** 占位符的值：`{count}` / `{path}` 这些。 */
+export type MessageParams = Record<string, string | number>;
+
+/**
+ * 两份词表。
+ *
+ * 这里的类型标注就是那个编译期检查：`en.json` 少了哪个键、多出哪个键，都在这一行报。
+ */
+const MESSAGES: Record<"zh" | "en", Record<MessageKey, string>> = { zh: ZH, en: EN };
 
 /** 当前语言：`zh` / `en`。 */
 const language = signal<string>("zh");
@@ -27,11 +50,15 @@ export function isEnglish(): boolean {
 }
 
 /**
- * 一条文案的中英两份。
+ * 取一条文案。
  *
  * 英文那边不用刻意写全称——界面窄的时候长句会被挤成两行，宁可短一点
  * （`Start` 而不是 `Start the tunnel`）。
  */
-export function t(zh: string, en: string): string {
-  return language() === "en" ? en : zh;
+export function t(key: MessageKey, params?: MessageParams): string {
+  const text = MESSAGES[isEnglish() ? "en" : "zh"][key];
+  if (!params) return text;
+  return text.replace(/\{(\w+)\}/g, (whole, name: string) =>
+    name in params ? String(params[name]) : whole,
+  );
 }
