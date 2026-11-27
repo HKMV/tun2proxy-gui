@@ -26,7 +26,9 @@ path = "src/main.rs"
 # - 不再需要 `[patch.crates-io]` 的本地副本（gpuikit 的 Select 弹层宽度补丁已
 #   随 gpuikit 一起删掉）。
 nsh-core = "0.6.1"
-nsh-base = "0.6.1"
+# 不带默认特性：默认那份会拖进 syntect/two-face（语法高亮词库）、ropey、vte、
+# ratex、zstd、webview2、XAudio2 —— 全是编辑器和终端用的，这个界面一个都不用。
+nsh-base = { version = "0.6.1", default-features = false }
 
 log = { version = "0.4", features = ["std"] }
 # 日志：tracing 生态（与 devroute 同一套写法）。
@@ -63,7 +65,13 @@ libc = "0.2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 # 平台层：Win32 的窗口与 Direct2D 绘制，`cargo run` 起程序时用它。
-nsh-platform-windows = "0.6.1"
+#
+# 默认特性同样全关。那份默认会拉进 JS 引擎（nsh-js + oxc_sourcemap）、wgpu
+# （含 vulkan / gles / metal 三套后端 + naga）、语法高亮词库（syntect /
+# two-face）、编辑器（ropey）、终端（vte）、数学公式（ratex + zstd）、webview2
+# 与 XAudio2 —— 一个 Rust 原生界面全用不上。实测 exe 从 19.3 MB 降到 7.1 MB，
+# 绘制改走平台层自带的 Direct2D；要用到这些能力时再按需打开对应特性。
+nsh-platform-windows = { version = "0.6.1", default-features = false }
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Security",

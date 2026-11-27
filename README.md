@@ -137,13 +137,14 @@ cargo build --release
 
 产物在 `target/release/tun2proxy-gui`（Windows 为 `tun2proxy-gui.exe`）。
 
-release profile 是按**体积**调的，不是按编译时间（见 `Cargo.toml` 的 `[profile.release]`）：`opt-level = "s"` + `lto = "fat"` + `codegen-units = 1` + `panic = "abort"` + `strip = "symbols"`。Windows 上 exe 从 14.9 MB 降到 7.6 MB，打包后的 zip 从 5.9 MB 降到 3.5 MB。代价是全量 release 编译要几分钟到十几分钟（增量只重链一次）；另外 `panic = "abort"` 让 `cargo test --release` 不可用，跑测试请用默认的 dev 配置 `cargo test`。
+release profile 是按**体积**调的，不是按编译时间（见 `Cargo.toml` 的 `[profile.release]`）：`opt-level = "s"` + `lto = "fat"` + `codegen-units = 1` + `panic = "abort"` + `strip = "symbols"`。代价是全量 release 编译要几分钟到十几分钟（增量只重链一次）；另外 `panic = "abort"` 让 `cargo test --release` 不可用，跑测试请用默认的 dev 配置 `cargo test`。
+
+体积还有一大半取决于 nsh 的默认特性。nsh 的 `nsh-base` / `nsh-platform-windows` 默认会把编辑器、语法高亮、终端、数学公式、JS 引擎、webview、音频和 **wgpu** 全拉进来，这个界面一个都不用，所以两个依赖都关掉了默认特性（见 `Cargo.toml` 里那段注释）：**exe 从 19.3 MB 降到 7.1 MB**。关掉 wgpu 之后的绘制走平台层自带的 Direct2D，观感一样，仪表盘每秒重绘的 CPU 占用还更低（实测 10 秒空闲：CPU 绘制 6.1% / wgpu 9.7% 单核）。
 
 依赖说明：
 
-- Windows：无需额外依赖。
-- Linux：GPUI 用 Vulkan 渲染、Wayland / X11 窗口，需要对应的开发库与 `pkg-config`；包名以 gpui 仓库的 Linux 说明为准。
-- macOS：需要 Xcode 命令行工具。
+- 只支持 Windows：平台层接的是 `nsh-platform-windows`（Win32 窗口 + Direct2D 绘制），Linux / macOS 目前没有对应的平台实现。
+- 无需额外运行时依赖：exe 自带全部资源，`tun2proxy` 二进制由程序自己下载到数据目录。
 
 ### 发布
 
