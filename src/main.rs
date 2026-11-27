@@ -18,17 +18,11 @@
 
 use tun2proxy_gui::core::{Config, Engine, elevate};
 use tun2proxy_gui::ui;
+/// 窗口标题（声明在 `lib.rs`，界面的窗口和这里的宿主窗口选项共用一份）。
+use tun2proxy_gui::WINDOW_TITLE;
 
 #[cfg(target_os = "windows")]
 use nsh_platform_windows as platform;
-
-/// 窗口标题。
-///
-/// Windows 上它有两个用途，都不能省：
-///
-/// - 任务栏 / Alt-Tab 里显示的名字；
-/// - 系统右上角那三个按钮与「最小化到任务栏」都依附在一个有标题的顶层窗口上。
-const WINDOW_TITLE: &str = "Tun2Proxy GUI";
 
 /// 应用 id：nsh 用它给窗口、托盘和数据目录定位。
 const APP_ID: &str = "com.hkmv.tun2proxy-gui";
@@ -90,6 +84,10 @@ fn main() {
     let _ = platform::run_app(
         platform::AppSource::Rust(root),
         platform::AppOptions {
+            // nsh 0.7 的窗口模型 v2 里，宿主窗口是**永不显示**的 app 宿主：
+            // 标题和尺寸下面的 `AppOptions` 只影响那个隐藏宿主，真正给用户看的
+            // 窗口由根组件自己声明（`lib.rs` 里 `window().title().default_size()`）。
+            // 留在这里是为了宿主窗口的标题仍与可见窗口一致（任务栏 / Alt-Tab）。
             title: WINDOW_TITLE.to_owned(),
             app_id: APP_ID.to_owned(),
             size: (900, 650),
