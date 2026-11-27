@@ -2287,7 +2287,9 @@ fn copy_logs(live: Signal<Live>, log_view: LogView) {
         return;
     }
     let count = body.lines().count();
-    set_clipboard(body);
+    // nsh 0.7 起 `set_clipboard` 返回 `Answer`：写入在调用时就发生了，返回的
+    // 只是「系统剪贴板收没收到」，这里不关心，按上游的说法直接丢掉。
+    let _ = set_clipboard(body);
     // 这个动作没有别的可见结果：不回报一句，用户不知道到底成没成。
     //
     // 这里不用定时器让它自己消失：`set_timeout` 的任务挂在调用时的 owner 上，

@@ -3,7 +3,7 @@
   "id": "com.hkmv.tun2proxy-gui",
   "version": "0.6.5",
   "build": 1,
-  "nsh": ">=0.6, <0.7",
+  "nsh": ">=0.7, <0.8",
   "rust": ".",
   "root": "App",
   "theme": "themes/cyber.json",
