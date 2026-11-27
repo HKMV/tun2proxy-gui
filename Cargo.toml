@@ -25,8 +25,8 @@ path = "src/main.rs"
 # - 不再需要单独的 `gpui_platform`——nsh 的平台 crate 自带窗口；
 # - 不再需要 `[patch.crates-io]` 的本地副本（gpuikit 的 Select 弹层宽度补丁已
 #   随 gpuikit 一起删掉）。
-nsh-core = "0.6.1"
-nsh-base = "0.6.1"
+nsh-core = "0.7.2"
+nsh-base = { version = "0.7.2", default-features = false }
 
 log = { version = "0.4", features = ["std"] }
 # 日志：tracing 生态（与 devroute 同一套写法）。
@@ -41,16 +41,15 @@ tracing-appender = "0.2"
 time = { version = "0.3", features = ["local-offset", "macros"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"
+sha2 = "0.11"
 zip = { version = "9", default-features = false, features = ["deflate"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "io-util", "sync"] }
-tokio-util = "0.7"
 # 分流器的直连出口要「按出接口选路」：Windows 上是 IP_UNICAST_IF，Linux 上是
 # SO_BINDTODEVICE。std 的 TcpStream 没有这个能力，这里用 socket2 建 socket 并
 # 拿到原始句柄自己 setsockopt。
 socket2 = "0.6"
 # 只用到 IpCidr / IpCidrSet，关掉默认特性避免拖进整个 tproxy 运行时。
-tproxy-config = { version = "7.0.9", default-features = false }
+tproxy-config = { version = "7.0.10", default-features = false }
 
 [build-dependencies]
 # 只干一件事：把 app.rc（图标 + 版本信息）编进 exe 的资源段。
@@ -63,8 +62,8 @@ libc = "0.2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 # 平台层：Win32 的窗口与 Direct2D 绘制，`cargo run` 起程序时用它。
-nsh-platform-windows = "0.6.1"
-windows-sys = { version = "0.59", features = [
+nsh-platform-windows = { version = "0.7.2", default-features = false }
+windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_System_Console",
@@ -95,8 +94,6 @@ windows-sys = { version = "0.59", features = [
     # （CreateToolhelp32Snapshot / Process32NextW，见 core::orphans）。
     "Win32_System_Diagnostics_ToolHelp",
 ] }
-# 托盘图标的着色（历史遗留，nsh 的托盘接管后可以删）。
-png = "0.17"
 
 # 发布版：一切为了**体积**，编译时间让给 CI。
 [profile.release]

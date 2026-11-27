@@ -339,7 +339,12 @@ pub fn verify_sha256(path: &Path, digest: &str) -> Result<(), String> {
         }
         hasher.update(&buffer[..read]);
     }
-    let actual = format!("{:x}", hasher.finalize());
+    // sha2 0.11 起摘要类型不再实现 `LowerHex`，自己按字节拼十六进制。
+    let digest = hasher.finalize();
+    let mut actual = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        actual.push_str(&format!("{byte:02x}"));
+    }
     if actual == expected {
         Ok(())
     } else {
